@@ -37,6 +37,7 @@ def hunyuan3d_training_registrations(training_registration_type: type[Any]) -> t
         training_registration_type(
             recipe_type=recipe,
             target_type=recipe.target_type,
+            example_type=recipe.example_type,
             batch_type=recipe.batch_type,
             recipe_id=recipe.recipe_id,
             recipe_version=recipe.recipe_version,

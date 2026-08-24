@@ -27,6 +27,7 @@ from diffusers_3d import (
     TextCondition,
     TrainableParameterError,
     TrainingConfig3D,
+    TrainingConfigurationError,
     TrainingPolicyError,
     TrainingRecipe3D,
     TrainingRecipeRegistration,
@@ -96,11 +97,12 @@ FULL_POLICY = ComponentPolicy(
 )
 
 
-class TinyRecipe(TrainingRecipe3D[TinyTarget, TinyBatch]):
+class TinyRecipe(TrainingRecipe3D[TinyTarget, Object3DExample, TinyBatch]):
     recipe_id = "tiny-objective"
     recipe_version = "1.0"
     family_id = "tiny-training"
     target_type = TinyTarget
+    example_type = Object3DExample
     batch_type = TinyBatch
     component_policies = (FULL_POLICY,)
 
@@ -144,6 +146,20 @@ class CountingDataset:
         return Object3DExample(mesh, TextCondition("tiny"))
 
 
+class Object3DExampleMarker(Object3DExample):
+    pass
+
+
+class SubclassExampleDataset(CountingDataset):
+    def __getitem__(self, index: int) -> Object3DExampleMarker:
+        example = super().__getitem__(index)
+        return Object3DExampleMarker(
+            target=example.target,
+            condition=example.condition,
+            example_id=example.example_id,
+        )
+
+
 class NeverIteratedDataset:
     def __init__(self) -> None:
         self.getitem_calls = 0
@@ -165,6 +181,7 @@ def make_registration(
     return TrainingRecipeRegistration(
         recipe_type=recipe_type,
         target_type=target_type,
+        example_type=recipe_type.example_type,
         batch_type=recipe_type.batch_type,
         recipe_id=recipe_type.recipe_id,
         recipe_version=recipe_type.recipe_version,
@@ -201,11 +218,49 @@ def test_registry_is_reviewed_exact_and_read_only():
         registry.register(registration)
 
 
+def test_registration_and_collate_require_exact_non_mapping_example_type(monkeypatch):
+    class MappingExample(dict):
+        def validate(self):
+            pass
+
+        def to(self, *args, **kwargs):
+            return self
+
+    class MappingExampleRecipe(TinyRecipe):
+        recipe_id = "mapping-example"
+        example_type = MappingExample
+
+    class ImplicitExampleRecipe(TinyRecipe):
+        recipe_id = "implicit-example"
+
+    with pytest.raises(TrainingRegistrationError, match="example_type.*not a mapping"):
+        create_training_recipe_registry((make_registration(MappingExampleRecipe, TinyTarget),))
+    with pytest.raises(TrainingRegistrationError, match="declare.*example_type"):
+        create_training_recipe_registry((make_registration(ImplicitExampleRecipe, TinyTarget),))
+
+    registration = make_registration()
+    registry = install_registry(monkeypatch, registration)
+    with monkeypatch.context() as context:
+        context.setattr(TinyRecipe, "example_type", Object3DExampleMarker)
+        with pytest.raises(TrainingRegistrationError, match="example_type"):
+            registry.resolve(TinyRecipe, TinyTarget, TinyRecipe.recipe_id)
+
+    trainer = Object3DTrainer(
+        TinyRecipe(TinyTarget()),
+        SubclassExampleDataset(),
+        FullFineTune(("denoiser",)),
+        make_config(max_train_steps=1),
+    )
+    with pytest.raises(TrainingConfigurationError, match="exact Object3DExample"):
+        trainer.train()
+
+
 class GenericRecipe(TrainingRecipe3D):
     recipe_id = "generic"
     recipe_version = "1"
     family_id = "generic"
     target_type = object
+    example_type = Object3DExample
     batch_type = TinyBatch
     component_policies = (FULL_POLICY,)
 
@@ -331,6 +386,7 @@ class SneakyRecipe(TinyRecipe):
     recipe_id = "sneaky-objective"
     family_id = "sneaky-training"
     target_type = SneakyTarget
+    example_type = Object3DExample
     component_policies = (SNEAKY_POLICY,)
 
 
@@ -360,6 +416,7 @@ class ZeroRecipe(TinyRecipe):
     recipe_id = "zero-objective"
     family_id = "zero-training"
     target_type = ZeroTarget
+    example_type = Object3DExample
     component_policies = (ZERO_POLICY,)
 
     def validate_target(self) -> None:
@@ -415,6 +472,7 @@ class TinyPipelineRecipe(TinyRecipe):
     recipe_id = "tiny-pipeline-objective"
     family_id = "tiny-pipeline-training"
     target_type = TinyTrainingPipeline
+    example_type = Object3DExample
     component_policies = (PIPELINE_POLICY,)
 
     def validate_target(self) -> None:
@@ -540,6 +598,7 @@ class LoraRecipe(TinyRecipe):
     recipe_id = "lora-objective"
     family_id = "lora-training"
     target_type = LoraTarget
+    example_type = Object3DExample
     component_policies = (LORA_POLICY,)
 
     def validate_target(self) -> None:

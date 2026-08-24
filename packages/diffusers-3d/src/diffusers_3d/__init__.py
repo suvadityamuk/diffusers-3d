@@ -216,6 +216,7 @@ __all__ = [
     "Hunyuan3DImageToShapePipeline",
     "HunyuanImageProcessor",
     "Hunyuan3DShapeBatch",
+    "Hunyuan3DShapeExample",
     "Hunyuan3DShapeDiTModel",
     "Hunyuan3DShapeDiTOutput",
     "Hunyuan3DShapeFieldOutput",

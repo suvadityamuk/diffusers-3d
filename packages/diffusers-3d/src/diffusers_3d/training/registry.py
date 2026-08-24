@@ -22,6 +22,7 @@ class TrainingRecipeRegistration:
 
     recipe_type: type[TrainingRecipe3D]
     target_type: type[Object3DModel] | type[Object3DPipeline] | type[ModularObject3DPipeline]
+    example_type: type[object]
     batch_type: type[object]
     recipe_id: str
     recipe_version: str
@@ -85,16 +86,27 @@ class TrainingRecipeRegistry:
                 "target_type must be a concrete nominal Object3DModel, Object3DPipeline, or "
                 "ModularObject3DPipeline subclass"
             )
-        if (
-            not isinstance(registration.batch_type, type)
-            or registration.batch_type is object
-            or issubclass(registration.batch_type, Mapping)
+        if "example_type" not in vars(recipe_type):
+            raise TrainingRegistrationError("recipe_type must declare its exact example_type directly")
+        for declaration_name, declared_type in (
+            ("example_type", registration.example_type),
+            ("batch_type", registration.batch_type),
         ):
-            raise TrainingRegistrationError("batch_type must be an exact typed batch class, not a mapping")
-        if not callable(getattr(registration.batch_type, "validate", None)) or not callable(
-            getattr(registration.batch_type, "to", None)
-        ):
-            raise TrainingRegistrationError("batch_type must expose typed validate() and functional to() methods")
+            if (
+                not isinstance(declared_type, type)
+                or declared_type is object
+                or inspect.isabstract(declared_type)
+                or issubclass(declared_type, Mapping)
+            ):
+                raise TrainingRegistrationError(
+                    f"{declaration_name} must be an exact concrete typed class, not a mapping"
+                )
+            if not callable(getattr(declared_type, "validate", None)) or not callable(
+                getattr(declared_type, "to", None)
+            ):
+                raise TrainingRegistrationError(
+                    f"{declaration_name} must expose typed validate() and functional to() methods"
+                )
         if not isinstance(registration.recipe_id, str) or not _RECIPE_ID_PATTERN.fullmatch(registration.recipe_id):
             raise TrainingRegistrationError("recipe_id must be a stable lowercase identifier")
         if not isinstance(registration.recipe_version, str) or not _VERSION_PATTERN.fullmatch(
@@ -130,6 +142,7 @@ class TrainingRecipeRegistry:
             ("recipe_version", registration.recipe_version),
             ("family_id", registration.family_id),
             ("target_type", registration.target_type),
+            ("example_type", registration.example_type),
             ("batch_type", registration.batch_type),
             ("component_policies", registration.component_policies),
         )
@@ -169,6 +182,7 @@ class TrainingRecipeRegistry:
             ("recipe_version", registration.recipe_version),
             ("family_id", registration.family_id),
             ("target_type", registration.target_type),
+            ("example_type", registration.example_type),
             ("batch_type", registration.batch_type),
             ("component_policies", registration.component_policies),
         )

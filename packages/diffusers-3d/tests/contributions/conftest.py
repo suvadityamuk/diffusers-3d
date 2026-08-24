@@ -55,6 +55,7 @@ def training() -> TrainingRecipeQualification3D:
         recipe_version="1.0",
         recipe_class="example.training.ExampleRecipe",
         target_class="example.pipeline.ExamplePipeline",
+        example_class="example.training.ExampleExample",
         batch_class="example.training.ExampleBatch",
         trainer_registration="example.registrations.EXAMPLE_TRAINING_REGISTRATION",
         strategies=(FineTuneStrategy.FULL, FineTuneStrategy.LORA),

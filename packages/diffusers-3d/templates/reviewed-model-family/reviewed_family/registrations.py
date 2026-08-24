@@ -1,4 +1,5 @@
 from diffusers_3d import (
+    Object3DExample,
     Object3DModelRegistration,
     Object3DPipelineRegistration,
     ReviewStatus,
@@ -22,6 +23,7 @@ REVIEWED_PIPELINE_REGISTRATION = Object3DPipelineRegistration(
 REVIEWED_TRAINING_REGISTRATION = TrainingRecipeRegistration(
     recipe_type=ReviewedTrainingRecipe,
     target_type=ReviewedObject3DPipeline,
+    example_type=Object3DExample,
     batch_type=ReviewedBatch,
     recipe_id=ReviewedTrainingRecipe.recipe_id,
     recipe_version=ReviewedTrainingRecipe.recipe_version,

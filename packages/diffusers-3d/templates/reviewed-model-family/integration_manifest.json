@@ -77,7 +77,7 @@
     }
   },
   "schema": "diffusers-3d-integration",
-  "schema_version": 1,
+  "schema_version": 2,
   "training": {
     "backward_parity": {
       "atol": 0.0001,
@@ -99,6 +99,7 @@
     "components": [
       "denoiser"
     ],
+    "example_class": "diffusers_3d.data.conditions.Object3DExample",
     "objective_parity": {
       "atol": 0.0001,
       "kind": "objective",

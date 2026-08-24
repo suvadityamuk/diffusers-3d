@@ -2,19 +2,69 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from diffusers_3d import BackendLicenseClass, IntegrationManifest3D
+from diffusers_3d import (
+    BackendLicenseClass,
+    Hunyuan3DImageToShapePipeline,
+    Hunyuan3DShapeFlowMatchingRecipe,
+    IntegrationManifest3D,
+    validate_integration_manifest,
+)
+from diffusers_3d.execution.registry import _MODEL_REGISTRY, _PIPELINE_REGISTRY
+from diffusers_3d.training.registry import _TRAINING_RECIPE_REGISTRY
 
 FAMILY_ROOT = Path(__file__).parents[3] / "src" / "diffusers_3d" / "families" / "hunyuan3d"
 
 
-def test_manifest_revision_license_and_unmeasured_pipeline_parity():
+def _qualified_name(value: type[object]) -> str:
+    return f"{value.__module__}.{value.__qualname__}"
+
+
+def test_hunyuan_manifest_is_valid_with_expected_restricted_license_warnings():
     manifest = IntegrationManifest3D.load(FAMILY_ROOT / "diffusers_3d_integration.json")
+    report = validate_integration_manifest(manifest)
+    assert report.is_valid, report.to_dict()
+    assert not report.errors
+    assert {warning.code for warning in report.warnings} == {"licenses.restricted"}
+
     assert manifest.upstream.revision == "82920d643c0dc2f7bfd7255f45f62d386edfe60c"
     assert manifest.licenses.model.classification is BackendLicenseClass.RESTRICTED
     licenses = {artifact.artifact: artifact.license for artifact in manifest.licenses.artifacts}
     assert licenses["hunyuan-derived-code"].classification is BackendLicenseClass.RESTRICTED
     assert licenses["package-glue-code"].classification is BackendLicenseClass.PERMISSIVE
     pipeline = next(component for component in manifest.components if component.role == "pipeline")
-    assert pipeline.parity[0].passed is False
+    assert pipeline.parity[0].passed
+    assert "surface extraction and official-checkpoint quality are excluded" in pipeline.parity[0].reference
     assert (FAMILY_ROOT / "LICENSE-TENCENT-HUNYUAN-3D-2.1").is_file()
     assert (FAMILY_ROOT / "NOTICE").is_file()
+
+
+def test_manifest_matches_exact_production_registrations_and_evidence():
+    manifest = IntegrationManifest3D.load(FAMILY_ROOT / "diffusers_3d_integration.json")
+    component_classes = {component.class_name for component in manifest.components}
+    registered_model_classes = {
+        registration.metadata.model_class
+        for registration in _MODEL_REGISTRY
+        if registration.metadata.family_id == manifest.integration_id
+    }
+    registered_pipeline_classes = {
+        registration.metadata.pipeline_class
+        for registration in _PIPELINE_REGISTRY
+        if registration.metadata.family_id == manifest.integration_id
+    }
+    assert registered_model_classes.issubset(component_classes)
+    assert registered_pipeline_classes == {_qualified_name(Hunyuan3DImageToShapePipeline)}
+
+    training = manifest.training
+    registration = _TRAINING_RECIPE_REGISTRY.resolve(
+        Hunyuan3DShapeFlowMatchingRecipe,
+        Hunyuan3DImageToShapePipeline,
+        Hunyuan3DShapeFlowMatchingRecipe.recipe_id,
+    )
+    assert training.recipe_class == _qualified_name(registration.recipe_type)
+    assert training.target_class == _qualified_name(registration.target_type)
+    assert training.example_class == _qualified_name(registration.example_type)
+    assert training.batch_class == _qualified_name(registration.batch_type)
+    assert training.recipe_version == registration.recipe_version
+    assert training.components == tuple(policy.key for policy in registration.component_policies)
+    assert training.backward_parity.test.endswith("::test_tiny_denoiser_backward_matches_pinned_reference")
+    assert training.checkpoint_parity.test.endswith("::test_object3d_trainer_full_step_and_checkpoint_roundtrip")

@@ -43,7 +43,7 @@
     }
   },
   "schema": "diffusers-3d-integration",
-  "schema_version": 1,
+  "schema_version": 2,
   "training": null,
   "upstream": {
     "repository": "https://huggingface.co/your-org/your-object3d-block",

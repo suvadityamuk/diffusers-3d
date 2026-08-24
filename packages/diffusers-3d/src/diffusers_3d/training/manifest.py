@@ -19,7 +19,7 @@ from .types import FineTuneStrategy3D, LoRAFineTune
 
 TRAINING_MANIFEST_NAME = "diffusers_3d_training.json"
 TRAINING_MANIFEST_SCHEMA = "diffusers-3d-training"
-TRAINING_MANIFEST_VERSION = 1
+TRAINING_MANIFEST_VERSION = 2
 
 StrategyConfigValue = int | float | str
 _QUALIFIED_TYPE_PATTERN = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)+$")
@@ -40,6 +40,7 @@ class TrainingManifest3D:
     schema: str
     schema_version: int
     target_type: str
+    example_type: str
     family_id: str
     recipe_id: str
     recipe_version: str
@@ -65,6 +66,7 @@ class TrainingManifest3D:
             )
         string_fields = (
             "target_type",
+            "example_type",
             "family_id",
             "recipe_id",
             "recipe_version",
@@ -77,6 +79,8 @@ class TrainingManifest3D:
             raise TrainingManifestError("training manifest identity fields must be non-empty strings")
         if not _QUALIFIED_TYPE_PATTERN.fullmatch(self.target_type):
             raise TrainingManifestError("target_type must be a fully-qualified concrete type")
+        if not _QUALIFIED_TYPE_PATTERN.fullmatch(self.example_type):
+            raise TrainingManifestError("example_type must be a fully-qualified concrete type")
         if self.strategy not in ("full", "lora"):
             raise TrainingManifestError("strategy must be 'full' or 'lora'")
         if self.revision is not None and (not isinstance(self.revision, str) or not self.revision):
@@ -156,6 +160,7 @@ class TrainingManifest3D:
         cls,
         *,
         target_type: type[object],
+        example_type: type[object],
         family_id: str,
         recipe_id: str,
         recipe_version: str,
@@ -176,6 +181,7 @@ class TrainingManifest3D:
             schema=TRAINING_MANIFEST_SCHEMA,
             schema_version=TRAINING_MANIFEST_VERSION,
             target_type=fully_qualified_class_name(target_type),
+            example_type=fully_qualified_class_name(example_type),
             family_id=family_id,
             recipe_id=recipe_id,
             recipe_version=recipe_version,
@@ -195,6 +201,7 @@ class TrainingManifest3D:
             "base_model": self.base_model,
             "components": list(self.components),
             "diffusers_version": self.diffusers_version,
+            "example_type": self.example_type,
             "family_id": self.family_id,
             "package_version": self.package_version,
             "recipe_id": self.recipe_id,
@@ -228,6 +235,7 @@ class TrainingManifest3D:
                 schema=data["schema"],  # type: ignore[arg-type]
                 schema_version=data["schema_version"],  # type: ignore[arg-type]
                 target_type=data["target_type"],  # type: ignore[arg-type]
+                example_type=data["example_type"],  # type: ignore[arg-type]
                 family_id=data["family_id"],  # type: ignore[arg-type]
                 recipe_id=data["recipe_id"],  # type: ignore[arg-type]
                 recipe_version=data["recipe_version"],  # type: ignore[arg-type]

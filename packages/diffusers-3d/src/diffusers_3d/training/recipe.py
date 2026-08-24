@@ -8,7 +8,6 @@ from typing import ClassVar, Generic, TypeVar
 from diffusers.loaders import PeftAdapterMixin
 from torch import nn
 
-from ..data import Object3DExample
 from ..execution import ModularObject3DPipeline, Object3DModel, Object3DPipeline
 from .exceptions import TrainingCheckpointError
 from .types import (
@@ -22,16 +21,18 @@ from .types import (
 TRAINING_ADAPTER_NAME = "object3d_training"
 
 TargetT = TypeVar("TargetT", bound=Object3DModel | Object3DPipeline | ModularObject3DPipeline)
+ExampleT = TypeVar("ExampleT")
 BatchT = TypeVar("BatchT")
 
 
-class TrainingRecipe3D(ABC, Generic[TargetT, BatchT]):
+class TrainingRecipe3D(ABC, Generic[TargetT, ExampleT, BatchT]):
     """Reviewed model-specific objective over an exact object-3D target."""
 
     recipe_id: ClassVar[str]
     recipe_version: ClassVar[str]
     family_id: ClassVar[str]
     target_type: ClassVar[type[Object3DModel] | type[Object3DPipeline] | type[ModularObject3DPipeline]]
+    example_type: ClassVar[type[object]]
     batch_type: ClassVar[type[object]]
     component_policies: ClassVar[tuple[ComponentPolicy, ...]]
 
@@ -43,7 +44,7 @@ class TrainingRecipe3D(ABC, Generic[TargetT, BatchT]):
         return self._target
 
     @abstractmethod
-    def collate(self, examples: Sequence[Object3DExample]) -> BatchT:
+    def collate(self, examples: Sequence[ExampleT]) -> BatchT:
         """Build the recipe's exact typed batch."""
 
     @abstractmethod

@@ -57,13 +57,14 @@ REVIEWED_DENOISER_POLICY = ComponentPolicy(
 )
 
 
-class ReviewedTrainingRecipe(TrainingRecipe3D[ReviewedObject3DPipeline, ReviewedBatch]):
+class ReviewedTrainingRecipe(TrainingRecipe3D[ReviewedObject3DPipeline, Object3DExample, ReviewedBatch]):
     """Exact objective starter; replace its math only with parity-tested reference math."""
 
     recipe_id = "reviewed-family"
     recipe_version = "1.0"
     family_id = "reviewed-family"
     target_type = ReviewedObject3DPipeline
+    example_type = Object3DExample
     batch_type = ReviewedBatch
     component_policies = (REVIEWED_DENOISER_POLICY,)
 

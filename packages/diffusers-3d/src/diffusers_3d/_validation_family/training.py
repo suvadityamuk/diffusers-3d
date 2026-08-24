@@ -102,13 +102,14 @@ CONTRACT_REFERENCE_DENOISER_POLICY = ComponentPolicy(
 )
 
 
-class ContractReferenceRecipe(TrainingRecipe3D[ContractReferencePipeline, ContractReferenceBatch]):
+class ContractReferenceRecipe(TrainingRecipe3D[ContractReferencePipeline, Object3DExample, ContractReferenceBatch]):
     """Deterministic diffusion-like objective over exact pipeline components."""
 
     recipe_id = "contract-reference"
     recipe_version = "1.0"
     family_id = "contract-reference"
     target_type = ContractReferencePipeline
+    example_type = Object3DExample
     batch_type = ContractReferenceBatch
     component_policies = (CONTRACT_REFERENCE_DENOISER_POLICY,)
 

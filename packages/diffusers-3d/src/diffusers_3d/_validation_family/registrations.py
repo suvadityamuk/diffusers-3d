@@ -42,6 +42,7 @@ def training_registrations(training_registration_type: type[Any]) -> tuple[Any, 
         training_registration_type(
             recipe_type=ContractReferenceRecipe,
             target_type=ContractReferenceRecipe.target_type,
+            example_type=ContractReferenceRecipe.example_type,
             batch_type=ContractReferenceRecipe.batch_type,
             recipe_id=ContractReferenceRecipe.recipe_id,
             recipe_version=ContractReferenceRecipe.recipe_version,

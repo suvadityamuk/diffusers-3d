@@ -94,18 +94,23 @@
       "class_name": "diffusers_3d.families.hunyuan3d.pipeline.Hunyuan3DImageToShapePipeline",
       "parity": [
         {
-          "atol": null,
+          "atol": 1e-06,
           "kind": "inference",
-          "passed": false,
-          "reference": "Full official checkpoint/GPU end-to-end parity was not run in this CPU integration environment.",
-          "rtol": null,
-          "test": "tests/families/hunyuan3d/test_pipeline.py::test_tiny_pipeline_is_deterministic"
+          "passed": true,
+          "reference": "Tiny CPU composition of pinned upstream DINO preprocessing/tokens, HunYuanDiTPlain plus Euler denoising, and ShapeVAE decode/field stages with identical weights; surface extraction and official-checkpoint quality are excluded.",
+          "rtol": 1e-05,
+          "test": "tests/families/hunyuan3d/test_reference_parity.py::test_tiny_composed_pipeline_stages_match_pinned_reference"
         }
       ],
       "role": "pipeline"
     },
     {
-      "checkpoint_conversion": null,
+      "checkpoint_conversion": {
+        "converter": "diffusers_3d.families.hunyuan3d.scheduler.Hunyuan3DFlowMatchEulerDiscreteScheduler.from_config",
+        "source_format": "official-scheduler-config",
+        "target_format": "diffusers-scheduler-config",
+        "test": "tests/families/hunyuan3d/test_scheduler.py::test_scheduler_official_config_roundtrip"
+      },
       "class_name": "diffusers_3d.families.hunyuan3d.scheduler.Hunyuan3DFlowMatchEulerDiscreteScheduler",
       "parity": [
         {
@@ -184,14 +189,29 @@
     }
   },
   "schema": "diffusers-3d-integration",
-  "schema_version": 1,
+  "schema_version": 2,
   "training": {
-    "backward_parity": null,
+    "backward_parity": {
+      "atol": 1e-06,
+      "kind": "backward",
+      "passed": true,
+      "reference": "Pinned upstream HunYuanDiTPlain input and selected parameter gradients with identical tiny CPU float32 weights, inputs, and deterministic loss.",
+      "rtol": 1e-05,
+      "test": "tests/families/hunyuan3d/test_reference_parity.py::test_tiny_denoiser_backward_matches_pinned_reference"
+    },
     "batch_class": "diffusers_3d.families.hunyuan3d.training.Hunyuan3DShapeBatch",
-    "checkpoint_parity": null,
+    "checkpoint_parity": {
+      "atol": 0.0,
+      "kind": "checkpoint",
+      "passed": true,
+      "reference": "Exact package full-denoiser save/load restoration with validated checkpoint identity manifest.",
+      "rtol": 0.0,
+      "test": "tests/families/hunyuan3d/test_training.py::test_object3d_trainer_full_step_and_checkpoint_roundtrip"
+    },
     "components": [
       "denoiser"
     ],
+    "example_class": "diffusers_3d.families.hunyuan3d.training.Hunyuan3DShapeExample",
     "objective_parity": {
       "atol": 0.0,
       "kind": "objective",

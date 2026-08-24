@@ -27,8 +27,9 @@ A reviewed family must include:
 - backend capability, installation, and license declarations;
 - a model card documenting upstream revisions and output semantics.
 
-Training is a separate qualification. It requires a concrete `TrainingRecipe3D`, typed examples and batches, a
-component policy, objective parity, gradient-ownership tests, and checkpoint continuation tests.
+Training is a separate qualification. It requires a concrete `TrainingRecipe3D`, exact recipe-owned `example_type`
+and `batch_type` declarations, matching registration and manifest classes, a component policy, objective parity,
+gradient-ownership tests, and checkpoint continuation tests.
 
 ## Upstream Diffusers primitive
 

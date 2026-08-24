@@ -12,7 +12,7 @@ def test_tiny_dinov2_tokens_unconditional_and_save_load(tmp_path):
     with torch.no_grad():
         output = conditioner(images).embeddings
     assert output.shape == (2, 5, 32)
-    assert not any(parameter.requires_grad for parameter in conditioner.parameters())
+    assert all(parameter.requires_grad for parameter in conditioner.parameters())
     torch.testing.assert_close(
         conditioner.unconditional_embedding(2),
         torch.zeros_like(output),

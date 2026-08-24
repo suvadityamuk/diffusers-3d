@@ -17,9 +17,14 @@ class ExactTarget:
     pass
 
 
+class ExactExample:
+    pass
+
+
 def make_manifest(**kwargs) -> TrainingManifest3D:
     arguments = {
         "target_type": ExactTarget,
+        "example_type": ExactExample,
         "family_id": "manifest-family",
         "recipe_id": "manifest-objective",
         "recipe_version": "1.0",
@@ -46,6 +51,7 @@ def test_manifest_save_load_is_atomic_deterministic_and_hashed(tmp_path):
     assert manifest.trainable_parameter_hash == trainable_parameter_hash(("denoiser.a", "denoiser.z"))
     assert trainable_parameter_hash(("denoiser.z", "denoiser.a")) == manifest.trainable_parameter_hash
     assert json.loads(first_bytes)["components"] == ["decoder", "denoiser"]
+    assert json.loads(first_bytes)["example_type"].endswith(".ExactExample")
 
 
 def test_manifest_resume_requires_an_exact_match(tmp_path):

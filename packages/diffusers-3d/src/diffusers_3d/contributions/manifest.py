@@ -15,7 +15,7 @@ from ..backends import BackendLicenseClass, BackendSupportLevel
 
 INTEGRATION_MANIFEST_NAME = "diffusers_3d_integration.json"
 INTEGRATION_MANIFEST_SCHEMA = "diffusers-3d-integration"
-INTEGRATION_MANIFEST_VERSION = 1
+INTEGRATION_MANIFEST_VERSION = 2
 
 _IDENTIFIER_PATTERN = re.compile(r"^[a-z][a-z0-9_.-]*$")
 _VERSION_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.+-]*$")
@@ -603,6 +603,7 @@ class TrainingRecipeQualification3D:
     recipe_version: str
     recipe_class: str
     target_class: str
+    example_class: str
     batch_class: str
     trainer_registration: str
     strategies: tuple[FineTuneStrategy, ...]
@@ -618,7 +619,7 @@ class TrainingRecipeQualification3D:
             "recipe_version",
             _version(self.recipe_version, field_name="training.recipe_version"),
         )
-        for field_name in ("recipe_class", "target_class", "batch_class", "trainer_registration"):
+        for field_name in ("recipe_class", "target_class", "example_class", "batch_class", "trainer_registration"):
             object.__setattr__(
                 self,
                 field_name,
@@ -648,6 +649,7 @@ class TrainingRecipeQualification3D:
             "batch_class": self.batch_class,
             "checkpoint_parity": (None if self.checkpoint_parity is None else self.checkpoint_parity.to_dict()),
             "components": list(self.components),
+            "example_class": self.example_class,
             "objective_parity": (None if self.objective_parity is None else self.objective_parity.to_dict()),
             "recipe_class": self.recipe_class,
             "recipe_id": self.recipe_id,
@@ -666,6 +668,7 @@ class TrainingRecipeQualification3D:
                 "batch_class",
                 "checkpoint_parity",
                 "components",
+                "example_class",
                 "objective_parity",
                 "recipe_class",
                 "recipe_id",
@@ -686,6 +689,7 @@ class TrainingRecipeQualification3D:
             recipe_version=data["recipe_version"],  # type: ignore[arg-type]
             recipe_class=data["recipe_class"],  # type: ignore[arg-type]
             target_class=data["target_class"],  # type: ignore[arg-type]
+            example_class=data["example_class"],  # type: ignore[arg-type]
             batch_class=data["batch_class"],  # type: ignore[arg-type]
             trainer_registration=data["trainer_registration"],  # type: ignore[arg-type]
             strategies=data["strategies"],  # type: ignore[arg-type]

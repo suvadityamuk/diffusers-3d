@@ -8,21 +8,63 @@
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
+from pathlib import Path
 
 import torch
 import torch.nn.functional as F
+from torch import nn
 
-from ...data import ImageCondition, Object3DExample
-from ...objects import MeshAsset
-from ...objects._validation import TensorShapeError, validate_shared_device, validate_tensor
+from ...data import ImageCondition
+from ...objects._validation import (
+    Object3DValidationError,
+    TensorShapeError,
+    validate_shared_device,
+    validate_tensor,
+)
 from ...objects.base import TensorDataMixin
-from ...training.exceptions import TrainingTargetError
+from ...training.exceptions import TrainingCheckpointError, TrainingTargetError
 from ...training.recipe import TrainingRecipe3D
-from ...training.types import ComponentPolicy, FineTuneKind, TrainingStep3DOutput
+from ...training.types import ComponentPolicy, FineTuneKind, FineTuneStrategy3D, FullFineTune, TrainingStep3DOutput
+from .conditioner import Hunyuan3DDinov2Conditioner
 from .models import Hunyuan3DShapeDiTModel
 from .pipeline import Hunyuan3DImageToShapePipeline
+from .scheduler import Hunyuan3DFlowMatchEulerDiscreteScheduler
+from .vae import Hunyuan3DShapeVAE
+
+
+@dataclass(frozen=True, slots=True)
+class Hunyuan3DShapeExample(TensorDataMixin):
+    """One Hunyuan conditioning image with exactly one shape training source."""
+
+    condition: ImageCondition
+    shape_latents: torch.Tensor | None = None
+    surface_samples: torch.Tensor | None = None
+    example_id: str | None = None
+
+    def __post_init__(self) -> None:
+        self.validate()
+
+    def validate(self) -> None:
+        if type(self.condition) is not ImageCondition:
+            raise Object3DValidationError("condition must be an exact ImageCondition")
+        self.condition.validate()
+        if self.condition.image.shape[0] != 3:
+            raise TensorShapeError("condition image must contain exactly three channels")
+        if (self.shape_latents is None) == (self.surface_samples is None):
+            raise TensorShapeError("exactly one of shape_latents or surface_samples must be provided")
+        if self.shape_latents is not None:
+            validate_tensor("shape_latents", self.shape_latents, rank=2, floating=True)
+            if self.shape_latents.shape[0] == 0 or self.shape_latents.shape[1] == 0:
+                raise TensorShapeError("shape_latents must have non-zero token and channel dimensions")
+        if self.surface_samples is not None:
+            validate_tensor("surface_samples", self.surface_samples, rank=2, floating=True)
+            if self.surface_samples.shape[0] == 0 or self.surface_samples.shape[1] < 3:
+                raise TensorShapeError("surface_samples must have shape (nonzero points, at least 3)")
+        if self.example_id is not None and (not isinstance(self.example_id, str) or not self.example_id):
+            raise Object3DValidationError("example_id must be a non-empty string or None")
+        validate_shared_device(self.tensor_items())
 
 
 @dataclass(frozen=True, slots=True)
@@ -81,46 +123,44 @@ HUNYUAN3D_DENOISER_POLICY = ComponentPolicy(
 )
 
 
-class Hunyuan3DShapeFlowMatchingRecipe(TrainingRecipe3D[Hunyuan3DImageToShapePipeline, Hunyuan3DShapeBatch]):
+class Hunyuan3DShapeFlowMatchingRecipe(
+    TrainingRecipe3D[Hunyuan3DImageToShapePipeline, Hunyuan3DShapeExample, Hunyuan3DShapeBatch]
+):
     """Released Hunyuan shape flow objective with frozen DINO and VAE."""
 
     recipe_id = "hunyuan3d-shape-flow-matching"
     recipe_version = "1.0"
     family_id = "hunyuan3d-2.1"
     target_type = Hunyuan3DImageToShapePipeline
+    example_type = Hunyuan3DShapeExample
     batch_type = Hunyuan3DShapeBatch
     component_policies = (HUNYUAN3D_DENOISER_POLICY,)
 
-    def __init__(self, target: Hunyuan3DImageToShapePipeline) -> None:
-        super().__init__(target)
-        target.vae.requires_grad_(False)
-        target.vae.eval()
-        target.conditioner.requires_grad_(False)
-        target.conditioner.eval()
-
-    def collate(self, examples: Sequence[Object3DExample]) -> Hunyuan3DShapeBatch:
+    def collate(self, examples: Sequence[Hunyuan3DShapeExample]) -> Hunyuan3DShapeBatch:
         images = []
+        shape_latents = []
         surface_samples = []
         for example in examples:
-            if type(example) is not Object3DExample:
-                raise TrainingTargetError("examples must contain exact Object3DExample values")
-            if type(example.condition) is not ImageCondition or type(example.target) is not MeshAsset:
-                raise TrainingTargetError("Hunyuan shape examples require ImageCondition and MeshAsset values")
-            example.validate(expensive=True)
-            images.append(example.condition.image[:3])
-            mesh = example.target
-            surface = mesh.vertices
-            if mesh.normals is not None:
-                surface = torch.cat([surface, mesh.normals], dim=-1)
-            surface_samples.append(surface)
+            if type(example) is not Hunyuan3DShapeExample:
+                raise TrainingTargetError("examples must contain exact Hunyuan3DShapeExample values")
+            example.validate()
+            images.append(example.condition.image)
+            if example.shape_latents is not None:
+                shape_latents.append(example.shape_latents)
+            else:
+                surface_samples.append(example.surface_samples)
         if not images:
             raise TrainingTargetError("examples must not be empty")
+        if shape_latents and surface_samples:
+            raise TrainingTargetError("a Hunyuan batch cannot mix precomputed latents and surface samples")
         try:
-            batched_surfaces = torch.stack(surface_samples)
+            batched_shape_latents = torch.stack(shape_latents) if shape_latents else None
+            batched_surfaces = torch.stack(surface_samples) if surface_samples else None
         except RuntimeError as error:
-            raise TrainingTargetError("surface samples must have the same point count") from error
+            raise TrainingTargetError("shape sources must have matching per-example shapes") from error
         return Hunyuan3DShapeBatch(
             images=torch.stack(images),
+            shape_latents=batched_shape_latents,
             surface_samples=batched_surfaces,
         )
 
@@ -129,10 +169,19 @@ class Hunyuan3DShapeFlowMatchingRecipe(TrainingRecipe3D[Hunyuan3DImageToShapePip
             raise TrainingTargetError("target must be the exact Hunyuan3D image-to-shape pipeline")
         if type(self.target.denoiser) is not Hunyuan3DShapeDiTModel:
             raise TrainingTargetError("target denoiser must be Hunyuan3DShapeDiTModel")
-        if any(parameter.requires_grad for parameter in self.target.vae.parameters()):
-            raise TrainingTargetError("the Hunyuan shape VAE must remain frozen")
-        if any(parameter.requires_grad for parameter in self.target.conditioner.parameters()):
-            raise TrainingTargetError("the Hunyuan DINO conditioner must remain frozen")
+        if type(self.target.vae) is not Hunyuan3DShapeVAE:
+            raise TrainingTargetError("target VAE must be Hunyuan3DShapeVAE")
+        if type(self.target.conditioner) is not Hunyuan3DDinov2Conditioner:
+            raise TrainingTargetError("target conditioner must be Hunyuan3DDinov2Conditioner")
+        if type(self.target.scheduler) is not Hunyuan3DFlowMatchEulerDiscreteScheduler:
+            raise TrainingTargetError("target scheduler must be Hunyuan3DFlowMatchEulerDiscreteScheduler")
+        if (
+            self.target.denoiser.config.input_size != self.target.vae.config.num_latents
+            or self.target.denoiser.config.in_channels != self.target.vae.config.embed_dim
+            or self.target.denoiser.config.context_dim != self.target.conditioner.model.config.hidden_size
+            or self.target.denoiser.config.text_len != self.target.conditioner.num_patches
+        ):
+            raise TrainingTargetError("target component configurations do not satisfy the Hunyuan shape contract")
 
     def compute_loss(self, batch: Hunyuan3DShapeBatch) -> TrainingStep3DOutput:
         if type(batch) is not Hunyuan3DShapeBatch:
@@ -183,9 +232,27 @@ class Hunyuan3DShapeFlowMatchingRecipe(TrainingRecipe3D[Hunyuan3DImageToShapePip
             },
         )
 
+    def load_weights(
+        self,
+        save_directory: str | Path,
+        strategy: FineTuneStrategy3D,
+        components: Mapping[str, nn.Module],
+    ) -> None:
+        if type(strategy) is not FullFineTune or strategy.components != ("denoiser",):
+            raise TrainingCheckpointError("Hunyuan3D checkpoint resume supports only full denoiser fine-tuning")
+        denoiser = components.get("denoiser")
+        if type(denoiser) is not Hunyuan3DShapeDiTModel:
+            raise TrainingCheckpointError("Hunyuan3D checkpoint denoiser has the wrong exact type")
+        loaded = Hunyuan3DShapeDiTModel.from_pretrained(
+            Path(save_directory) / "denoiser",
+            local_files_only=True,
+        )
+        denoiser.load_state_dict(loaded.state_dict(), strict=True)
+
 
 __all__ = [
     "HUNYUAN3D_DENOISER_POLICY",
     "Hunyuan3DShapeBatch",
+    "Hunyuan3DShapeExample",
     "Hunyuan3DShapeFlowMatchingRecipe",
 ]

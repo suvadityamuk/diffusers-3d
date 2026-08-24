@@ -15,7 +15,7 @@ from torch import nn
 from torch.optim import AdamW, Optimizer
 from torch.utils.data import DataLoader
 
-from ..data import Object3DDataset, Object3DExample
+from ..data import Object3DDataset
 from .exceptions import (
     TrainableParameterError,
     TrainingCheckpointError,
@@ -104,7 +104,7 @@ class Object3DTrainer:
     def __init__(
         self,
         recipe: TrainingRecipe3D,
-        dataset: Object3DDataset,
+        dataset: Object3DDataset[object],
         strategy: FineTuneStrategy3D,
         config: TrainingConfig3D,
     ) -> None:
@@ -383,9 +383,11 @@ class Object3DTrainer:
             generator = torch.Generator()
             generator.manual_seed(self.config.seed)
 
-            def collate_examples(examples: Sequence[Object3DExample]) -> object:
-                if any(type(example) is not Object3DExample for example in examples):
-                    raise TrainingConfigurationError("dataset items must be exact Object3DExample values")
+            def collate_examples(examples: Sequence[object]) -> object:
+                if any(type(example) is not registration.example_type for example in examples):
+                    raise TrainingConfigurationError(
+                        f"dataset items must be exact {registration.example_type.__name__} values"
+                    )
                 for example in examples:
                     example.validate()
                 batch = self.recipe.collate(tuple(examples))
@@ -457,6 +459,7 @@ class Object3DTrainer:
             self._trainable_parameter_names = trainable_parameter_names
             self._manifest = TrainingManifest3D.create(
                 target_type=registration.target_type,
+                example_type=registration.example_type,
                 family_id=registration.family_id,
                 recipe_id=registration.recipe_id,
                 recipe_version=registration.recipe_version,

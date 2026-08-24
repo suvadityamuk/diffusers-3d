@@ -42,9 +42,19 @@ objective:
 `x0 ~ N(0, I)`, `t ~ Uniform(0, 1)`,
 `x_t = t*x1 + (1-t)*x0`, target velocity `x1-x0`, and mean squared error.
 
-The DINO conditioner and VAE are always frozen. Full-denoiser fine-tuning is
-registered. LoRA is not registered because upstream Hunyuan3D-2.1 does not
-publish LoRA target evidence. Tests use precomputed shape latents.
+`Hunyuan3DShapeExample` is the recipe-owned exact dataset item contract and
+contains an `ImageCondition` plus exactly one of precomputed shape latents or
+surface samples. Recipe construction does not mutate the target. After exact
+registration validation, `Object3DTrainer.prepare()` freezes the complete
+pipeline and unfreezes only the policy-approved denoiser parameters.
+Full-denoiser fine-tuning is registered. LoRA is not registered because
+upstream Hunyuan3D-2.1 does not publish LoRA target evidence. Tests use
+precomputed shape latents.
+
+Tiny CPU evidence covers pinned-reference denoiser forward and selected
+backward gradients, ShapeVAE decode/field values, a composed DINO-token /
+denoising / decode-field path, one full trainer step with exact trainable and
+optimizer parameter sets, and exact package checkpoint weight restoration.
 
 ## Explicit limitations
 
@@ -54,9 +64,11 @@ publish LoRA target evidence. Tests use precomputed shape latents.
 - FlashVDM, hierarchical volume decoding, DISO/DMC extraction, dual/multiview
   conditioning, and texture generation are unsupported.
 - Core mesh output does not import or return `trimesh`.
-- CI exercises tiny CPU configurations without downloads. Full official
-  checkpoint loading, production-resolution GPU output parity, quality metrics,
-  and end-to-end GPU parity were not run here and are not claimed.
+- CI exercises tiny CPU configurations without downloads. The composed parity
+  test stops at scalar-field logits and does not establish official-checkpoint
+  mesh quality. Full official checkpoint loading, production-resolution GPU
+  output parity, quality metrics, and end-to-end GPU parity were not run here
+  and are not claimed.
 
 Install the mesh backend and converter dependency with:
 

@@ -63,7 +63,6 @@ class Hunyuan3DDinov2Conditioner(Object3DModel):
             raise ValueError("image_size must be divisible by the DINOv2 patch size")
 
         self.model = Dinov2Model(config)
-        self.model.requires_grad_(False)
         self.model.eval()
         self.image_size = image_size
         self.use_cls_token = use_cls_token

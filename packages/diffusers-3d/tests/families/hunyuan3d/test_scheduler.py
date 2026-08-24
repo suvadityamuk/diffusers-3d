@@ -5,7 +5,7 @@ import torch
 from diffusers_3d import Hunyuan3DFlowMatchEulerDiscreteScheduler
 
 
-def test_reference_sigma_and_euler_math(tmp_path):
+def test_reference_sigma_and_euler_math():
     scheduler = Hunyuan3DFlowMatchEulerDiscreteScheduler(num_train_timesteps=1000)
     scheduler.set_timesteps(3)
     torch.testing.assert_close(scheduler.timesteps, torch.tensor([0.0, 500.0, 1000.0]))
@@ -20,7 +20,19 @@ def test_reference_sigma_and_euler_math(tmp_path):
     torch.testing.assert_close(second, sample + velocity)
     torch.testing.assert_close(third, second)
 
+
+def test_scheduler_official_config_roundtrip(tmp_path):
+    official_config = {
+        "num_train_timesteps": 1000,
+        "shift": 1.0,
+        "use_dynamic_shifting": False,
+    }
+    scheduler = Hunyuan3DFlowMatchEulerDiscreteScheduler.from_config(official_config)
     scheduler.save_pretrained(tmp_path)
     loaded = Hunyuan3DFlowMatchEulerDiscreteScheduler.from_pretrained(tmp_path)
+    assert loaded.config.num_train_timesteps == official_config["num_train_timesteps"]
+    assert loaded.config.shift == official_config["shift"]
+    assert loaded.config.use_dynamic_shifting is official_config["use_dynamic_shifting"]
+    scheduler.set_timesteps(3)
     loaded.set_timesteps(3)
     torch.testing.assert_close(loaded.sigmas, scheduler.sigmas)

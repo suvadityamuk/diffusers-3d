@@ -20,6 +20,7 @@ __all__ = [
     "Hunyuan3DFlowMatchEulerDiscreteScheduler",
     "Hunyuan3DImageToShapePipeline",
     "Hunyuan3DShapeBatch",
+    "Hunyuan3DShapeExample",
     "Hunyuan3DShapeDiTModel",
     "Hunyuan3DShapeDiTOutput",
     "Hunyuan3DShapeFieldOutput",
