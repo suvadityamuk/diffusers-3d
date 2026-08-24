@@ -190,7 +190,9 @@ DEFAULT_BACKEND_SPECS = (
             "`--no-build-isolation`"
         ),
         tested_build="Source build coupled to pinned CuMesh and FlexGEMM builds",
-        source_url="https://github.com/microsoft/TRELLIS.2/tree/main/o-voxel",
+        source_url="https://github.com/microsoft/TRELLIS.2.git",
+        source_revision="75fbf0183001ed9876c8dbb35de6b68552ee08bd",
+        requires_source_provenance=True,
     ),
     BackendSpec(
         name="nvdiffrast",

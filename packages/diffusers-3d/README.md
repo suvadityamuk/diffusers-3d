@@ -17,10 +17,11 @@ schema version `2`. Model integrations and optional compiled backends remain cap
 
 The code release gate requires all of the following before publication:
 
-- [x] Production execution and training registries contain only reviewed Hunyuan3D classes and are immutable.
+- [x] Production execution and training registries contain only reviewed Hunyuan3D, TRELLIS, and TRELLIS.2 classes
+  and are immutable.
 - [x] Pre-release-only scaffold code and tests are absent from source and built packages.
-- [x] Tiny Hunyuan3D model, pipeline, auto-loading, training, and checkpoint round trips pass.
-- [x] The Hunyuan3D integration manifest validates with only its expected restricted-license warnings.
+- [x] Tiny Hunyuan3D, TRELLIS, and TRELLIS.2 model, pipeline, auto-loading, training, and checkpoint round trips pass.
+- [x] Every reviewed family schema-v2 manifest validates with only its declared license/backend warnings.
 - [x] Source and unpacked wheel scans pass with the default release checker.
 
 This checklist covers code readiness only. Selecting a final version and publishing a release are separate maintainer
@@ -34,6 +35,18 @@ actions; the package remains at its development version until then.
   production-resolution GPU parity are not claimed.
 - Hunyuan-derived code and converted checkpoints are governed by the restricted Tencent Hunyuan 3D 2.1 Community
   License Agreement, not the package's Apache-2.0 glue-code license.
+
+## Current TRELLIS.2 limitations
+
+- The reviewed contract ends at CPU-capable sparse-structure output. Tiny SLAT and O-Voxel stages are experimental.
+- No full 4B checkpoint, 1024 cascade, production GPU quality, compiled O-Voxel mesh/render, or PBR GLB run has been
+  performed.
+- O-Voxel schema/uint8 packing and deterministic Morton-ordered NPZ are pure package code. `.vxz`, native dual-grid
+  conversion, and voxel rendering require a separately compiled, pinned O-Voxel runtime.
+- FlexGEMM and CuMesh are MIT source builds with explicit revision/build attestations. Upstream TRELLIS.2 does not
+  pin their commits.
+- Production DINOv3 weights are gated under the separate DINOv3 License. nvdiffrast is a restricted research
+  dependency and requires explicit acknowledgement; neither is redistributed or selected silently.
 
 ## Design principles
 

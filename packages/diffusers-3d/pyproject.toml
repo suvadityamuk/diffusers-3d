@@ -24,6 +24,7 @@ dependencies = [
     "accelerate",
     "diffusers>=0.40.0.dev0,<0.41",
     "huggingface-hub",
+    "numpy",
     "safetensors",
     "torch>=2.4",
     "transformers",
@@ -33,6 +34,7 @@ dependencies = [
 diffusers-3d-check-release = "diffusers_3d.contributions.removal:release_check_main"
 diffusers-3d-convert-hunyuan3d = "diffusers_3d.families.hunyuan3d.conversion:main"
 diffusers-3d-convert-trellis = "diffusers_3d.families.trellis.conversion:main"
+diffusers-3d-convert-trellis2 = "diffusers_3d.families.trellis2.conversion:main"
 diffusers-3d-validate = "diffusers_3d.contributions.cli:main"
 
 [project.optional-dependencies]
@@ -70,6 +72,10 @@ diffusers_3d = [
     "families/trellis/*.md",
     "families/trellis/LICENSE*",
     "families/trellis/NOTICE",
+    "families/trellis2/*.json",
+    "families/trellis2/*.md",
+    "families/trellis2/LICENSE*",
+    "families/trellis2/NOTICE",
 ]
 
 [tool.pytest.ini_options]

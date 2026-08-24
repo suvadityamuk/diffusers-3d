@@ -104,8 +104,10 @@ class OVoxelAsset(BaseOutput, TensorDataMixin):
     dual_grid_vertex_offsets: torch.Tensor | None = None
     dual_grid_topology: torch.Tensor | None = None
     intersection_data: torch.Tensor | None = None
+    split_weights: torch.Tensor | None = None
     opacity: torch.Tensor | None = None
     normals: torch.Tensor | None = None
+    emissive: torch.Tensor | None = None
     transform: torch.Tensor = field(default_factory=identity_transform)
     grid_transform: torch.Tensor = field(default_factory=identity_transform)
     coordinate_system: CoordinateSystem = CoordinateSystem.RIGHT_HANDED_Y_UP
@@ -155,11 +157,20 @@ class OVoxelAsset(BaseOutput, TensorDataMixin):
                 raise TensorShapeError("normals must have one row per active voxel")
             if bool((torch.linalg.vector_norm(self.normals.float(), dim=1) <= 1e-8).any()):
                 raise Object3DValidationError("normals must be non-zero")
+        if self.emissive is not None:
+            validate_tensor("emissive", self.emissive, rank=2, trailing_shape=(3,), floating=True)
+            if self.emissive.shape[0] != count:
+                raise TensorShapeError("emissive must have one row per active voxel")
+            if bool(((self.emissive < 0) | (self.emissive > 1)).any()):
+                raise Object3DValidationError("emissive values must be in [0, 1]")
 
         has_offsets = self.dual_grid_vertex_offsets is not None
         has_topology = self.dual_grid_topology is not None
-        if has_offsets != has_topology:
-            raise Object3DValidationError("dual_grid_vertex_offsets and dual_grid_topology must be provided together")
+        if has_offsets != has_topology and self.intersection_data is None:
+            raise Object3DValidationError(
+                "dual_grid_vertex_offsets and dual_grid_topology must be provided together unless "
+                "intersection_data supplies the O-Voxel connectivity"
+            )
         if not has_offsets and self.intersection_data is None:
             raise Object3DValidationError("dual-grid vertex offsets/topology or intersection_data must be provided")
 
@@ -194,9 +205,21 @@ class OVoxelAsset(BaseOutput, TensorDataMixin):
                 raise Object3DValidationError("dual_grid_topology contains a vertex index outside the valid range")
 
         if self.intersection_data is not None:
-            validate_tensor("intersection_data", self.intersection_data, floating=True)
+            validate_tensor("intersection_data", self.intersection_data)
             if self.intersection_data.ndim < 2 or self.intersection_data.shape[0] != count:
                 raise TensorShapeError("intersection_data must have shape (num_voxels, ...)")
+            if self.intersection_data.dtype is not torch.bool and self.intersection_data.is_floating_point():
+                if not bool(torch.isfinite(self.intersection_data).all()):
+                    raise Object3DValidationError("intersection_data must contain finite values")
+
+        if self.split_weights is not None:
+            validate_tensor("split_weights", self.split_weights, floating=True)
+            if self.split_weights.ndim not in (1, 2) or self.split_weights.shape[0] != count:
+                raise TensorShapeError("split_weights must contain one scalar value per active voxel")
+            if self.split_weights.ndim == 2 and self.split_weights.shape[1] != 1:
+                raise TensorShapeError("split_weights must have shape (num_voxels,) or (num_voxels, 1)")
+            if bool((self.split_weights < 0).any()):
+                raise Object3DValidationError("split_weights must be non-negative")
 
         validate_transform("transform", self.transform)
         validate_transform("grid_transform", self.grid_transform)

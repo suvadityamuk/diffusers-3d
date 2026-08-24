@@ -19,7 +19,7 @@ Trimesh I/O supports OBJ, PLY, GLB, and STL. The adapter rejects channels, trans
 that a requested format cannot preserve instead of silently dropping them. XAtlas remaps vertex-aligned channels
 through its returned vertex mapping and rejects alignment-ambiguous custom channels.
 
-## Planned accelerated and reference adapters
+## Accelerated and reference adapters
 
 - Geometry: CuMesh.
 - Surface extraction: permissive Kaolin/FlexiCubes.
@@ -27,6 +27,26 @@ through its returned vertex mapping and rejects alignment-ambiguous custom chann
 - Gaussian rendering: gsplat.
 - Native representations: O-Voxel conversion and codecs.
 - Exact reference rendering: nvdiffrast, nvdiffrec render utilities, diffoctreerast, and model-specific rasterizers.
+
+The TRELLIS.2 adapters intentionally expose only reviewed narrow API surfaces:
+
+- `FlexGemmBackend` delegates submanifold sparse convolution and 3D grid sampling. `CuMeshBackend` delegates repair,
+  simplify, narrow-band remesh, UV unwrap, BVH construction, and unsigned distance. Both require an audited source
+  revision and a build ID, and the loaded wrapper must attest to both. TRELLIS.2's setup script clones these MIT
+  projects without commit pins, so the package does not invent a fixed upstream revision.
+- `OVoxelBackend` provides pure tensor schema conversion, official uint8 packing, and deterministic Morton-ordered
+  NPZ without loading an extension. `.vxz`, flexible-dual-grid mesh extraction, and voxel rendering are separate
+  native capabilities delegated to the O-Voxel API from pinned TRELLIS.2 revision
+  `75fbf0183001ed9876c8dbb35de6b68552ee08bd`. `.vxz` does not contain grid resolution metadata, so callers must
+  supply it when reading.
+- The pinned `o_voxel` top-level package eagerly imports its nvdiffrast-dependent postprocess module. Native O-Voxel
+  loading therefore requires explicit nvdiffrast license acknowledgement even for codec/conversion members. Pure
+  schema and NPZ paths remain CPU-safe and never perform that import.
+- `Trellis2PBRPostprocessFacade` gates the combined O-Voxel, CuMesh, FlexGEMM, and nvdiffrast path. It never runs
+  during ordinary pipeline output or backend discovery.
+
+These native TRELLIS.2 paths are adapter/API tested with CPU fakes. A production CUDA mesh, render, or GLB quality
+run has not been performed and is not claimed.
 
 `utils3d` means the EasternJournalist repository used by TRELLIS, not the unrelated PyPI distribution. It must be
 installed from an audited pinned revision.
