@@ -22,6 +22,10 @@ def _qualified_name(value: type[object]) -> str:
     return f"{value.__module__}.{value.__qualname__}"
 
 
+def _is_hunyuan_type(value: type[object]) -> bool:
+    return value.__module__.startswith("diffusers_3d.families.hunyuan3d.")
+
+
 def test_hunyuan_manifest_is_valid_with_expected_restricted_license_warnings():
     manifest = IntegrationManifest3D.load(FAMILY_ROOT / "diffusers_3d_integration.json")
     report = validate_integration_manifest(manifest)
@@ -47,9 +51,19 @@ def test_manifest_matches_exact_production_registrations_and_evidence():
     assert _MODEL_REGISTRY.frozen
     assert _PIPELINE_REGISTRY.frozen
     assert _TRAINING_RECIPE_REGISTRY.frozen
-    registered_model_types = {registration.model_class for registration in _MODEL_REGISTRY}
-    registered_pipeline_types = {registration.pipeline_class for registration in _PIPELINE_REGISTRY}
-    registered_recipe_types = {registration.recipe_type for registration in _TRAINING_RECIPE_REGISTRY}
+    registered_model_types = {
+        registration.model_class for registration in _MODEL_REGISTRY if _is_hunyuan_type(registration.model_class)
+    }
+    registered_pipeline_types = {
+        registration.pipeline_class
+        for registration in _PIPELINE_REGISTRY
+        if _is_hunyuan_type(registration.pipeline_class)
+    }
+    registered_recipe_types = {
+        registration.recipe_type
+        for registration in _TRAINING_RECIPE_REGISTRY
+        if _is_hunyuan_type(registration.recipe_type)
+    }
     assert registered_model_types == {
         Hunyuan3DDinov2Conditioner,
         Hunyuan3DShapeDiTModel,
@@ -57,8 +71,16 @@ def test_manifest_matches_exact_production_registrations_and_evidence():
     }
     assert registered_pipeline_types == {Hunyuan3DImageToShapePipeline}
     assert registered_recipe_types == {Hunyuan3DShapeFlowMatchingRecipe}
-    registered_model_classes = {registration.metadata.model_class for registration in _MODEL_REGISTRY}
-    registered_pipeline_classes = {registration.metadata.pipeline_class for registration in _PIPELINE_REGISTRY}
+    registered_model_classes = {
+        registration.metadata.model_class
+        for registration in _MODEL_REGISTRY
+        if _is_hunyuan_type(registration.model_class)
+    }
+    registered_pipeline_classes = {
+        registration.metadata.pipeline_class
+        for registration in _PIPELINE_REGISTRY
+        if _is_hunyuan_type(registration.pipeline_class)
+    }
     assert registered_model_classes.issubset(component_classes)
     assert registered_pipeline_classes == {_qualified_name(Hunyuan3DImageToShapePipeline)}
     assert (

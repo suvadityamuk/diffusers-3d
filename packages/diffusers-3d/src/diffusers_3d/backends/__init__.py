@@ -12,6 +12,8 @@ from .exceptions import (
     BackendPolicyError,
     BackendUnavailableError,
 )
+from .gsplat import GsplatBackend
+from .kaolin_flexicubes import KaolinFlexiCubesBackend
 from .protocols import (
     FieldRenderingBackend,
     GaussianRasterizerBackend,
@@ -24,7 +26,14 @@ from .protocols import (
     TensorMap,
 )
 from .registry import BackendRegistry
+from .research import (
+    DiffoctreerastBackendFacade,
+    MipGaussianBackendFacade,
+    NvdiffrastBackendFacade,
+    ResearchOnlyBackendFacade,
+)
 from .scikit_image import ScikitImageBackend
+from .spconv import SPCONV_BATCH_INDICES, SpconvBackend
 from .trimesh import TrimeshBackend
 from .types import (
     BackendCapability,
@@ -51,17 +60,25 @@ __all__ = [
     "BackendStatus",
     "BackendSupportLevel",
     "BackendUnavailableError",
+    "DiffoctreerastBackendFacade",
     "FieldRenderingBackend",
     "GaussianRasterizerBackend",
+    "GsplatBackend",
     "GeometryProcessingBackend",
     "MeshRasterizerBackend",
+    "MipGaussianBackendFacade",
     "NativeRepresentationBackend",
+    "NvdiffrastBackendFacade",
     "PBRBakingBackend",
+    "ResearchOnlyBackendFacade",
+    "SPCONV_BATCH_INDICES",
     "ScikitImageBackend",
     "SparseComputeBackend",
+    "SpconvBackend",
     "SurfaceExtractionBackend",
     "TensorMap",
     "TrimeshBackend",
+    "KaolinFlexiCubesBackend",
     "XAtlasBackend",
     "create_default_backend_registry",
     "discover_backend",

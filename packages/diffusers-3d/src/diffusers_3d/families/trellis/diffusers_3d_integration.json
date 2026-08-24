@@ -1,0 +1,311 @@
+{
+  "backends": [
+    {
+      "capabilities": [
+        "field-rendering",
+        "gaussian-rasterization"
+      ],
+      "distribution": "diffoctreerast",
+      "install_hint": "Research-only status facade; diffusers-3d never imports or selects this renderer implicitly.",
+      "license_class": "restricted",
+      "license_identifier": "Gaussian-Splatting-Research-License",
+      "name": "diffoctreerast",
+      "required": false,
+      "source": null,
+      "support_level": "research_only",
+      "version": null
+    },
+    {
+      "capabilities": [
+        "gaussian-rasterization"
+      ],
+      "distribution": "gsplat",
+      "install_hint": "Install an official gsplat build matching the active PyTorch and CUDA runtime.",
+      "license_class": "permissive",
+      "license_identifier": "Apache-2.0",
+      "name": "gsplat",
+      "required": false,
+      "source": null,
+      "support_level": "accelerated",
+      "version": null
+    },
+    {
+      "capabilities": [
+        "surface-extraction"
+      ],
+      "distribution": "kaolin",
+      "install_hint": "Install an official Kaolin build and use only kaolin.ops.conversions.FlexiCubes; kaolin.non_commercial is rejected.",
+      "license_class": "permissive",
+      "license_identifier": "Apache-2.0",
+      "name": "kaolin",
+      "required": false,
+      "source": null,
+      "support_level": "accelerated",
+      "version": null
+    },
+    {
+      "capabilities": [
+        "gaussian-rasterization"
+      ],
+      "distribution": "diff_gaussian_rasterization",
+      "install_hint": "Research-only status facade for the mip-splatting renderer; diffusers-3d never imports or selects it implicitly.",
+      "license_class": "restricted",
+      "license_identifier": "Gaussian-Splatting-Research-License",
+      "name": "mip_gaussian",
+      "required": false,
+      "source": null,
+      "support_level": "research_only",
+      "version": null
+    },
+    {
+      "capabilities": [
+        "mesh-rasterization"
+      ],
+      "distribution": "nvdiffrast",
+      "install_hint": "Research-only status facade; explicit license acknowledgement is required and diffusers-3d never imports it.",
+      "license_class": "restricted",
+      "license_identifier": "NVIDIA-Source-Code-License-NC",
+      "name": "nvdiffrast",
+      "required": false,
+      "source": null,
+      "support_level": "research_only",
+      "version": "0.4.0"
+    },
+    {
+      "capabilities": [
+        "sparse-compute"
+      ],
+      "distribution": "spconv",
+      "install_hint": "Install the official spconv wheel whose suffix matches the environment CUDA runtime.",
+      "license_class": "permissive",
+      "license_identifier": "Apache-2.0",
+      "name": "spconv",
+      "required": false,
+      "source": null,
+      "support_level": "accelerated",
+      "version": null
+    },
+    {
+      "capabilities": [
+        "tensor-compute"
+      ],
+      "distribution": "torch",
+      "install_hint": "PyTorch is a core diffusers-3d dependency.",
+      "license_class": "permissive",
+      "license_identifier": "BSD-3-Clause",
+      "name": "torch",
+      "required": true,
+      "source": null,
+      "support_level": "portable",
+      "version": "2.4"
+    },
+    {
+      "capabilities": [
+        "image-encoding"
+      ],
+      "distribution": "transformers",
+      "install_hint": "Transformers is a core diffusers-3d dependency.",
+      "license_class": "permissive",
+      "license_identifier": "Apache-2.0",
+      "name": "transformers",
+      "required": true,
+      "source": null,
+      "support_level": "portable",
+      "version": null
+    }
+  ],
+  "components": [
+    {
+      "checkpoint_conversion": {
+        "converter": "diffusers_3d.families.trellis.conversion.convert_trellis_checkpoint",
+        "source_format": "local-diffusers-dinov2-conditioner",
+        "target_format": "diffusers-safetensors",
+        "test": "tests/families/trellis/test_conversion.py::test_synthetic_portable_component_conversion_and_auto_load"
+      },
+      "class_name": "diffusers_3d.families.trellis.conditioner.TrellisDinov2Conditioner",
+      "parity": [
+        {
+          "atol": 0.0,
+          "kind": "inference",
+          "passed": true,
+          "reference": "Released ImageNet normalization, class/register/patch token order, x_prenorm encoder output, and unparameterized final layer normalization equations on a tiny CPU model.",
+          "rtol": 0.0,
+          "test": "tests/families/trellis/test_conditioner.py::test_trellis_dinov2_normalization_register_tokens_and_save_load"
+        }
+      ],
+      "role": "conditioner"
+    },
+    {
+      "checkpoint_conversion": {
+        "converter": "diffusers_3d.families.trellis.conversion.convert_trellis_checkpoint",
+        "source_format": "upstream-component-json-safetensors",
+        "target_format": "diffusers-pipeline",
+        "test": "tests/families/trellis/test_conversion.py::test_synthetic_portable_component_conversion_and_auto_load"
+      },
+      "class_name": "diffusers_3d.families.trellis.pipeline.TrellisImageTo3DPipeline",
+      "parity": [
+        {
+          "atol": 0.0,
+          "kind": "inference",
+          "passed": true,
+          "reference": "Deterministic tiny CPU composition of conditioning, the released two-step Flow Euler equations, and sparse-structure occupancy extraction; SLAT and rendering quality are excluded.",
+          "rtol": 0.0,
+          "test": "tests/families/trellis/test_pipeline.py::test_portable_sparse_structure_pipeline_is_deterministic"
+        }
+      ],
+      "role": "pipeline"
+    },
+    {
+      "checkpoint_conversion": {
+        "converter": "diffusers_3d.families.trellis.scheduler.TrellisFlowEulerScheduler.from_config",
+        "source_format": "upstream-flow-euler-config",
+        "target_format": "diffusers-scheduler-config",
+        "test": "tests/families/trellis/test_scheduler.py::test_scheduler_config_roundtrip"
+      },
+      "class_name": "diffusers_3d.families.trellis.scheduler.TrellisFlowEulerScheduler",
+      "parity": [
+        {
+          "atol": 0.0,
+          "kind": "inference",
+          "passed": true,
+          "reference": "Pinned upstream t=1 to t=0 rationally rescaled schedule, t*1000 model input, velocity-to-data, Euler update, and (1+w)*cond-w*uncond equations.",
+          "rtol": 0.0,
+          "test": "tests/families/trellis/test_scheduler.py::test_released_rescaled_schedule_guidance_and_euler_equations"
+        }
+      ],
+      "role": "scheduler"
+    },
+    {
+      "checkpoint_conversion": {
+        "converter": "diffusers_3d.families.trellis.conversion.convert_trellis_checkpoint",
+        "source_format": "upstream-component-json-safetensors",
+        "target_format": "diffusers-safetensors",
+        "test": "tests/families/trellis/test_conversion.py::test_synthetic_portable_component_conversion_and_auto_load"
+      },
+      "class_name": "diffusers_3d.families.trellis.decoders.TrellisSparseStructureDecoder",
+      "parity": [
+        {
+          "atol": 1e-06,
+          "kind": "inference",
+          "passed": true,
+          "reference": "Pinned upstream SparseStructureDecoder with identical tiny CPU float32 weights and dense latent input.",
+          "rtol": 1e-05,
+          "test": "tests/families/trellis/test_reference_parity.py::test_tiny_sparse_structure_components_match_pinned_reference"
+        }
+      ],
+      "role": "sparse_structure_decoder"
+    },
+    {
+      "checkpoint_conversion": {
+        "converter": "diffusers_3d.families.trellis.conversion.convert_trellis_checkpoint",
+        "source_format": "upstream-component-json-safetensors",
+        "target_format": "diffusers-safetensors",
+        "test": "tests/families/trellis/test_conversion.py::test_synthetic_portable_component_conversion_and_auto_load"
+      },
+      "class_name": "diffusers_3d.families.trellis.models.TrellisSparseStructureFlowModel",
+      "parity": [
+        {
+          "atol": 1e-06,
+          "kind": "inference",
+          "passed": true,
+          "reference": "Pinned upstream SparseStructureFlowModel with exact state names and identical tiny CPU float32 weights, timesteps, context, and dense latent input.",
+          "rtol": 1e-05,
+          "test": "tests/families/trellis/test_reference_parity.py::test_tiny_sparse_structure_components_match_pinned_reference"
+        }
+      ],
+      "role": "sparse_structure_flow_model"
+    }
+  ],
+  "integration_id": "trellis",
+  "level": "reviewed_package",
+  "licenses": {
+    "artifacts": [
+      {
+        "artifact": "converted-checkpoints",
+        "license": {
+          "classification": "permissive",
+          "identifier": "MIT",
+          "url": "https://github.com/microsoft/TRELLIS/blob/442aa1e1afb9014e80681d3bf604e8d728a86ee7/LICENSE"
+        }
+      },
+      {
+        "artifact": "package-glue-code",
+        "license": {
+          "classification": "permissive",
+          "identifier": "Apache-2.0",
+          "url": "https://www.apache.org/licenses/LICENSE-2.0"
+        }
+      },
+      {
+        "artifact": "trellis-derived-code",
+        "license": {
+          "classification": "permissive",
+          "identifier": "MIT",
+          "url": "https://github.com/microsoft/TRELLIS/blob/442aa1e1afb9014e80681d3bf604e8d728a86ee7/LICENSE"
+        }
+      }
+    ],
+    "model": {
+      "classification": "permissive",
+      "identifier": "MIT",
+      "url": "https://github.com/microsoft/TRELLIS/blob/442aa1e1afb9014e80681d3bf604e8d728a86ee7/LICENSE"
+    }
+  },
+  "schema": "diffusers-3d-integration",
+  "schema_version": 2,
+  "training": {
+    "backward_parity": {
+      "atol": 1e-06,
+      "kind": "backward",
+      "passed": true,
+      "reference": "Pinned upstream SparseStructureFlowModel input and selected attention-weight gradients with identical tiny CPU float32 state, inputs, target, and MSE loss.",
+      "rtol": 1e-05,
+      "test": "tests/families/trellis/test_reference_parity.py::test_tiny_sparse_structure_flow_backward_matches_pinned_reference"
+    },
+    "batch_class": "diffusers_3d.families.trellis.training.TrellisSparseStructureBatch",
+    "checkpoint_parity": {
+      "atol": 0.0,
+      "kind": "checkpoint",
+      "passed": true,
+      "reference": "Exact package full sparse-structure flow save/load restoration with a validated training checkpoint identity manifest.",
+      "rtol": 0.0,
+      "test": "tests/families/trellis/test_training.py::test_sparse_structure_recipe_registration_collation_and_full_trainer_checkpoint"
+    },
+    "components": [
+      "sparse_structure_flow_model"
+    ],
+    "example_class": "diffusers_3d.families.trellis.training.TrellisSparseStructureExample",
+    "objective_parity": {
+      "atol": 0.0,
+      "kind": "objective",
+      "passed": true,
+      "reference": "Released x_t=(1-t)x0+(sigma_min+(1-sigma_min)t)noise, target=(1-sigma_min)noise-x0, and model timestep t*1000 equations with deterministic tensors.",
+      "rtol": 0.0,
+      "test": "tests/families/trellis/test_training.py::test_released_sparse_structure_objective_and_frozen_components"
+    },
+    "recipe_class": "diffusers_3d.families.trellis.training.TrellisSparseStructureFlowRecipe",
+    "recipe_id": "trellis-sparse-structure-flow",
+    "recipe_version": "1.0",
+    "strategies": [
+      "full"
+    ],
+    "target_class": "diffusers_3d.families.trellis.pipeline.TrellisImageTo3DPipeline",
+    "trainer_registration": "diffusers_3d.families.trellis.registrations.trellis_training_registrations"
+  },
+  "upstream": {
+    "repository": "https://github.com/microsoft/TRELLIS",
+    "revision": "442aa1e1afb9014e80681d3bf604e8d728a86ee7"
+  },
+  "workflow": {
+    "input_representations": [
+      "image"
+    ],
+    "output_representations": [
+      "sparse-structure"
+    ],
+    "task_ids": [
+      "image-to-3d"
+    ],
+    "workflow": "standard-pipeline"
+  }
+}
