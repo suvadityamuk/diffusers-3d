@@ -1,0 +1,21 @@
+Hunyuan3D-2.1 integration notice
+
+Portions of the model architecture, shape decoder, scheduler behavior, pipeline
+behavior, and training objective in this directory are modified from:
+
+  Tencent-Hunyuan/Hunyuan3D-2.1
+  https://github.com/Tencent-Hunyuan/Hunyuan3D-2.1
+  revision 82920d643c0dc2f7bfd7255f45f62d386edfe60c
+
+Those portions and converted model artifacts are governed by the accompanying
+Tencent Hunyuan 3D 2.1 Community License Agreement, not by the Apache-2.0
+license of independently written diffusers-3d package glue.
+
+Required upstream notice:
+
+“Tencent Hunyuan 3D 2.1 is licensed under the Tencent Hunyuan 3D 2.1 Community
+License Agreement, Copyright © 2025 Tencent. All Rights Reserved. The trademark
+rights of “Tencent Hunyuan” are owned by Tencent or its affiliate.”
+
+All ported files carry prominent modification notices. No affiliation,
+sponsorship, or endorsement by Tencent is claimed.

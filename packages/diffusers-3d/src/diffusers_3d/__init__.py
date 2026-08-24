@@ -1,5 +1,6 @@
 """Object-native 3D generation and fine-tuning built on Diffusers."""
 
+from . import families as _families
 from ._version import __version__
 from .backends import (
     BACKEND_REGISTRY,
@@ -150,6 +151,15 @@ from .training import (
     trainable_parameter_hash,
 )
 
+
+def __getattr__(name: str):
+    if name not in _families.__all__:
+        raise AttributeError(name)
+    value = getattr(_families, name)
+    globals()[name] = value
+    return value
+
+
 __all__ = [
     "BACKEND_REGISTRY",
     "DEFAULT_FORBIDDEN_MARKER",
@@ -199,7 +209,19 @@ __all__ = [
     "GaussianSplatAsset",
     "GaussianRasterizerBackend",
     "GeometryProcessingBackend",
+    "HUNYUAN3D_DENOISER_POLICY",
+    "Hunyuan3DConditionerOutput",
+    "Hunyuan3DDinov2Conditioner",
+    "Hunyuan3DFlowMatchEulerDiscreteScheduler",
+    "Hunyuan3DImageToShapePipeline",
     "HunyuanImageProcessor",
+    "Hunyuan3DShapeBatch",
+    "Hunyuan3DShapeDiTModel",
+    "Hunyuan3DShapeDiTOutput",
+    "Hunyuan3DShapeFieldOutput",
+    "Hunyuan3DShapeFlowMatchingRecipe",
+    "Hunyuan3DShapeVAE",
+    "Hunyuan3DShapeVAEOutput",
     "ImageCondition",
     "IntegrationManifest3D",
     "IntegrationManifestError",

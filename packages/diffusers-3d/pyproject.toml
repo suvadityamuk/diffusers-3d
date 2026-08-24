@@ -31,6 +31,7 @@ dependencies = [
 
 [project.scripts]
 diffusers-3d-check-release = "diffusers_3d.contributions.removal:release_check_main"
+diffusers-3d-convert-hunyuan3d = "diffusers_3d.families.hunyuan3d.conversion:main"
 diffusers-3d-validate = "diffusers_3d.contributions.cli:main"
 
 [project.optional-dependencies]
@@ -40,6 +41,10 @@ portable = [
     "xatlas",
 ]
 gaussian = ["gsplat"]
+hunyuan3d = [
+    "PyYAML",
+    "scikit-image",
+]
 training = ["peft"]
 test = [
     "pytest",
@@ -53,7 +58,14 @@ Repository = "https://github.com/suvadityamuk/diffusers-3d"
 where = ["src"]
 
 [tool.setuptools.package-data]
-diffusers_3d = ["py.typed", "schemas/*.json"]
+diffusers_3d = [
+    "py.typed",
+    "schemas/*.json",
+    "families/hunyuan3d/*.json",
+    "families/hunyuan3d/*.md",
+    "families/hunyuan3d/LICENSE*",
+    "families/hunyuan3d/NOTICE",
+]
 
 [tool.pytest.ini_options]
 addopts = "-ra"

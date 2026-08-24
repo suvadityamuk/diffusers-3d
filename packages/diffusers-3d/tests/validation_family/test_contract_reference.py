@@ -11,6 +11,11 @@ import diffusers_3d
 from diffusers_3d import (
     AutoPipelineForImageTo3D,
     FullFineTune,
+    Hunyuan3DDinov2Conditioner,
+    Hunyuan3DImageToShapePipeline,
+    Hunyuan3DShapeDiTModel,
+    Hunyuan3DShapeFlowMatchingRecipe,
+    Hunyuan3DShapeVAE,
     ImageCondition,
     LoRAFineTune,
     MeshAsset,
@@ -146,6 +151,17 @@ def test_internal_registries_are_exact_populated_and_immutable():
     assert {registration.model_class for registration in _MODEL_REGISTRY} == {
         ContractReferenceDenoiser,
         ContractReferenceMeshDecoder,
+        Hunyuan3DDinov2Conditioner,
+        Hunyuan3DShapeDiTModel,
+        Hunyuan3DShapeVAE,
+    }
+    assert {registration.pipeline_class for registration in _PIPELINE_REGISTRY} == {
+        ContractReferencePipeline,
+        Hunyuan3DImageToShapePipeline,
+    }
+    assert {registration.recipe_type for registration in _TRAINING_RECIPE_REGISTRY} == {
+        ContractReferenceRecipe,
+        Hunyuan3DShapeFlowMatchingRecipe,
     }
     assert (
         _PIPELINE_REGISTRY.resolve(

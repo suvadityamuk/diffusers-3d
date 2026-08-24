@@ -1,0 +1,228 @@
+{
+  "backends": [
+    {
+      "capabilities": [
+        "surface-extraction"
+      ],
+      "distribution": "scikit-image",
+      "install_hint": "Install the Hunyuan integration with `pip install \"diffusers-3d[hunyuan3d]\"`.",
+      "license_class": "permissive",
+      "license_identifier": "BSD-3-Clause",
+      "name": "scikit-image",
+      "required": true,
+      "source": null,
+      "support_level": "portable",
+      "version": null
+    },
+    {
+      "capabilities": [
+        "tensor-compute"
+      ],
+      "distribution": "torch",
+      "install_hint": "PyTorch is a core diffusers-3d dependency.",
+      "license_class": "permissive",
+      "license_identifier": "BSD-3-Clause",
+      "name": "torch",
+      "required": true,
+      "source": null,
+      "support_level": "portable",
+      "version": "2.4"
+    },
+    {
+      "capabilities": [
+        "image-encoding"
+      ],
+      "distribution": "transformers",
+      "install_hint": "Transformers is a core diffusers-3d dependency.",
+      "license_class": "permissive",
+      "license_identifier": "Apache-2.0",
+      "name": "transformers",
+      "required": true,
+      "source": null,
+      "support_level": "portable",
+      "version": null
+    }
+  ],
+  "components": [
+    {
+      "checkpoint_conversion": {
+        "converter": "diffusers_3d.families.hunyuan3d.conversion.convert_hunyuan3d_checkpoint",
+        "source_format": "official-aggregate-checkpoint",
+        "target_format": "diffusers-safetensors",
+        "test": "tests/families/hunyuan3d/test_conversion.py::test_synthetic_aggregate_conversion"
+      },
+      "class_name": "diffusers_3d.families.hunyuan3d.conditioner.Hunyuan3DDinov2Conditioner",
+      "parity": [
+        {
+          "atol": 0.0,
+          "kind": "checkpoint",
+          "passed": true,
+          "reference": "Deterministic mapping from official main_image_encoder.model keys.",
+          "rtol": 0.0,
+          "test": "tests/families/hunyuan3d/test_conversion.py::test_synthetic_aggregate_conversion"
+        }
+      ],
+      "role": "conditioner"
+    },
+    {
+      "checkpoint_conversion": {
+        "converter": "diffusers_3d.families.hunyuan3d.conversion.convert_hunyuan3d_checkpoint",
+        "source_format": "official-aggregate-checkpoint",
+        "target_format": "diffusers-safetensors",
+        "test": "tests/families/hunyuan3d/test_conversion.py::test_synthetic_aggregate_conversion"
+      },
+      "class_name": "diffusers_3d.families.hunyuan3d.models.Hunyuan3DShapeDiTModel",
+      "parity": [
+        {
+          "atol": 1e-06,
+          "kind": "inference",
+          "passed": true,
+          "reference": "Pinned upstream HunYuanDiTPlain with identical tiny CPU float32 weights and inputs.",
+          "rtol": 1e-05,
+          "test": "tests/families/hunyuan3d/test_reference_parity.py::test_tiny_denoiser_matches_pinned_reference"
+        }
+      ],
+      "role": "denoiser"
+    },
+    {
+      "checkpoint_conversion": {
+        "converter": "diffusers_3d.families.hunyuan3d.conversion.convert_hunyuan3d_checkpoint",
+        "source_format": "official-aggregate-checkpoint",
+        "target_format": "diffusers-safetensors",
+        "test": "tests/families/hunyuan3d/test_conversion.py::test_synthetic_aggregate_conversion"
+      },
+      "class_name": "diffusers_3d.families.hunyuan3d.pipeline.Hunyuan3DImageToShapePipeline",
+      "parity": [
+        {
+          "atol": null,
+          "kind": "inference",
+          "passed": false,
+          "reference": "Full official checkpoint/GPU end-to-end parity was not run in this CPU integration environment.",
+          "rtol": null,
+          "test": "tests/families/hunyuan3d/test_pipeline.py::test_tiny_pipeline_is_deterministic"
+        }
+      ],
+      "role": "pipeline"
+    },
+    {
+      "checkpoint_conversion": null,
+      "class_name": "diffusers_3d.families.hunyuan3d.scheduler.Hunyuan3DFlowMatchEulerDiscreteScheduler",
+      "parity": [
+        {
+          "atol": 0.0,
+          "kind": "inference",
+          "passed": true,
+          "reference": "Pinned upstream ascending sigma schedule and Euler update equations.",
+          "rtol": 0.0,
+          "test": "tests/families/hunyuan3d/test_scheduler.py::test_reference_sigma_and_euler_math"
+        }
+      ],
+      "role": "scheduler"
+    },
+    {
+      "checkpoint_conversion": {
+        "converter": "diffusers_3d.families.hunyuan3d.conversion.convert_hunyuan3d_checkpoint",
+        "source_format": "official-aggregate-checkpoint",
+        "target_format": "diffusers-safetensors",
+        "test": "tests/families/hunyuan3d/test_conversion.py::test_synthetic_aggregate_conversion"
+      },
+      "class_name": "diffusers_3d.families.hunyuan3d.vae.Hunyuan3DShapeVAE",
+      "parity": [
+        {
+          "atol": 0.0,
+          "kind": "checkpoint",
+          "passed": true,
+          "reference": "Pinned upstream post_kl, latent transformer, and geometric decoder key/shape mapping; encoder keys are explicitly excluded.",
+          "rtol": 0.0,
+          "test": "tests/families/hunyuan3d/test_reference_parity.py::test_tiny_vae_decoder_matches_pinned_reference"
+        },
+        {
+          "atol": 1e-06,
+          "kind": "inference",
+          "passed": true,
+          "reference": "Pinned upstream ShapeVAE decode and geometric field logits with identical tiny CPU float32 decoder weights and inputs.",
+          "rtol": 1e-05,
+          "test": "tests/families/hunyuan3d/test_reference_parity.py::test_tiny_vae_decoder_matches_pinned_reference"
+        }
+      ],
+      "role": "shape-vae"
+    }
+  ],
+  "integration_id": "hunyuan3d-2.1",
+  "level": "reviewed_package",
+  "licenses": {
+    "artifacts": [
+      {
+        "artifact": "converted-checkpoints",
+        "license": {
+          "classification": "restricted",
+          "identifier": "Tencent-Hunyuan-3D-2.1-Community",
+          "url": "https://github.com/Tencent-Hunyuan/Hunyuan3D-2.1/blob/82920d643c0dc2f7bfd7255f45f62d386edfe60c/LICENSE"
+        }
+      },
+      {
+        "artifact": "hunyuan-derived-code",
+        "license": {
+          "classification": "restricted",
+          "identifier": "Tencent-Hunyuan-3D-2.1-Community",
+          "url": "https://github.com/Tencent-Hunyuan/Hunyuan3D-2.1/blob/82920d643c0dc2f7bfd7255f45f62d386edfe60c/LICENSE"
+        }
+      },
+      {
+        "artifact": "package-glue-code",
+        "license": {
+          "classification": "permissive",
+          "identifier": "Apache-2.0",
+          "url": "https://www.apache.org/licenses/LICENSE-2.0"
+        }
+      }
+    ],
+    "model": {
+      "classification": "restricted",
+      "identifier": "Tencent-Hunyuan-3D-2.1-Community",
+      "url": "https://github.com/Tencent-Hunyuan/Hunyuan3D-2.1/blob/82920d643c0dc2f7bfd7255f45f62d386edfe60c/LICENSE"
+    }
+  },
+  "schema": "diffusers-3d-integration",
+  "schema_version": 1,
+  "training": {
+    "backward_parity": null,
+    "batch_class": "diffusers_3d.families.hunyuan3d.training.Hunyuan3DShapeBatch",
+    "checkpoint_parity": null,
+    "components": [
+      "denoiser"
+    ],
+    "objective_parity": {
+      "atol": 0.0,
+      "kind": "objective",
+      "passed": true,
+      "reference": "Released x_t=t*x1+(1-t)*x0 and velocity x1-x0 equations with deterministic tensors.",
+      "rtol": 0.0,
+      "test": "tests/families/hunyuan3d/test_training.py::test_released_flow_matching_equation_and_frozen_components"
+    },
+    "recipe_class": "diffusers_3d.families.hunyuan3d.training.Hunyuan3DShapeFlowMatchingRecipe",
+    "recipe_id": "hunyuan3d-shape-flow-matching",
+    "recipe_version": "1.0",
+    "strategies": [
+      "full"
+    ],
+    "target_class": "diffusers_3d.families.hunyuan3d.pipeline.Hunyuan3DImageToShapePipeline",
+    "trainer_registration": "diffusers_3d.families.hunyuan3d.registrations.hunyuan3d_training_registrations"
+  },
+  "upstream": {
+    "repository": "https://github.com/Tencent-Hunyuan/Hunyuan3D-2.1",
+    "revision": "82920d643c0dc2f7bfd7255f45f62d386edfe60c"
+  },
+  "workflow": {
+    "input_representations": [
+      "image"
+    ],
+    "output_representations": [
+      "triangle-mesh"
+    ],
+    "task_ids": [
+      "image-to-3d"
+    ],
+    "workflow": "standard-pipeline"
+  }
+}
