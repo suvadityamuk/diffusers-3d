@@ -131,7 +131,7 @@
           "atol": 0.0,
           "kind": "inference",
           "passed": true,
-          "reference": "Deterministic tiny CPU composition of DINOv3 conditioning, released 12-step defaults and Flow Euler equations, and exact reused sparse-structure occupancy decoding; production cascade, O-Voxel conversion, rendering, and quality are excluded.",
+          "reference": "Deterministic tiny CPU composition of DINOv3 conditioning, released 12-step defaults and Flow Euler equations, exact reused sparse-structure occupancy decoding, and upstream 1024_cascade max-pool-to-32 coordinate mapping; production SLAT cascade, O-Voxel conversion, rendering, and quality are excluded.",
           "rtol": 0.0,
           "test": "tests/families/trellis2/test_pipeline.py::test_reviewed_sparse_structure_pipeline_is_deterministic_and_uses_released_defaults"
         }

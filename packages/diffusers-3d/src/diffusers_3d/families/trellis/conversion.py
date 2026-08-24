@@ -269,7 +269,6 @@ def convert_trellis_checkpoint(
         component_index["slat_scheduler"] = [None, None]
     if "gaussian_decoder" not in component_index:
         component_index["gaussian_decoder"] = [None, None]
-    component_index["mesh_decoder"] = [None, None]
 
     normalization_mean, normalization_std = _validate_normalization(args["slat_normalization"])
     if converted_slat:

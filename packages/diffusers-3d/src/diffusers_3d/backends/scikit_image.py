@@ -30,11 +30,15 @@ class ScikitImageBackend:
         *,
         level: float = 0.0,
         spacing: Sequence[float] | None = None,
+        gradient_direction: str = "ascent",
+        allow_degenerate: bool = False,
     ) -> MeshAsset:
         """Extract ``field >= level`` with outward right-handed face winding.
 
         Coordinates follow the three tensor axes and are scaled by ``spacing``.
         The first sample is at world coordinate ``(0, 0, 0)``.
+        Generic calls default to outward ``"ascent"`` winding and reject
+        degenerate faces. Integrations may explicitly select upstream settings.
         """
 
         if not isinstance(field, torch.Tensor):
@@ -53,6 +57,10 @@ class ScikitImageBackend:
             raise ValueError("spacing must contain exactly three values")
         if any(not math.isfinite(value) or value <= 0.0 for value in resolved_spacing):
             raise ValueError("spacing values must be finite and positive")
+        if gradient_direction not in ("ascent", "descent"):
+            raise ValueError("gradient_direction must be 'ascent' or 'descent'")
+        if type(allow_degenerate) is not bool:
+            raise TypeError("allow_degenerate must be a bool")
 
         cpu_field = field.detach().cpu().float()
         minimum = float(cpu_field.min())
@@ -66,8 +74,8 @@ class ScikitImageBackend:
             cpu_field.numpy(),
             level=float(level),
             spacing=resolved_spacing,
-            gradient_direction="ascent",
-            allow_degenerate=False,
+            gradient_direction=gradient_direction,
+            allow_degenerate=allow_degenerate,
             method="lewiner",
         )
         return MeshAsset(

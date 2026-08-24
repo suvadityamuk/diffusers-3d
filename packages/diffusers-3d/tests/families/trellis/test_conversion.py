@@ -77,6 +77,7 @@ def test_synthetic_portable_component_conversion_and_auto_load(
         conditioner_path=tmp_path / "conditioner",
     )
     report = json.loads((output / "trellis_conversion.json").read_text(encoding="utf-8"))
+    model_index = json.loads((output / "model_index.json").read_text(encoding="utf-8"))
     assert set(report["components"]) == {"sparse_structure_decoder", "sparse_structure_flow_model"}
     assert set(report["skipped_components"]) == {
         "slat_decoder_gs",
@@ -84,6 +85,7 @@ def test_synthetic_portable_component_conversion_and_auto_load(
         "slat_decoder_rf",
         "slat_flow_model",
     }
+    assert "mesh_decoder" not in model_index
     loaded = AutoPipelineForImageTo3D.from_pretrained(output, local_files_only=True)
     assert type(loaded) is TrellisImageTo3DPipeline
     assert loaded.slat_flow_model is None

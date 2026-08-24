@@ -31,7 +31,7 @@ class Hunyuan3DImageToShapePipeline(Object3DPipeline):
     output_object_types = (MeshAsset,)
     output_representations = ("triangle-mesh",)
     object_kinds = (Object3DKind.MESH,)
-    required_backends = ("scikit-image",)
+    required_backends = ("opencv", "scikit-image")
     contribution_status = ContributionStatus.REVIEWED_PACKAGE
     review_status = ReviewStatus.REVIEWED
     model_cpu_offload_seq = "conditioner->denoiser->vae"
@@ -144,7 +144,7 @@ class Hunyuan3DImageToShapePipeline(Object3DPipeline):
         encoder_hidden_states: torch.Tensor,
         *,
         num_inference_steps: int = 50,
-        guidance_scale: float = 5.0,
+        guidance_scale: float = 7.5,
         sigmas: Sequence[float] | None = None,
         callback_on_step_end: Callable[
             [Hunyuan3DImageToShapePipeline, int, torch.Tensor, dict[str, torch.Tensor]],
@@ -200,7 +200,7 @@ class Hunyuan3DImageToShapePipeline(Object3DPipeline):
         image: ImageCondition | Sequence[ImageCondition] | torch.Tensor,
         *,
         num_inference_steps: int = 50,
-        guidance_scale: float = 5.0,
+        guidance_scale: float = 7.5,
         generator: torch.Generator | list[torch.Generator] | None = None,
         latents: torch.Tensor | None = None,
         sigmas: Sequence[float] | None = None,

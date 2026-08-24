@@ -24,7 +24,7 @@ from ...objects import (
     SparseVoxelAsset,
 )
 from .conditioner import TrellisDinov2Conditioner
-from .decoders import TrellisSLatGaussianDecoder, TrellisSLatMeshDecoder, TrellisSparseStructureDecoder
+from .decoders import TrellisSLatGaussianDecoder, TrellisSparseStructureDecoder
 from .models import TrellisSLatFlowModel, TrellisSparseStructureFlowModel
 from .scheduler import TrellisFlowEulerScheduler
 from .sparse import TrellisSparseTensor
@@ -42,14 +42,12 @@ class TrellisImageTo3DPipeline(Object3DPipeline):
     contribution_status = ContributionStatus.REVIEWED_PACKAGE
     review_status = ReviewStatus.REVIEWED
     model_cpu_offload_seq = (
-        "conditioner->sparse_structure_flow_model->sparse_structure_decoder->"
-        "slat_flow_model->gaussian_decoder->mesh_decoder"
+        "conditioner->sparse_structure_flow_model->sparse_structure_decoder->slat_flow_model->gaussian_decoder"
     )
     _optional_components = [
         "slat_flow_model",
         "slat_scheduler",
         "gaussian_decoder",
-        "mesh_decoder",
     ]
 
     def __init__(
@@ -61,7 +59,6 @@ class TrellisImageTo3DPipeline(Object3DPipeline):
         slat_flow_model: TrellisSLatFlowModel | None = None,
         slat_scheduler: TrellisFlowEulerScheduler | None = None,
         gaussian_decoder: TrellisSLatGaussianDecoder | None = None,
-        mesh_decoder: TrellisSLatMeshDecoder | None = None,
         slat_mean: Sequence[float] | None = None,
         slat_std: Sequence[float] | None = None,
     ) -> None:
@@ -84,7 +81,7 @@ class TrellisImageTo3DPipeline(Object3DPipeline):
                 raise ValueError("SLAT normalization must contain one value per output feature channel")
             if any(float(value) <= 0 for value in slat_std):
                 raise ValueError("SLAT standard deviations must be positive")
-        elif any(component is not None for component in (slat_scheduler, gaussian_decoder, mesh_decoder)):
+        elif any(component is not None for component in (slat_scheduler, gaussian_decoder)):
             raise ValueError("SLAT decoders and scheduler require slat_flow_model")
         if gaussian_decoder is not None and slat_flow_model is not None:
             if gaussian_decoder.config.latent_channels != slat_flow_model.config.out_channels:
@@ -98,7 +95,6 @@ class TrellisImageTo3DPipeline(Object3DPipeline):
             slat_flow_model=slat_flow_model,
             slat_scheduler=slat_scheduler,
             gaussian_decoder=gaussian_decoder,
-            mesh_decoder=mesh_decoder,
         )
         self.register_to_config(
             slat_mean=None if slat_mean is None else [float(value) for value in slat_mean],
@@ -346,12 +342,6 @@ class TrellisImageTo3DPipeline(Object3DPipeline):
             if self.gaussian_decoder is None:
                 raise RuntimeError("format 'gaussian' requires gaussian_decoder")
             objects.extend(self.gaussian_decoder(slat).assets)
-        if "mesh" in formats:
-            if self.mesh_decoder is None:
-                raise RuntimeError("format 'mesh' requires mesh_decoder")
-            mesh_output = self.mesh_decoder(slat)
-            if mesh_output is not None:
-                objects.extend(mesh_output)
         return tuple(objects)
 
     @torch.no_grad()
@@ -372,15 +362,13 @@ class TrellisImageTo3DPipeline(Object3DPipeline):
         return_dict: bool = True,
     ) -> Object3DPipelineOutput | tuple[tuple[Object3D, ...], Latent3DOutput | None]:
         formats = tuple(formats)
-        allowed_formats = {"sparse_structure", "slat", "gaussian", "mesh"}
+        allowed_formats = {"sparse_structure", "slat", "gaussian"}
         if not formats or len(set(formats)) != len(formats) or set(formats).difference(allowed_formats):
             raise ValueError(f"formats must contain unique values from {sorted(allowed_formats)}")
-        if any(name in formats for name in ("slat", "gaussian", "mesh")) and self.slat_flow_model is None:
+        if any(name in formats for name in ("slat", "gaussian")) and self.slat_flow_model is None:
             raise RuntimeError("formats requiring SLAT need slat_flow_model and slat_scheduler")
         if "gaussian" in formats and self.gaussian_decoder is None:
             raise RuntimeError("format 'gaussian' requires gaussian_decoder")
-        if "mesh" in formats and self.mesh_decoder is None:
-            raise RuntimeError("format 'mesh' requires mesh_decoder")
         images = self.preprocess(image)
         conditional, unconditional = self.encode_conditioning(images)
         sparse_structure_latents = self.prepare_sparse_structure_latents(
@@ -402,7 +390,7 @@ class TrellisImageTo3DPipeline(Object3DPipeline):
         if "sparse_structure" in formats:
             objects.extend(sparse_structures)
 
-        requires_slat = any(name in formats for name in ("slat", "gaussian", "mesh"))
+        requires_slat = any(name in formats for name in ("slat", "gaussian"))
         if requires_slat:
             slat_latents = self.prepare_slat_latents(
                 sparse_structures,

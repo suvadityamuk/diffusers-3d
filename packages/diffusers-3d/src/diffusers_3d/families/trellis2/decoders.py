@@ -41,19 +41,36 @@ class Trellis2SparseStructureDecoder(TrellisSparseStructureDecoder):
     contribution_status = ContributionStatus.REVIEWED_PACKAGE
     review_status = ReviewStatus.REVIEWED
 
-    def decode_to_sparse_voxels(self, hidden_states: torch.Tensor) -> tuple[SparseVoxelAsset, ...]:
+    def decode_to_sparse_voxels(
+        self,
+        hidden_states: torch.Tensor,
+        *,
+        target_resolution: int | None = None,
+    ) -> tuple[SparseVoxelAsset, ...]:
         logits = self(hidden_states).sample
         if logits.shape[1] != 1:
             raise ValueError("SparseVoxelAsset conversion requires a one-channel occupancy decoder")
-        resolution = logits.shape[2]
-        if logits.shape[2:] != (resolution, resolution, resolution):
+        decoded_resolution = logits.shape[2]
+        if logits.shape[2:] != (decoded_resolution, decoded_resolution, decoded_resolution):
             raise ValueError("decoded occupancy grid must be cubic")
+        resolution = decoded_resolution if target_resolution is None else target_resolution
+        if not isinstance(resolution, int) or isinstance(resolution, bool) or resolution <= 0:
+            raise ValueError("target_resolution must be a positive integer or None")
+        if resolution > decoded_resolution or decoded_resolution % resolution:
+            raise ValueError("target_resolution must evenly divide the decoded occupancy resolution")
+        occupancy = logits > 0
+        if resolution != decoded_resolution:
+            pooling_ratio = decoded_resolution // resolution
+            occupancy = F.max_pool3d(occupancy.float(), pooling_ratio, pooling_ratio, 0) > 0.5
+            feature_grid = occupancy.float()
+        else:
+            feature_grid = logits
         assets = []
         for batch_index in range(logits.shape[0]):
-            coordinates = torch.argwhere(logits[batch_index, 0] > 0).to(dtype=torch.int64)
+            coordinates = torch.argwhere(occupancy[batch_index, 0]).to(dtype=torch.int64)
             if coordinates.shape[0] == 0:
                 raise ValueError(f"decoded sparse structure is empty for batch item {batch_index}")
-            features = logits[batch_index, 0][tuple(coordinates.unbind(dim=1))].unsqueeze(1)
+            features = feature_grid[batch_index, 0][tuple(coordinates.unbind(dim=1))].unsqueeze(1)
             assets.append(
                 SparseVoxelAsset(
                     coordinates=coordinates,
@@ -68,6 +85,7 @@ class Trellis2SparseStructureDecoder(TrellisSparseStructureDecoder):
                         "family": "trellis2",
                         "representation": "sparse_structure",
                         "resolution": resolution,
+                        "decoded_resolution": decoded_resolution,
                         "occupancy_threshold": 0.0,
                         "decoder_checkpoint_semantics": "trellis-image-large-exact-reuse",
                     },

@@ -73,9 +73,7 @@ def test_manifest_resume_requires_an_exact_match(tmp_path):
     mismatch = make_manifest(objective_config={"sigma_min": 0.1, "stage": "shape"})
     with pytest.raises(TrainingManifestMismatchError, match="objective_config"):
         loaded.validate_resume(mismatch)
-    mismatch = make_manifest(
-        training_config={"gradient_accumulation_steps": 1, "learning_rate": 2e-4, "seed": 0}
-    )
+    mismatch = make_manifest(training_config={"gradient_accumulation_steps": 1, "learning_rate": 2e-4, "seed": 0})
     with pytest.raises(TrainingManifestMismatchError, match="training_config"):
         loaded.validate_resume(mismatch)
 

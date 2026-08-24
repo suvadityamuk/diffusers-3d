@@ -265,7 +265,10 @@ def test_prepare_moves_declared_frozen_components_to_device_and_eval(monkeypatch
     assert not conditioner.training
     assert all(parameter.device == trainer.accelerator.device for parameter in conditioner.parameters())
     assert all(not parameter.requires_grad for parameter in conditioner.parameters())
-    assert all(id(parameter) not in {id(item) for item in trainer.trainable_parameters} for parameter in conditioner.parameters())
+    assert all(
+        id(parameter) not in {id(item) for item in trainer.trainable_parameters}
+        for parameter in conditioner.parameters()
+    )
 
 
 def test_compute_loss_accepts_a_wrapped_selected_component_after_exact_validation():

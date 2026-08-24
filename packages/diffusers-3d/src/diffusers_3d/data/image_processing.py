@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import math
 
+import numpy as np
 import torch
-import torch.nn.functional as F
 
 from ..objects import CameraRig
 from .conditions import ImageCondition
@@ -52,10 +52,10 @@ class HunyuanImageProcessor:
         left: int,
         crop_height: int,
         crop_width: int,
-        output_top: int,
-        output_left: int,
-        output_height: int,
-        output_width: int,
+        output_top: float,
+        output_left: float,
+        output_height: float,
+        output_width: float,
     ) -> CameraRig | None:
         if camera is None:
             return None
@@ -100,68 +100,84 @@ class HunyuanImageProcessor:
             rgb = _as_unit_interval(image[:3], "image RGB channels")
             alpha = _as_unit_interval(image[3:4], "image alpha channel")
 
-        mask = None if condition.mask is None else condition.mask.detach().cpu().to(torch.float32)
+        rgb_array = (rgb.permute(1, 2, 0).numpy() * 255.0).astype(np.uint8)
+        mask = (
+            None
+            if condition.mask is None
+            else (condition.mask[0].detach().cpu().to(torch.float32).numpy() * 255.0).astype(np.uint8)
+        )
         if alpha is not None:
-            mask = alpha if mask is None else alpha * mask
+            alpha_array = (alpha[0].numpy() * 255.0).astype(np.uint8)
+            mask = (
+                alpha_array
+                if mask is None
+                else (alpha_array.astype(np.float32) * (mask.astype(np.float32) / 255.0)).astype(np.uint8)
+            )
         if mask is None:
-            mask = torch.ones((1, image.shape[1], image.shape[2]), dtype=torch.float32)
-        mask = mask.clamp(0.0, 1.0)
+            mask = np.full((image.shape[1], image.shape[2]), 255, dtype=np.uint8)
 
-        foreground = torch.nonzero(mask[0] > 0.0, as_tuple=False)
-        if foreground.numel() == 0:
+        foreground = np.nonzero(mask)
+        if foreground[0].size == 0:
             raise ValueError("image alpha/mask contains no foreground pixels")
-        top = int(foreground[:, 0].min())
-        bottom = int(foreground[:, 0].max()) + 1
-        left = int(foreground[:, 1].min())
-        right = int(foreground[:, 1].max()) + 1
+        top = int(foreground[0].min())
+        bottom = int(foreground[0].max())
+        left = int(foreground[1].min())
+        right = int(foreground[1].max())
         crop_height = bottom - top
         crop_width = right - left
+        if crop_height <= 0 or crop_width <= 0:
+            raise ValueError("image alpha/mask foreground must span at least two rows and columns")
 
-        desired_size = max(1, int(self.size * (1.0 - ratio)))
+        square_size = max(image.shape[1:])
+        desired_size = int(square_size * (1.0 - ratio))
         scale = desired_size / max(crop_height, crop_width)
-        output_height = max(1, int(crop_height * scale))
-        output_width = max(1, int(crop_width * scale))
-        output_top = (self.size - output_height) // 2
-        output_left = (self.size - output_width) // 2
+        output_height = int(crop_height * scale)
+        output_width = int(crop_width * scale)
+        if output_height <= 0 or output_width <= 0:
+            raise ValueError("border_ratio leaves no pixels for the recentered foreground")
+        output_top = (square_size - output_height) // 2
+        output_left = (square_size - output_width) // 2
 
-        cropped_rgb = rgb[:, top:bottom, left:right].unsqueeze(0)
-        cropped_mask = mask[:, top:bottom, left:right].unsqueeze(0)
-        resized_rgb = F.interpolate(
-            cropped_rgb,
-            size=(output_height, output_width),
-            mode="bilinear",
-            align_corners=False,
-            antialias=True,
-        )[0]
-        resized_mask = F.interpolate(
-            cropped_mask,
-            size=(output_height, output_width),
-            mode="bilinear",
-            align_corners=False,
-            antialias=True,
-        )[0].clamp(0.0, 1.0)
+        try:
+            import cv2
+        except ImportError as error:
+            raise ImportError(
+                'Hunyuan image preprocessing requires OpenCV. Install it with `pip install "diffusers-3d[hunyuan3d]"`.'
+            ) from error
 
-        rgb_canvas = torch.zeros((3, self.size, self.size), dtype=torch.float32)
-        mask_canvas = torch.zeros((1, self.size, self.size), dtype=torch.float32)
+        rgba_array = np.concatenate([rgb_array, mask[..., None]], axis=-1)
+        cropped_rgba = rgba_array[top:bottom, left:right]
+        resized_rgba = cv2.resize(cropped_rgba, (output_width, output_height), interpolation=cv2.INTER_AREA)
+        rgba_canvas = np.zeros((square_size, square_size, 4), dtype=np.uint8)
         row_slice = slice(output_top, output_top + output_height)
         column_slice = slice(output_left, output_left + output_width)
-        rgb_canvas[:, row_slice, column_slice] = resized_rgb
-        mask_canvas[:, row_slice, column_slice] = resized_mask
+        rgba_canvas[row_slice, column_slice] = resized_rgba
 
-        composited = rgb_canvas * mask_canvas + (1.0 - mask_canvas)
-        normalized = composited.mul(2.0).sub(1.0).clamp(-1.0, 1.0)
+        centered_mask = rgba_canvas[..., 3:].astype(np.float32) / 255.0
+        composited = (rgba_canvas[..., :3] * centered_mask + 255.0 * (1.0 - centered_mask)).astype(np.uint8)
+        centered_mask = (centered_mask * 255.0).astype(np.uint8)
+        composited = cv2.resize(composited, (self.size, self.size), interpolation=cv2.INTER_CUBIC)
+        output_mask = cv2.resize(centered_mask, (self.size, self.size), interpolation=cv2.INTER_NEAREST)
+        if output_mask.ndim == 2:
+            output_mask = output_mask[..., None]
+        normalized = (
+            torch.from_numpy(composited.copy()).permute(2, 0, 1).to(torch.float32).div(255.0).mul(2.0).sub(1.0)
+        )
+        mask_tensor = torch.from_numpy(output_mask.copy()).permute(2, 0, 1).to(torch.float32).div(255.0)
+
+        final_scale = self.size / square_size
         camera = self._update_camera(
             condition.camera,
             top=top,
             left=left,
             crop_height=crop_height,
             crop_width=crop_width,
-            output_top=output_top,
-            output_left=output_left,
-            output_height=output_height,
-            output_width=output_width,
+            output_top=output_top * final_scale,
+            output_left=output_left * final_scale,
+            output_height=output_height * final_scale,
+            output_width=output_width * final_scale,
         )
-        return ImageCondition(image=normalized, camera=camera, mask=mask_canvas)
+        return ImageCondition(image=normalized, camera=camera, mask=mask_tensor)
 
     def recenter(
         self,

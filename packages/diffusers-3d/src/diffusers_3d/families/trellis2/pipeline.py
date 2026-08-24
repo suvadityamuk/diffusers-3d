@@ -55,10 +55,17 @@ _TEXTURE_SAMPLER_DEFAULTS = {
 }
 _CAPABILITY_LIMITATIONS = {
     "reviewed_formats": ["sparse_structure"],
-    "experimental_formats": ["shape_slat", "texture_slat", "o_voxel", "mesh", "glb"],
+    "experimental_formats": ["shape_slat", "texture_slat", "o_voxel", "mesh"],
     "production_1024_cascade": "unsupported_until_flex_gemm_ovoxel_gpu_parity",
     "official_full_checkpoint_parity": False,
     "production_gpu_quality_verified": False,
+}
+_SPARSE_TARGET_RESOLUTIONS = {
+    "512": 32,
+    "1024": 64,
+    "1024_cascade": 32,
+    "1536_cascade": 32,
+    "tiny": None,
 }
 
 
@@ -166,8 +173,7 @@ class Trellis2ImageTo3DPipeline(Object3DPipeline):
             expected_concat = texture_slat_flow_model.config.out_channels + shape_slat_flow_model.config.out_channels
             if texture_slat_flow_model.config.in_channels != expected_concat:
                 raise ValueError("texture SLAT input channels must concatenate texture noise and shape SLAT")
-        if not isinstance(default_pipeline_type, str) or not default_pipeline_type:
-            raise ValueError("default_pipeline_type must be a non-empty string")
+        default_pipeline_type = self._validate_pipeline_type(default_pipeline_type)
 
         def normalization(
             mean: Sequence[float] | None,
@@ -229,6 +235,16 @@ class Trellis2ImageTo3DPipeline(Object3DPipeline):
             texture_slat_sampler_defaults=texture_defaults,
             capability_limitations=limitations,
         )
+
+    @staticmethod
+    def _validate_pipeline_type(pipeline_type: str) -> str:
+        if not isinstance(pipeline_type, str) or pipeline_type not in _SPARSE_TARGET_RESOLUTIONS:
+            raise ValueError(f"pipeline_type must be one of {sorted(_SPARSE_TARGET_RESOLUTIONS)}")
+        return pipeline_type
+
+    @classmethod
+    def _sparse_target_resolution(cls, pipeline_type: str) -> int | None:
+        return _SPARSE_TARGET_RESOLUTIONS[cls._validate_pipeline_type(pipeline_type)]
 
     def preprocess(
         self,
@@ -500,17 +516,18 @@ class Trellis2ImageTo3DPipeline(Object3DPipeline):
         shape_slat_latents: TrellisSparseTensor | None = None,
         texture_slat_latents: TrellisSparseTensor | None = None,
         ovoxel_backend: OVoxelBackend | None = None,
-        pbr_postprocess: Trellis2PBRPostprocessFacade | None = None,
         postprocess_kwargs: Mapping[str, Any] | None = None,
         return_latents: bool = True,
         return_dict: bool = True,
     ) -> Object3DPipelineOutput | tuple[tuple[Object3D, ...], Latent3DOutput | None]:
         formats = tuple(formats)
-        allowed = {"sparse_structure", "shape_slat", "texture_slat", "o_voxel", "mesh", "glb"}
+        allowed = {"sparse_structure", "shape_slat", "texture_slat", "o_voxel", "mesh"}
         if not formats or len(set(formats)) != len(formats) or set(formats).difference(allowed):
             raise ValueError(f"formats must contain unique values from {sorted(allowed)}")
         experimental_requested = bool(set(formats).difference({"sparse_structure"}))
-        pipeline_type = self.config.default_pipeline_type if pipeline_type is None else pipeline_type
+        pipeline_type = self._validate_pipeline_type(
+            self.config.default_pipeline_type if pipeline_type is None else pipeline_type
+        )
         if experimental_requested and pipeline_type != "tiny":
             raise NotImplementedError(
                 "the serialized 1024 cascade remains unsupported until production FlexGEMM/O-Voxel GPU parity; "
@@ -520,11 +537,11 @@ class Trellis2ImageTo3DPipeline(Object3DPipeline):
             self.shape_slat_flow_model is None or self.shape_slat_scheduler is None or self.shape_slat_decoder is None
         ):
             raise RuntimeError("experimental formats require the shape SLAT flow, scheduler, and decoder")
-        needs_texture = any(value in formats for value in ("texture_slat", "o_voxel", "mesh", "glb"))
+        needs_texture = any(value in formats for value in ("texture_slat", "o_voxel", "mesh"))
         if needs_texture and (
             self.texture_slat_flow_model is None or self.texture_slat_scheduler is None or self.pbr_decoder is None
         ):
-            raise RuntimeError("texture, O-Voxel, mesh, and GLB formats require texture SLAT and PBR components")
+            raise RuntimeError("texture, O-Voxel, and mesh formats require texture SLAT and PBR components")
         images = self.preprocess(image)
         conditional, negative = self.encode_conditioning(images)
         dense_latents = self.prepare_sparse_structure_latents(
@@ -537,9 +554,11 @@ class Trellis2ImageTo3DPipeline(Object3DPipeline):
             sparse_structure_sampler_params,
         )
         dense_latents = self._sample_dense(dense_latents, conditional, negative, sparse_parameters)
-        structures = self.sparse_structure_decoder.decode_to_sparse_voxels(dense_latents)
+        structures = self.sparse_structure_decoder.decode_to_sparse_voxels(
+            dense_latents,
+            target_resolution=self._sparse_target_resolution(pipeline_type),
+        )
         objects: list[Object3D] = []
-        previews: list[Any] = []
         if "sparse_structure" in formats:
             objects.extend(structures)
         if experimental_requested:
@@ -618,7 +637,7 @@ class Trellis2ImageTo3DPipeline(Object3DPipeline):
                             stage="texture",
                         )
                     )
-            if any(value in formats for value in ("o_voxel", "mesh", "glb")):
+            if any(value in formats for value in ("o_voxel", "mesh")):
                 ovoxels = self.decode_ovoxel(shape_slat, texture_slat)
                 if "o_voxel" in formats:
                     objects.extend(ovoxels)
@@ -628,17 +647,6 @@ class Trellis2ImageTo3DPipeline(Object3DPipeline):
                             asset,
                             output_format="mesh",
                             ovoxel_backend=ovoxel_backend,
-                            postprocess_kwargs=postprocess_kwargs,
-                        )
-                        for asset in ovoxels
-                    )
-                if "glb" in formats:
-                    objects.extend(ovoxels)
-                    previews.extend(
-                        self.postprocess_ovoxel(
-                            asset,
-                            output_format="glb",
-                            pbr_postprocess=pbr_postprocess,
                             postprocess_kwargs=postprocess_kwargs,
                         )
                         for asset in ovoxels
@@ -657,7 +665,7 @@ class Trellis2ImageTo3DPipeline(Object3DPipeline):
         return Object3DPipelineOutput(
             objects=tuple(objects),
             latents=latent_output,
-            previews=None if not previews else tuple(previews),
+            previews=None,
         )
 
 

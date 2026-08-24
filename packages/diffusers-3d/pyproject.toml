@@ -46,6 +46,7 @@ portable = [
 ]
 gaussian = ["gsplat"]
 hunyuan3d = [
+    "opencv-python",
     "PyYAML",
     "scikit-image",
 ]

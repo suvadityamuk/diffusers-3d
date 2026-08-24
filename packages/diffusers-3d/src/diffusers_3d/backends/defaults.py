@@ -145,8 +145,7 @@ DEFAULT_BACKEND_SPECS = (
         dtypes=frozenset({"float32"}),
         differentiable=False,
         install_hint=(
-            f"Build CuMesh from JeffreyXiang/CuMesh revision {_CUMESH_REVISION} "
-            "against the active PyTorch and CUDA"
+            f"Build CuMesh from JeffreyXiang/CuMesh revision {_CUMESH_REVISION} against the active PyTorch and CUDA"
         ),
         tested_build="Source build; PyTorch, CUDA, compiler, and GPU architecture must be recorded",
         source_url="https://github.com/JeffreyXiang/CuMesh.git",

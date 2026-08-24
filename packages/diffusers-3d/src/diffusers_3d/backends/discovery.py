@@ -191,7 +191,9 @@ def _unavailable_reason(
     if not provenance_verified and provenance_error is not None:
         details.append(provenance_error)
     if not version_compatible:
-        details.append(f"distribution version {version!r} does not match required tested version {spec.tested_version!r}")
+        details.append(
+            f"distribution version {version!r} does not match required tested version {spec.tested_version!r}"
+        )
     if not importable:
         details.append(f"the following imports are not discoverable: {', '.join(missing_imports)}")
     if import_errors:

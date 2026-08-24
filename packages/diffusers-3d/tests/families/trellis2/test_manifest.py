@@ -65,7 +65,8 @@ def test_trellis2_schema_v2_manifest_records_exact_source_license_and_capability
     pipeline = next(component for component in manifest.components if component.role == "pipeline")
     assert pipeline.parity[0].passed
     assert (
-        "production cascade, O-Voxel conversion, rendering, and quality are excluded" in pipeline.parity[0].reference
+        "production SLAT cascade, O-Voxel conversion, rendering, and quality are excluded"
+        in pipeline.parity[0].reference
     )
     for name in ("LICENSE-MIT", "NOTICE", "README.md"):
         assert (FAMILY_ROOT / name).is_file()

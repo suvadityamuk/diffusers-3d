@@ -405,7 +405,6 @@ class Hunyuan3DDiTBlock(nn.Module):
         qk_norm: bool,
         qkv_bias: bool,
         skip_connection: bool,
-        timestep_modulate: bool,
         use_moe: bool,
         num_experts: int,
         moe_top_k: int,
@@ -423,12 +422,6 @@ class Hunyuan3DDiTBlock(nn.Module):
             norm_layer=qk_norm_layer,
         )
         self.norm2 = norm_layer(hidden_size, elementwise_affine=True, eps=1e-6)
-        self.timested_modulate = timestep_modulate
-        if timestep_modulate:
-            self.default_modulation = nn.Sequential(
-                nn.SiLU(),
-                nn.Linear(hidden_size, hidden_size, bias=True),
-            )
         self.attn2 = Hunyuan3DCrossAttention(
             hidden_size,
             context_dim,
@@ -459,15 +452,12 @@ class Hunyuan3DDiTBlock(nn.Module):
     def forward(
         self,
         hidden_states: torch.Tensor,
-        timestep_embedding: torch.Tensor,
         encoder_hidden_states: torch.Tensor,
         skip_value: torch.Tensor | None,
     ) -> torch.Tensor:
         if self.skip_linear is not None:
             hidden_states = self.skip_linear(torch.cat([skip_value, hidden_states], dim=-1))
             hidden_states = self.skip_norm(hidden_states)
-        if self.timested_modulate:
-            hidden_states = hidden_states + self.default_modulation(timestep_embedding).unsqueeze(1)
 
         hidden_states = hidden_states + self.attn1(self.norm1(hidden_states))
         hidden_states = hidden_states + self.attn2(self.norm2(hidden_states), encoder_hidden_states)
@@ -663,7 +653,6 @@ class Hunyuan3DShapeDiTModel(Object3DModel, PeftAdapterMixin):
                     qk_norm=qk_norm,
                     qkv_bias=qkv_bias,
                     skip_connection=layer_index > depth // 2,
-                    timestep_modulate=False,
                     use_moe=depth - layer_index <= num_moe_layers,
                     num_experts=num_experts,
                     moe_top_k=moe_top_k,
@@ -776,14 +765,12 @@ class Hunyuan3DShapeDiTModel(Object3DModel, PeftAdapterMixin):
                 hidden_states = self._gradient_checkpointing_func(
                     block,
                     hidden_states,
-                    conditioning_embedding,
                     encoder_hidden_states,
                     skip_value,
                 )
             else:
                 hidden_states = block(
                     hidden_states,
-                    conditioning_embedding,
                     encoder_hidden_states,
                     skip_value,
                 )

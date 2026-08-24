@@ -56,7 +56,9 @@ These classes do not provide official production checkpoint parity:
   opacity-logit, spherical-harmonic, and raw-parameter mappings only.
 - `TrellisSLatMeshDecoder` is a capability gate. The Apache-2.0
   `kaolin.ops.conversions.FlexiCubes` adapter can extract a supplied scalar
-  field, but the TRELLIS sparse mesh-field network is not ported.
+  field, but the TRELLIS sparse mesh-field network is not ported. The
+  experimental gate is not a pipeline component, and `"mesh"` is not an
+  accepted pipeline format until a functioning decoder exists.
 - `TrellisSLatRadianceFieldDecoder` is explicitly unsupported because the
   package has no native radiance-field `Object3D` type.
 

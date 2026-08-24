@@ -796,9 +796,7 @@ class Object3DTrainer:
         if not self._prepared:
             self.prepare()
         if self.config.dataloader_num_workers != 0:
-            raise TrainingCheckpointError(
-                "Exact checkpoint continuation requires dataloader_num_workers=0"
-            )
+            raise TrainingCheckpointError("Exact checkpoint continuation requires dataloader_num_workers=0")
         directory = Path(checkpoint_directory) if checkpoint_directory is not None else self.config.output_dir
         if directory is None:
             raise TrainingCheckpointError("checkpoint_directory or config.output_dir is required")
@@ -823,9 +821,7 @@ class Object3DTrainer:
 
     def load_checkpoint(self, checkpoint_directory: str | Path) -> None:
         if self.config.dataloader_num_workers != 0:
-            raise TrainingCheckpointError(
-                "Exact checkpoint continuation requires dataloader_num_workers=0"
-            )
+            raise TrainingCheckpointError("Exact checkpoint continuation requires dataloader_num_workers=0")
         self.validate_resume(checkpoint_directory)
         state_directory = Path(checkpoint_directory) / ACCELERATOR_STATE_DIRECTORY
         if not state_directory.is_dir():

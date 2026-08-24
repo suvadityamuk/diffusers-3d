@@ -101,6 +101,14 @@ def test_synthetic_reviewed_conversion_skips_production_experimental_weights_and
     assert loaded.shape_slat_flow_model is None
     assert loaded.texture_slat_flow_model is None
     assert loaded.pbr_decoder is None
+    assert loaded.config.default_pipeline_type == "1024_cascade"
+    assert loaded._sparse_target_resolution(loaded.config.default_pipeline_type) == 32
+    assert loaded.config.capability_limitations["experimental_formats"] == [
+        "shape_slat",
+        "texture_slat",
+        "o_voxel",
+        "mesh",
+    ]
 
 
 def test_synthetic_tiny_experimental_conversion_is_opt_in(tmp_path, tiny_trellis2_components):

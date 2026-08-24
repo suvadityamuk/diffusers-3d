@@ -2,6 +2,20 @@
   "backends": [
     {
       "capabilities": [
+        "image-processing"
+      ],
+      "distribution": "opencv-python",
+      "install_hint": "Install the Hunyuan integration with `pip install \"diffusers-3d[hunyuan3d]\"`.",
+      "license_class": "permissive",
+      "license_identifier": "Apache-2.0",
+      "name": "opencv",
+      "required": true,
+      "source": null,
+      "support_level": "portable",
+      "version": null
+    },
+    {
+      "capabilities": [
         "surface-extraction"
       ],
       "distribution": "scikit-image",
@@ -97,7 +111,7 @@
           "atol": 1e-06,
           "kind": "inference",
           "passed": true,
-          "reference": "Tiny CPU composition of pinned upstream DINO preprocessing/tokens, HunYuanDiTPlain plus Euler denoising, and ShapeVAE decode/field stages with identical weights; surface extraction and official-checkpoint quality are excluded.",
+          "reference": "Tiny CPU composition of pinned upstream ImageProcessorV2 uint8/OpenCV preprocessing, DINO tokens, HunYuanDiTPlain plus Euler denoising, and ShapeVAE decode/field stages with identical weights; surface extraction and official-checkpoint quality are excluded.",
           "rtol": 1e-05,
           "test": "tests/families/hunyuan3d/test_reference_parity.py::test_tiny_composed_pipeline_stages_match_pinned_reference"
         }

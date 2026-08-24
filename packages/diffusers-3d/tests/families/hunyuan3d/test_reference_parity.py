@@ -8,8 +8,15 @@ from pathlib import Path
 import numpy as np
 import pytest
 import torch
+from PIL import Image
 
-from diffusers_3d import Hunyuan3DShapeDiTModel, Hunyuan3DShapeVAE
+from diffusers_3d import (
+    Hunyuan3DShapeDiTModel,
+    Hunyuan3DShapeFieldOutput,
+    Hunyuan3DShapeVAE,
+    HunyuanImageProcessor,
+    ImageCondition,
+)
 from diffusers_3d.families.hunyuan3d import HUNYUAN3D_REFERENCE_REVISION
 
 pytestmark = pytest.mark.reference_parity
@@ -132,6 +139,62 @@ def _load_standalone_reference(relative_path: str, module_name: str, class_name:
     return getattr(module, class_name)
 
 
+def _load_reference_image_processor():
+    return _load_standalone_reference(
+        "preprocessors.py",
+        "_hunyuan3d_preprocessor_test_reference",
+        "ImageProcessorV2",
+    )
+
+
+@pytest.mark.parametrize("case", ("rgb", "rgba", "explicit-mask"))
+def test_hunyuan_image_processor_matches_pinned_reference(case):
+    reference_type = _load_reference_image_processor()
+    size = 31
+    border_ratio = 0.2
+
+    if case == "rgb":
+        image = torch.linspace(0.0, 1.0, 3 * 7 * 11, dtype=torch.float32).reshape(3, 7, 11)
+        reference_array = (image.permute(1, 2, 0).numpy() * 255.0).astype(np.uint8)
+        condition = ImageCondition(image=image)
+    else:
+        rgb = np.arange(9 * 13 * 3, dtype=np.uint8).reshape(9, 13, 3)
+        alpha = np.zeros((9, 13), dtype=np.uint8)
+        alpha[2:8, 4:11] = 255
+        alpha[3:7, 5:10] = 128
+        if case == "rgba":
+            reference_array = np.concatenate([rgb, alpha[..., None]], axis=-1)
+            condition = ImageCondition(image=torch.from_numpy(reference_array.copy()).permute(2, 0, 1).float())
+        else:
+            reference_array = np.concatenate([rgb, alpha[..., None]], axis=-1)
+            condition = ImageCondition(
+                image=torch.from_numpy(rgb.copy()).permute(2, 0, 1).float(),
+                mask=torch.from_numpy(alpha.copy()).unsqueeze(0).float().div(255.0),
+            )
+
+    expected = reference_type(size=size, border_ratio=border_ratio)(Image.fromarray(reference_array))
+    actual = HunyuanImageProcessor(size=size, border_ratio=border_ratio)(condition)
+
+    torch.testing.assert_close(actual.image, expected["image"][0], atol=0.0, rtol=0.0)
+    torch.testing.assert_close(actual.mask, (expected["mask"][0] + 1.0) * 0.5, atol=1e-7, rtol=0.0)
+
+
+@pytest.mark.parametrize("foreground", ("empty", "single-row", "single-column"))
+def test_hunyuan_image_processor_matches_reference_degenerate_foreground_errors(foreground):
+    reference_type = _load_reference_image_processor()
+    rgba = np.zeros((6, 8, 4), dtype=np.uint8)
+    if foreground == "single-row":
+        rgba[3, 2:6, 3] = 255
+    elif foreground == "single-column":
+        rgba[1:5, 4, 3] = 255
+    condition = ImageCondition(image=torch.from_numpy(rgba.copy()).permute(2, 0, 1).float())
+
+    with pytest.raises(ValueError):
+        reference_type(size=16)(Image.fromarray(rgba))
+    with pytest.raises(ValueError):
+        HunyuanImageProcessor(size=16)(condition)
+
+
 def test_tiny_denoiser_matches_pinned_reference():
     reference_type = _load_pinned_reference()
     config = Hunyuan3DShapeDiTModel.tiny_config()
@@ -228,9 +291,47 @@ def test_tiny_vae_decoder_matches_pinned_reference():
     torch.testing.assert_close(actual_field, expected_field, atol=1e-6, rtol=1e-5)
 
 
+@pytest.mark.portable
+def test_hunyuan_surface_topology_and_winding_match_pinned_reference():
+    pytest.importorskip("skimage")
+    _load_pinned_vae_reference()
+    reference_type = sys.modules[
+        "_hunyuan3d_vae_test_reference.models.autoencoders.surface_extractors"
+    ].MCSurfaceExtractor
+    axes = torch.meshgrid(*(torch.arange(17, dtype=torch.float32) for _ in range(3)), indexing="ij")
+    center = torch.tensor([8.0, 8.0, 8.0]).view(3, 1, 1, 1)
+    field = 25.0 - ((torch.stack(axes) - center) ** 2).sum(dim=0)
+    bounds = (-1.0, -1.0, -1.0, 1.0, 1.0, 1.0)
+
+    expected_vertices, expected_faces = reference_type().run(
+        field,
+        mc_level=0.0,
+        bounds=bounds,
+        octree_resolution=16,
+    )
+    actual = Hunyuan3DShapeVAE(**Hunyuan3DShapeVAE.tiny_config()).extract_meshes(
+        Hunyuan3DShapeFieldOutput(field=field.unsqueeze(0), bounds=bounds)
+    )[0]
+
+    assert torch.equal(actual.faces, torch.from_numpy(expected_faces.copy()).to(torch.int64))
+    assert actual.vertices.shape == torch.from_numpy(expected_vertices).shape
+
+    def winding(vertices, faces):
+        triangles = vertices[faces]
+        normals = torch.linalg.cross(triangles[:, 1] - triangles[:, 0], triangles[:, 2] - triangles[:, 0])
+        radial = triangles.mean(dim=1) - vertices.mean(dim=0)
+        return torch.sign((normals * radial).sum(dim=1).mean())
+
+    assert winding(actual.vertices, actual.faces) == winding(
+        torch.from_numpy(expected_vertices.copy()),
+        torch.from_numpy(expected_faces.copy()).to(torch.int64),
+    )
+
+
 def test_tiny_composed_pipeline_stages_match_pinned_reference(tiny_hunyuan_pipeline):
     reference_denoiser_type = _load_pinned_reference()
     reference_vae_type = _load_pinned_vae_reference()
+    reference_processor_type = _load_reference_image_processor()
     reference_conditioner_type = _load_standalone_reference(
         "models/conditioner.py",
         "_hunyuan3d_conditioner_test_reference",
@@ -252,7 +353,11 @@ def test_tiny_composed_pipeline_stages_match_pinned_reference(tiny_hunyuan_pipel
         use_cls_token=pipeline.conditioner.use_cls_token,
     ).eval()
     reference_conditioner.model.load_state_dict(pipeline.conditioner.model.state_dict(), strict=True)
-    images = pipeline.preprocess(torch.linspace(0.0, 1.0, 3 * 8 * 8).reshape(3, 8, 8))
+    source_image = torch.linspace(0.0, 1.0, 3 * 8 * 8).reshape(3, 8, 8)
+    reference_image = Image.fromarray((source_image.permute(1, 2, 0).numpy() * 255.0).astype(np.uint8))
+    expected_images = reference_processor_type(size=8, border_ratio=0.0)(reference_image)["image"]
+    images = pipeline.preprocess(source_image)
+    torch.testing.assert_close(images, expected_images, atol=0.0, rtol=0.0)
     with torch.no_grad():
         actual_conditioning = pipeline.encode_conditioning(images, do_classifier_free_guidance=True)
         reference_conditional = reference_conditioner(images)

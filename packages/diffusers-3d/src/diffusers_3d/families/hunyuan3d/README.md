@@ -21,15 +21,19 @@ to independently written `diffusers-3d` package glue as described in
 - `Hunyuan3DFlowMatchEulerDiscreteScheduler` preserves the released ascending
   sigma schedule, including its repeated terminal sigma, instead of using the
   opposite default Diffusers flow direction.
-- `Hunyuan3DImageToShapePipeline` implements preprocessing, DINO conditioning,
-  classifier-free guidance, Euler flow integration, chunked dense field
-  evaluation, and `MeshAsset` extraction through `ScikitImageBackend`.
+- `Hunyuan3DImageToShapePipeline` uses the pinned `ImageProcessorV2` uint8,
+  OpenCV interpolation, crop/recenter, alpha-compositing, and mask semantics,
+  followed by DINO conditioning, classifier-free guidance, Euler flow
+  integration, chunked dense field evaluation, and `MeshAsset` extraction
+  through `ScikitImageBackend`. Hunyuan extraction explicitly selects upstream
+  descent winding and degenerate-face handling without changing generic adapter
+  defaults.
 - The converter accepts local aggregate `.ckpt` or `.safetensors` files and
   writes ordinary per-component Diffusers folders plus object-3D metadata.
 
 The released production configuration uses 4096x64 shape latents, a
 21-layer/2048-width denoiser, a 16-layer/1024-width VAE decoder, DINOv2-large at
-518 pixels, 50 flow steps, guidance 5, bounds 1.01, dense resolution 384, and
+518 pixels, 50 flow steps, guidance 7.5, bounds 1.01, dense resolution 384, and
 level 0. Production inference requires substantial accelerator memory; the
 dense 385-cubed field is evaluated in chunks but surface extraction runs on
 CPU.

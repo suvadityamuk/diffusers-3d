@@ -94,6 +94,7 @@ def tiny_trellis2_pipeline(tiny_trellis2_components):
         sparse_structure_flow_model=flow,
         sparse_structure_decoder=decoder,
         sparse_structure_scheduler=scheduler,
+        default_pipeline_type="tiny",
     )
 
 

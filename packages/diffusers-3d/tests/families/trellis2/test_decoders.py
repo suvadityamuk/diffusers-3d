@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import pytest
 import torch
+import torch.nn.functional as F
 
 from diffusers_3d import (
     BackendUnavailableError,
@@ -12,6 +13,8 @@ from diffusers_3d import (
     Trellis2SparseStructureDecoder,
     TrellisSparseTensor,
 )
+from diffusers_3d.families.trellis.decoders import TrellisSparseStructureDecoderOutput
+from diffusers_3d.families.trellis.sparse import trellis_grid_transform
 
 
 def test_sparse_structure_decoder_exact_reuse_metadata_and_shape():
@@ -24,6 +27,25 @@ def test_sparse_structure_decoder_exact_reuse_metadata_and_shape():
     assert assets[0].coordinates.shape == (4**3, 3)
     assert assets[0].coordinate_system is CoordinateSystem.RIGHT_HANDED_Z_UP
     assert assets[0].metadata["decoder_checkpoint_semantics"] == "trellis-image-large-exact-reuse"
+
+
+def test_sparse_structure_decoder_max_pools_occupancy_before_argwhere(monkeypatch):
+    decoder = Trellis2SparseStructureDecoder(**Trellis2SparseStructureDecoder.tiny_config())
+    logits = torch.full((1, 1, 64, 64, 64), -1.0)
+    logits[0, 0, 2, 4, 6] = 0.25
+    logits[0, 0, 3, 5, 7] = 2.0
+    logits[0, 0, 63, 63, 63] = 1.0
+    monkeypatch.setattr(decoder, "forward", lambda hidden_states: TrellisSparseStructureDecoderOutput(sample=logits))
+
+    asset = decoder.decode_to_sparse_voxels(torch.empty(1), target_resolution=32)[0]
+    expected_occupancy = F.max_pool3d((logits > 0).float(), 2, 2, 0) > 0.5
+    expected_coordinates = torch.argwhere(expected_occupancy[0, 0]).to(torch.int64)
+
+    assert torch.equal(asset.coordinates, expected_coordinates)
+    assert torch.equal(asset.features, torch.ones_like(asset.features))
+    assert asset.metadata["resolution"] == 32
+    assert asset.metadata["decoded_resolution"] == 64
+    torch.testing.assert_close(asset.grid_transform, trellis_grid_transform(32))
 
 
 def test_tiny_shape_and_pbr_decoders_preserve_dual_grid_and_all_material_channels():

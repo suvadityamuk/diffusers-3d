@@ -321,7 +321,7 @@ def convert_trellis2_checkpoint(
 
     limitations = {
         "reviewed_formats": ["sparse_structure"],
-        "experimental_formats": ["shape_slat", "texture_slat", "o_voxel", "mesh", "glb"],
+        "experimental_formats": ["shape_slat", "texture_slat", "o_voxel", "mesh"],
         "production_1024_cascade": "unsupported_until_flex_gemm_ovoxel_gpu_parity",
         "official_full_checkpoint_parity": False,
         "production_gpu_quality_verified": False,

@@ -25,7 +25,10 @@ and PBR/GLB postprocess remain explicitly experimental or capability-gated.
   `formats=("sparse_structure",)` on CPU and round-trips through standard
   Diffusers save/load and `AutoPipelineForImageTo3D`. Released defaults are 12
   steps with the per-stage strengths, rescale values, intervals, and 1024
-  cascade configuration serialized in the pipeline config.
+  cascade configuration serialized in the pipeline config. The upstream sparse
+  target mapping is preserved: `512`, `1024_cascade`, and `1536_cascade` pool
+  decoded occupancy to resolution 32, while `1024` uses 64. Portable tiny
+  pipelines use their decoder's native output resolution.
 
 ## O-Voxel object and codecs
 
@@ -66,9 +69,13 @@ preserve the complete material-channel layout. They do not claim official
 checkpoint parity. Production decoders require the released sparse UNet,
 FlexGEMM, and compiled O-Voxel runtime.
 
-The pipeline can expose tiny shape SLAT, texture SLAT, and O-Voxel stages before
-optional mesh or GLB conversion. The serialized 1024 cascade fails explicitly
-until production sparse/GPU parity is measured.
+The pipeline can expose tiny shape SLAT, texture SLAT, and O-Voxel stages and
+can return a `MeshAsset` through the explicit O-Voxel backend. GLB/trimesh
+postprocess is not a pipeline `formats` value: call
+`postprocess_ovoxel(asset, output_format="glb")` explicitly when the optional,
+license-gated stack is available. The serialized 1024 cascade fails explicitly
+when a production SLAT/O-Voxel stage is requested, until sparse/GPU parity is
+measured.
 
 ## Backend and license boundaries
 

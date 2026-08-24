@@ -157,9 +157,7 @@ class TrainingManifest3D:
                 raise TrainingManifestError("LoRA strategy dropout must be finite and in [0, 1)")
         for field_name in ("objective_config", "training_config"):
             value = getattr(self, field_name)
-            if not isinstance(value, tuple) or any(
-                not isinstance(entry, tuple) or len(entry) != 2 for entry in value
-            ):
+            if not isinstance(value, tuple) or any(not isinstance(entry, tuple) or len(entry) != 2 for entry in value):
                 raise TrainingManifestError(f"training manifest {field_name} must contain name/value pairs")
             names = [entry[0] for entry in value]
             if len(set(names)) != len(names):

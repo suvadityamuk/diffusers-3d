@@ -606,7 +606,13 @@ class Hunyuan3DShapeVAE(Object3DModel):
         offset = torch.tensor(bounds[:3], dtype=torch.float32)
         meshes = []
         for scalar_field in field:
-            mesh = extractor.extract_surface(scalar_field, level=level, spacing=spacing)
+            mesh = extractor.extract_surface(
+                scalar_field,
+                level=level,
+                spacing=spacing,
+                gradient_direction="descent",
+                allow_degenerate=True,
+            )
             meshes.append(
                 MeshAsset(
                     vertices=mesh.vertices + offset,
