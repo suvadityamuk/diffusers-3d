@@ -5,6 +5,8 @@ import re
 from collections.abc import Iterable, Iterator, Mapping
 from dataclasses import dataclass
 
+# OBJECT3D_CONTRACT_VALIDATION_ONLY
+from .._validation_family.registrations import training_registrations
 from ..execution import ModularObject3DPipeline, Object3DModel, Object3DPipeline, ReviewStatus
 from .exceptions import TrainingRegistrationError, TrainingTargetError
 from .recipe import TrainingRecipe3D
@@ -210,7 +212,9 @@ def create_training_recipe_registry(
     return TrainingRecipeRegistry(registrations)
 
 
-_TRAINING_RECIPE_REGISTRY = create_training_recipe_registry().freeze()
+_TRAINING_RECIPE_REGISTRY = create_training_recipe_registry(
+    training_registrations(TrainingRecipeRegistration)
+).freeze()
 
 
 __all__ = [

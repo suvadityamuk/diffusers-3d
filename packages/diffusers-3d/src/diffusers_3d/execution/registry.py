@@ -4,6 +4,8 @@ import inspect
 from collections.abc import Iterable, Iterator
 from dataclasses import dataclass, fields
 
+# OBJECT3D_CONTRACT_VALIDATION_ONLY
+from .._validation_family.registrations import execution_registrations
 from .exceptions import Object3DRegistrationError
 from .metadata import Object3DModelIndex, Object3DModelMetadata, ReviewStatus
 from .models import Object3DModel
@@ -246,8 +248,12 @@ class Object3DPipelineRegistry:
         return tuple(self._by_class[name] for name in sorted(self._by_class))
 
 
-_MODEL_REGISTRY = Object3DModelRegistry().freeze()
-_PIPELINE_REGISTRY = Object3DPipelineRegistry().freeze()
+_INTERNAL_MODEL_REGISTRATIONS, _INTERNAL_PIPELINE_REGISTRATIONS = execution_registrations(
+    Object3DModelRegistration,
+    Object3DPipelineRegistration,
+)
+_MODEL_REGISTRY = Object3DModelRegistry(_INTERNAL_MODEL_REGISTRATIONS).freeze()
+_PIPELINE_REGISTRY = Object3DPipelineRegistry(_INTERNAL_PIPELINE_REGISTRATIONS).freeze()
 
 __all__ = [
     "Object3DModelRegistration",
