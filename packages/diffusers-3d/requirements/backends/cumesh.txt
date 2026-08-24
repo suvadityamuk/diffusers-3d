@@ -1,0 +1,5 @@
+# Package/import: cumesh
+# License: MIT
+# Build from source against the selected PyTorch, compiler, CUDA, and GPU architecture.
+# No externally hosted wheel is approved by this record.
+cumesh @ git+https://github.com/JeffreyXiang/CuMesh.git@12289e1062f0603f2f0d0771b02e1395d247f26f

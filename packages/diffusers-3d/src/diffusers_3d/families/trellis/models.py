@@ -44,7 +44,11 @@ class TrellisSLatFlowOutput(BaseOutput):
 
 class TrellisLayerNorm32(nn.LayerNorm):
     def forward(self, hidden_states: torch.Tensor) -> torch.Tensor:
-        return super().forward(hidden_states.float()).to(dtype=hidden_states.dtype)
+        weight = None if self.weight is None else self.weight.float()
+        bias = None if self.bias is None else self.bias.float()
+        return F.layer_norm(hidden_states.float(), self.normalized_shape, weight, bias, self.eps).to(
+            dtype=hidden_states.dtype
+        )
 
 
 class TrellisTimestepEmbedder(nn.Module):
@@ -66,7 +70,7 @@ class TrellisTimestepEmbedder(nn.Module):
         embedding = torch.cat([torch.cos(arguments), torch.sin(arguments)], dim=-1)
         if self.frequency_embedding_size % 2:
             embedding = torch.cat([embedding, torch.zeros_like(embedding[:, :1])], dim=-1)
-        return self.mlp(embedding)
+        return self.mlp(embedding.to(dtype=self.mlp[0].weight.dtype))
 
 
 class TrellisAbsolutePositionEmbedder(nn.Module):
@@ -590,7 +594,7 @@ class TrellisSparseStructureFlowModel(Object3DModel, PeftAdapterMixin):
         modulation = self.t_embedder(timestep)
         if self.share_mod:
             modulation = self.adaLN_modulation(modulation)
-        inner_dtype = torch.float16 if self.use_fp16 else torch.float32
+        inner_dtype = next(self.blocks.parameters()).dtype
         hidden_states = hidden_states.to(dtype=inner_dtype)
         modulation = modulation.to(dtype=inner_dtype)
         encoder_hidden_states = encoder_hidden_states.to(dtype=inner_dtype)
@@ -819,7 +823,7 @@ class TrellisSLatFlowModel(Object3DModel, PeftAdapterMixin):
         modulation = self.t_embedder(timestep)
         if self.share_mod:
             modulation = self.adaLN_modulation(modulation)
-        inner_dtype = torch.float16 if self.use_fp16 else torch.float32
+        inner_dtype = next(self.blocks.parameters()).dtype
         features = features.to(dtype=inner_dtype)
         modulation = modulation.to(dtype=inner_dtype)
         encoder_hidden_states = encoder_hidden_states.to(dtype=inner_dtype)

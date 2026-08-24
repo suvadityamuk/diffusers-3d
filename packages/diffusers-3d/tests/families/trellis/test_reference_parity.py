@@ -14,39 +14,41 @@ from diffusers_3d import (
     TrellisSparseStructureDecoder,
     TrellisSparseStructureFlowModel,
 )
+from diffusers_3d._reference import ReferenceCheckoutError, validate_reference_checkout
 
 pytestmark = pytest.mark.reference_parity
 
-REFERENCE_ROOT = Path("/tmp/TRELLIS")
+REFERENCE_ROOT = Path(os.environ.get("DIFFUSERS_3D_TRELLIS_REFERENCE_ROOT", "/tmp/TRELLIS"))
+REFERENCE_REPOSITORY = "https://github.com/microsoft/TRELLIS.git"
+REFERENCE_PATHS = (
+    "trellis/models/sparse_structure_flow.py",
+    "trellis/models/sparse_structure_vae.py",
+    "trellis/modules/attention/__init__.py",
+    "trellis/modules/norm.py",
+    "trellis/modules/spatial.py",
+    "trellis/modules/transformer/__init__.py",
+    "trellis/modules/utils.py",
+)
 REFERENCE_PACKAGE = "_diffusers_3d_trellis_reference"
 _REFERENCE_TYPES: tuple[type[torch.nn.Module], type[torch.nn.Module]] | None = None
 
 
-def _assert_pinned_revision() -> None:
-    git_directory = REFERENCE_ROOT / ".git"
-    head_path = git_directory / "HEAD"
-    if not head_path.is_file():
-        pytest.skip("the TRELLIS reference checkout has no verifiable revision metadata")
-    head = head_path.read_text(encoding="utf-8").strip()
-    if head.startswith("ref: "):
-        reference = head.removeprefix("ref: ")
-        revision_path = git_directory / reference
-        if revision_path.is_file():
-            head = revision_path.read_text(encoding="utf-8").strip()
-        else:
-            packed_refs = git_directory / "packed-refs"
-            if not packed_refs.is_file():
-                pytest.skip("the TRELLIS reference checkout revision is not resolvable")
-            revisions = {
-                name: revision
-                for revision, name in (
-                    line.split(" ", maxsplit=1)
-                    for line in packed_refs.read_text(encoding="utf-8").splitlines()
-                    if line and not line.startswith(("#", "^"))
-                )
-            }
-            head = revisions.get(reference, "")
-    assert head == TRELLIS_REFERENCE_REVISION
+def _reference_unavailable(message: str) -> None:
+    if os.environ.get("DIFFUSERS_3D_REQUIRE_REFERENCE") == "1":
+        pytest.fail(message, pytrace=False)
+    pytest.skip(message)
+
+
+def _validate_reference() -> None:
+    try:
+        validate_reference_checkout(
+            REFERENCE_ROOT,
+            expected_revision=TRELLIS_REFERENCE_REVISION,
+            expected_repository=REFERENCE_REPOSITORY,
+            expected_paths=REFERENCE_PATHS,
+        )
+    except ReferenceCheckoutError as error:
+        _reference_unavailable(str(error))
 
 
 def _load_module(name: str, path: Path, *, package: bool = False):
@@ -65,9 +67,7 @@ def _load_pinned_reference():
     if _REFERENCE_TYPES is not None:
         return _REFERENCE_TYPES
     source_root = REFERENCE_ROOT / "trellis"
-    if not source_root.is_dir():
-        pytest.skip("the pinned TRELLIS reference checkout is unavailable")
-    _assert_pinned_revision()
+    _validate_reference()
 
     os.environ["ATTN_BACKEND"] = "sdpa"
     for name, path in (
@@ -111,7 +111,7 @@ def _load_pinned_reference():
             source_root / "models" / "sparse_structure_vae.py",
         )
     except (ImportError, RuntimeError) as error:
-        pytest.skip(f"optional pinned reference dependency unavailable: {error}")
+        _reference_unavailable(f"optional pinned reference dependency unavailable: {error}")
     _REFERENCE_TYPES = flow_module.SparseStructureFlowModel, decoder_module.SparseStructureDecoder
     return _REFERENCE_TYPES
 

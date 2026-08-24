@@ -98,15 +98,19 @@ The pre-release-only scaffold has been removed. The first code release must sati
 1. Production execution and training registries are frozen and contain only exact reviewed family registrations.
 2. Tiny model, pipeline, auto-loading, typed training, and checkpoint round trips cover every registered family.
 3. The full tests, Ruff checks, package installation/import smoke test, and every integration manifest validator pass.
-4. A wheel is built in a clean temporary directory, unpacked, and checked separately from the source tree.
-5. Neither source nor wheel contains the reserved release marker or removed scaffold names and paths.
+4. A wheel and sdist are built, verified for metadata/completeness, unpacked, and checked separately from the source
+   tree.
+5. Neither source, wheel, nor sdist contains the reserved release marker or removed scaffold names and paths.
 6. Version finalization and publication remain explicit maintainer actions after the code gate.
 
-Run the offline checker over all selected source paths and the unpacked wheel:
+Run the offline checker over all selected source paths and both unpacked distributions:
 
 ```bash
-diffusers-3d-check-release src tests templates docs README.md CONTRIBUTING.md pyproject.toml
+diffusers-3d-check-release \
+  src tests templates docs requirements \
+  README.md CONTRIBUTING.md COMPATIBILITY.md LICENSE-APACHE-2.0 MANIFEST.in pyproject.toml
 diffusers-3d-check-release /tmp/diffusers-3d-wheel
+diffusers-3d-check-release /tmp/diffusers-3d-sdist
 ```
 
 The command reports every reserved-marker path, line, and column and exits nonzero until removal is complete. Its

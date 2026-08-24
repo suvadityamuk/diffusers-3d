@@ -1,0 +1,5 @@
+# Package/import: o_voxel
+# License: MIT
+# Build the o-voxel subdirectory with --no-build-isolation after installing the pinned
+# FlexGEMM and CuMesh records. No externally hosted wheel is approved by this record.
+o_voxel @ git+https://github.com/microsoft/TRELLIS.2.git@75fbf0183001ed9876c8dbb35de6b68552ee08bd#subdirectory=o-voxel

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.util
+import os
 import sys
 import types
 from pathlib import Path
@@ -17,45 +18,48 @@ from diffusers_3d import (
     HunyuanImageProcessor,
     ImageCondition,
 )
+from diffusers_3d._reference import ReferenceCheckoutError, validate_reference_checkout
 from diffusers_3d.families.hunyuan3d import HUNYUAN3D_REFERENCE_REVISION
 
 pytestmark = pytest.mark.reference_parity
 
-REFERENCE_ROOT = Path("/tmp/Hunyuan3D-2.1/hy3dshape/hy3dshape")
-REFERENCE_REPOSITORY_ROOT = REFERENCE_ROOT.parents[1]
+REFERENCE_REPOSITORY_ROOT = Path(os.environ.get("DIFFUSERS_3D_HUNYUAN3D_REFERENCE_ROOT", "/tmp/Hunyuan3D-2.1"))
+REFERENCE_ROOT = REFERENCE_REPOSITORY_ROOT / "hy3dshape" / "hy3dshape"
+REFERENCE_REPOSITORY = "https://github.com/Tencent-Hunyuan/Hunyuan3D-2.1.git"
+REFERENCE_PATHS = (
+    "hy3dshape/hy3dshape/models/autoencoders/attention_blocks.py",
+    "hy3dshape/hy3dshape/models/autoencoders/attention_processors.py",
+    "hy3dshape/hy3dshape/models/autoencoders/model.py",
+    "hy3dshape/hy3dshape/models/autoencoders/surface_extractors.py",
+    "hy3dshape/hy3dshape/models/autoencoders/volume_decoders.py",
+    "hy3dshape/hy3dshape/models/conditioner.py",
+    "hy3dshape/hy3dshape/models/denoisers/hunyuandit.py",
+    "hy3dshape/hy3dshape/models/denoisers/moe_layers.py",
+    "hy3dshape/hy3dshape/preprocessors.py",
+    "hy3dshape/hy3dshape/schedulers.py",
+)
 
 
-def _assert_pinned_revision() -> None:
-    git_directory = REFERENCE_REPOSITORY_ROOT / ".git"
-    head_path = git_directory / "HEAD"
-    if not head_path.is_file():
-        pytest.skip("the Hunyuan3D reference checkout has no verifiable revision metadata")
-    head = head_path.read_text(encoding="utf-8").strip()
-    if head.startswith("ref: "):
-        reference = head.removeprefix("ref: ")
-        revision_path = git_directory / reference
-        if revision_path.is_file():
-            head = revision_path.read_text(encoding="utf-8").strip()
-        else:
-            packed_refs = git_directory / "packed-refs"
-            if not packed_refs.is_file():
-                pytest.skip("the Hunyuan3D reference checkout revision is not resolvable")
-            revisions = {
-                name: revision
-                for revision, name in (
-                    line.split(" ", maxsplit=1)
-                    for line in packed_refs.read_text(encoding="utf-8").splitlines()
-                    if line and not line.startswith(("#", "^"))
-                )
-            }
-            head = revisions.get(reference, "")
-    assert head == HUNYUAN3D_REFERENCE_REVISION
+def _reference_unavailable(message: str) -> None:
+    if os.environ.get("DIFFUSERS_3D_REQUIRE_REFERENCE") == "1":
+        pytest.fail(message, pytrace=False)
+    pytest.skip(message)
+
+
+def _validate_reference() -> None:
+    try:
+        validate_reference_checkout(
+            REFERENCE_REPOSITORY_ROOT,
+            expected_revision=HUNYUAN3D_REFERENCE_REVISION,
+            expected_repository=REFERENCE_REPOSITORY,
+            expected_paths=REFERENCE_PATHS,
+        )
+    except ReferenceCheckoutError as error:
+        _reference_unavailable(str(error))
 
 
 def _load_pinned_reference():
-    if not REFERENCE_ROOT.is_dir():
-        pytest.skip("the pinned Hunyuan3D-2.1 reference checkout is unavailable")
-    _assert_pinned_revision()
+    _validate_reference()
     package = "_hunyuan3d_test_reference"
     for name in (package, f"{package}.models", f"{package}.models.denoisers"):
         module = types.ModuleType(name)
@@ -77,14 +81,12 @@ def _load_pinned_reference():
             sys.modules[module_name] = module
             spec.loader.exec_module(module)
     except ImportError as error:
-        pytest.skip(f"optional reference dependency unavailable: {error}")
+        _reference_unavailable(f"optional reference dependency unavailable: {error}")
     return sys.modules[f"{package}.models.denoisers.hunyuandit"].HunYuanDiTPlain
 
 
 def _load_pinned_vae_reference():
-    if not REFERENCE_ROOT.is_dir():
-        pytest.skip("the pinned Hunyuan3D-2.1 reference checkout is unavailable")
-    _assert_pinned_revision()
+    _validate_reference()
     package = "_hunyuan3d_vae_test_reference"
     for name in (package, f"{package}.models", f"{package}.models.autoencoders"):
         module = types.ModuleType(name)
@@ -121,21 +123,19 @@ def _load_pinned_vae_reference():
             sys.modules[module_name] = module
             spec.loader.exec_module(module)
     except ImportError as error:
-        pytest.skip(f"optional VAE reference dependency unavailable: {error}")
+        _reference_unavailable(f"optional VAE reference dependency unavailable: {error}")
     return sys.modules[f"{package}.models.autoencoders.model"].ShapeVAE
 
 
 def _load_standalone_reference(relative_path: str, module_name: str, class_name: str):
-    if not REFERENCE_ROOT.is_dir():
-        pytest.skip("the pinned Hunyuan3D-2.1 reference checkout is unavailable")
-    _assert_pinned_revision()
+    _validate_reference()
     spec = importlib.util.spec_from_file_location(module_name, REFERENCE_ROOT / relative_path)
     module = importlib.util.module_from_spec(spec)
     sys.modules[module_name] = module
     try:
         spec.loader.exec_module(module)
     except (ImportError, RuntimeError) as error:
-        pytest.skip(f"optional reference dependency unavailable: {error}")
+        _reference_unavailable(f"optional reference dependency unavailable: {error}")
     return getattr(module, class_name)
 
 

@@ -23,10 +23,18 @@ The code release gate requires all of the following before publication:
 - [x] Pre-release-only scaffold code and tests are absent from source and built packages.
 - [x] Tiny Hunyuan3D, TRELLIS, and TRELLIS.2 model, pipeline, auto-loading, training, and checkpoint round trips pass.
 - [x] Every reviewed family schema-v2 manifest validates with only its declared license/backend warnings.
-- [x] Source and unpacked wheel scans pass with the default release checker.
+- [x] Source, unpacked wheel, and unpacked sdist scans pass with the default release checker.
 
 This checklist covers code readiness only. Selecting a final version and publishing a release are separate maintainer
 actions; the package remains at its development version until then.
+
+The distribution is intentionally mixed-license. Package-owned glue is
+Apache-2.0, the TRELLIS and TRELLIS.2-derived family code retains MIT terms,
+and Hunyuan-derived files retain the Tencent Hunyuan 3D 2.1 Community
+License. Wheel and sdist metadata declare the aggregate PEP 639 expression
+and ship the local Apache license, both MIT notices, the Tencent license, and
+all family notices. Those terms apply to their respective files; the
+aggregate expression does not relicense any family code or model artifact.
 
 ## Current Hunyuan3D limitations
 

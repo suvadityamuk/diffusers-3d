@@ -7,8 +7,9 @@ versions and side-effect-free `BACKEND_REGISTRY` discovery status of a particula
 
 | Component | Declared compatibility | CI/verification status |
 |---|---|---|
-| `diffusers-3d` | `0.1.0.dev0` | Source tests and wheel checks |
+| `diffusers-3d` | `0.1.0.dev0` | Source tests plus wheel and sdist verification |
 | Diffusers | `>=0.40.0.dev0,<0.41` | Local repository checkout, current `0.40` development minor |
+| Transformers | `>=5.5.0` | Exact 5.5.0 minimum lane plus latest-resolved CPU lanes |
 | Python | `>=3.10` | Core CPU matrix: 3.10, 3.11, 3.12 |
 | PyTorch | `>=2.4` | CPU wheels in CI; no upper bound is claimed |
 
@@ -16,6 +17,11 @@ The verification environment recorded on 2026-08-24 used Python 3.12.3, Diffuser
 diffusers-3d 0.1.0.dev0, and PyTorch 2.13.0+cu130. That run was CPU-only despite the CUDA-enabled PyTorch build.
 The workflow installs the local Diffusers checkout exactly once and installs the diffusers-3d wheel with `--no-deps`,
 avoiding competing editable and released Diffusers installations.
+
+DINOv3 classes first shipped in Transformers 4.56.0. That line requires
+Hugging Face Hub `<1.0`, which cannot satisfy Diffusers 0.40's Hub 1.x
+requirement, and it predates relevant security fixes. The declared 5.5.0
+floor is the first intentionally supported floor for this package stack.
 
 ## Backend matrix
 
@@ -50,10 +56,14 @@ metadata without importing optional modules.
 | TRELLIS | MIT upstream; Apache-2.0 glue; restricted renderers separate | Sparse structure plus experimental tiny SLAT equations, conversion, training, save/load | Sparse flow/decoder forward and flow backward | Not run |
 | TRELLIS.2 | MIT upstream; DINOv3 and nvdiffrast separately restricted | Reviewed sparse structure plus experimental tiny SLAT/O-Voxel/PBR channels, conversion, training, save/load | Sparse flow/decoder forward and flow backward | Not run |
 
-All converter tests use synthetic tiny state dictionaries. Pinned-source parity uses deterministic tiny random weights,
-not downloaded production checkpoints. Therefore these results establish architecture, state-key, equation, gradient,
-and serialization compatibility only. They do not establish production image-to-3D quality, full-resolution memory
-behavior, compiled O-Voxel output, PBR GLB quality, or published-checkpoint parity.
+All converter tests use synthetic tiny state dictionaries. Pinned-source
+parity first verifies the exact commit, expected origin, clean worktree, and
+tracked source tree, then uses deterministic tiny random weights rather than
+downloaded production checkpoints. Therefore these results establish
+architecture, state-key, equation, gradient, and serialization compatibility
+only. They do not establish production image-to-3D quality, full-resolution
+memory behavior, compiled O-Voxel output, PBR GLB quality, or
+published-checkpoint parity.
 
 ## Commands
 

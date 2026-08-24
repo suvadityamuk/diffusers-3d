@@ -39,7 +39,11 @@ class Trellis2SLatFlowOutput(BaseOutput):
 
 class Trellis2LayerNorm32(nn.LayerNorm):
     def forward(self, hidden_states: torch.Tensor) -> torch.Tensor:
-        return super().forward(hidden_states.float()).to(dtype=hidden_states.dtype)
+        weight = None if self.weight is None else self.weight.float()
+        bias = None if self.bias is None else self.bias.float()
+        return F.layer_norm(hidden_states.float(), self.normalized_shape, weight, bias, self.eps).to(
+            dtype=hidden_states.dtype
+        )
 
 
 class Trellis2TimestepEmbedder(nn.Module):
@@ -61,7 +65,7 @@ class Trellis2TimestepEmbedder(nn.Module):
         embedding = torch.cat([torch.cos(arguments), torch.sin(arguments)], dim=-1)
         if self.frequency_embedding_size % 2:
             embedding = torch.cat([embedding, torch.zeros_like(embedding[:, :1])], dim=-1)
-        return self.mlp(embedding)
+        return self.mlp(embedding.to(dtype=self.mlp[0].weight.dtype))
 
 
 class Trellis2AbsolutePositionEmbedder(nn.Module):
@@ -328,6 +332,16 @@ class Trellis2ModulatedTransformerCrossBlock(nn.Module):
 
 
 class _Trellis2FlowInitialization:
+    def _apply(self, fn, recurse: bool = True):
+        rope_phases = self._buffers.pop("rope_phases", None)
+        try:
+            result = super()._apply(fn, recurse)
+        finally:
+            if rope_phases is not None:
+                probe = fn(torch.empty(0, device=rope_phases.device, dtype=torch.float32))
+                self._buffers["rope_phases"] = rope_phases.to(device=probe.device)
+        return result
+
     def _convert_torso(self) -> None:
         # Upstream converts only primitive Linear layers in the transformer
         # torso. Norm, RMSNorm, and shared-modulation parameters remain fp32.
@@ -536,9 +550,10 @@ class Trellis2SparseStructureFlowModel(_Trellis2FlowInitialization, Object3DMode
         modulation = self.t_embedder(timestep)
         if self.share_mod:
             modulation = self.adaLN_modulation(modulation)
-        hidden_states = hidden_states.to(dtype=self.inner_dtype)
-        modulation = modulation.to(dtype=self.inner_dtype)
-        encoder_hidden_states = encoder_hidden_states.to(dtype=self.inner_dtype)
+        inner_dtype = self.blocks[0].self_attn.to_qkv.weight.dtype
+        hidden_states = hidden_states.to(dtype=inner_dtype)
+        modulation = modulation.to(dtype=inner_dtype)
+        encoder_hidden_states = encoder_hidden_states.to(dtype=inner_dtype)
         phases = None if self.rope_phases is None else self.rope_phases.to(device=hidden_states.device)
         for block in self.blocks:
             if torch.is_grad_enabled() and self.gradient_checkpointing:
@@ -755,9 +770,10 @@ class Trellis2SLatFlowModel(_Trellis2FlowInitialization, Object3DModel):
         output = torch.zeros_like(features)
         for batch_index in range(batch_size):
             positions = torch.nonzero(hidden_states.coordinates[:, 0] == batch_index, as_tuple=False).reshape(-1)
-            batch_features = features[positions].unsqueeze(0).to(dtype=self.inner_dtype)
-            batch_modulation = modulation[batch_index : batch_index + 1].to(dtype=self.inner_dtype)
-            batch_context = encoder_hidden_states[batch_index : batch_index + 1].to(dtype=self.inner_dtype)
+            inner_dtype = self.blocks[0].self_attn.to_qkv.weight.dtype
+            batch_features = features[positions].unsqueeze(0).to(dtype=inner_dtype)
+            batch_modulation = modulation[batch_index : batch_index + 1].to(dtype=inner_dtype)
+            batch_context = encoder_hidden_states[batch_index : batch_index + 1].to(dtype=inner_dtype)
             phases = None if self.rope is None else self.rope(hidden_states.coordinates[positions, 1:]).unsqueeze(0)
             for block in self.blocks:
                 if torch.is_grad_enabled() and self.gradient_checkpointing:

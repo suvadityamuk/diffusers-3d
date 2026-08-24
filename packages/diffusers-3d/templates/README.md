@@ -30,6 +30,12 @@ registrations, and separately qualified training recipe. The manifest deliberate
 surface. Replace the starter objective and conversion mapping only with behavior proven against the pinned upstream
 revision.
 
+The reviewed starter is schema-valid but deliberately policy-invalid. Every
+parity record has `passed: false`, an explicit `NOT RUN` reference, and a
+`NOT PROVIDED` test placeholder. `diffusers-3d-validate` must continue to
+fail for a copied starter until contributors replace those values with real,
+executable evidence and set `passed: true` only after the tests pass.
+
 Before proposing package review:
 
 1. run component conversion, save/load, and CPU float32 parity tests;

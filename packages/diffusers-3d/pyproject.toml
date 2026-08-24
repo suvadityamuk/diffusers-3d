@@ -8,7 +8,16 @@ version = "0.1.0.dev0"
 description = "Object-native 3D generation and fine-tuning built on Diffusers"
 readme = "README.md"
 requires-python = ">=3.10"
-license = "Apache-2.0"
+license = "Apache-2.0 AND MIT AND LicenseRef-Tencent-Hunyuan-3D-2.1-Community"
+license-files = [
+    "LICENSE-APACHE-2.0",
+    "src/diffusers_3d/families/hunyuan3d/LICENSE-TENCENT-HUNYUAN-3D-2.1",
+    "src/diffusers_3d/families/hunyuan3d/NOTICE",
+    "src/diffusers_3d/families/trellis/LICENSE-MIT",
+    "src/diffusers_3d/families/trellis/NOTICE",
+    "src/diffusers_3d/families/trellis2/LICENSE-MIT",
+    "src/diffusers_3d/families/trellis2/NOTICE",
+]
 authors = [{ name = "The Diffusers 3D contributors" }]
 classifiers = [
     "Development Status :: 2 - Pre-Alpha",
@@ -27,7 +36,7 @@ dependencies = [
     "numpy",
     "safetensors",
     "torch>=2.4",
-    "transformers",
+    "transformers>=5.5.0",
 ]
 
 [project.scripts]
@@ -51,9 +60,20 @@ hunyuan3d = [
     "scikit-image",
 ]
 training = ["peft"]
+reference-test = [
+    "einops",
+    "omegaconf",
+    "opencv-python-headless",
+    "PyYAML",
+    "scikit-image",
+    "timm",
+]
 test = [
+    "build",
     "pytest",
     "pytest-cov",
+    "PyYAML",
+    "ruff",
 ]
 
 [project.urls]
@@ -65,7 +85,6 @@ where = ["src"]
 [tool.setuptools.package-data]
 diffusers_3d = [
     "py.typed",
-    "schemas/*.json",
     "families/hunyuan3d/*.json",
     "families/hunyuan3d/*.md",
     "families/hunyuan3d/LICENSE*",

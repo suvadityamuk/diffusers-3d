@@ -28,10 +28,10 @@
         {
           "atol": 0.0001,
           "kind": "inference",
-          "passed": true,
-          "reference": "Pinned upstream denoiser on deterministic CPU float32 inputs.",
+          "passed": false,
+          "reference": "NOT RUN: replace with the exact pinned upstream denoiser invocation.",
           "rtol": 0.0001,
-          "test": "tests/reviewed_family/test_parity.py::test_denoiser_parity"
+          "test": "NOT PROVIDED: replace with an executable denoiser parity node ID."
         }
       ],
       "role": "denoiser"
@@ -48,10 +48,10 @@
         {
           "atol": 0.001,
           "kind": "inference",
-          "passed": true,
-          "reference": "Pinned upstream end-to-end image-to-3D workflow.",
+          "passed": false,
+          "reference": "NOT RUN: replace with the exact pinned upstream image-to-3D workflow.",
           "rtol": 0.001,
-          "test": "tests/reviewed_family/test_parity.py::test_pipeline_parity"
+          "test": "NOT PROVIDED: replace with an executable pipeline parity node ID."
         }
       ],
       "role": "pipeline"
@@ -82,19 +82,19 @@
     "backward_parity": {
       "atol": 0.0001,
       "kind": "backward",
-      "passed": true,
-      "reference": "Pinned upstream gradients for every recipe-owned parameter.",
+      "passed": false,
+      "reference": "NOT RUN: replace with pinned upstream gradients for every recipe-owned parameter.",
       "rtol": 0.0001,
-      "test": "tests/reviewed_family/test_training.py::test_backward_parity"
+      "test": "NOT PROVIDED: replace with an executable backward parity node ID."
     },
     "batch_class": "reviewed_family.training_recipe.ReviewedBatch",
     "checkpoint_parity": {
       "atol": 0.0,
       "kind": "checkpoint",
-      "passed": true,
-      "reference": "Exact save, load, and continuation comparison.",
+      "passed": false,
+      "reference": "NOT RUN: replace with an exact save, load, and continuation comparison.",
       "rtol": 0.0,
-      "test": "tests/reviewed_family/test_training.py::test_checkpoint_continuation"
+      "test": "NOT PROVIDED: replace with an executable checkpoint continuation node ID."
     },
     "components": [
       "denoiser"
@@ -103,10 +103,10 @@
     "objective_parity": {
       "atol": 0.0001,
       "kind": "objective",
-      "passed": true,
-      "reference": "Pinned upstream objective on an exact typed batch.",
+      "passed": false,
+      "reference": "NOT RUN: replace with the pinned upstream objective on an exact typed batch.",
       "rtol": 0.0001,
-      "test": "tests/reviewed_family/test_training.py::test_objective_parity"
+      "test": "NOT PROVIDED: replace with an executable objective parity node ID."
     },
     "recipe_class": "reviewed_family.training_recipe.ReviewedTrainingRecipe",
     "recipe_id": "reviewed-family",
