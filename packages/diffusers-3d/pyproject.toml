@@ -1,0 +1,67 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "diffusers-3d"
+version = "0.1.0.dev0"
+description = "Object-native 3D generation and fine-tuning built on Diffusers"
+readme = "README.md"
+requires-python = ">=3.10"
+license = "Apache-2.0"
+authors = [{ name = "The Diffusers 3D contributors" }]
+classifiers = [
+    "Development Status :: 2 - Pre-Alpha",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: Apache Software License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+dependencies = [
+    "accelerate",
+    "diffusers>=0.40.0.dev0,<0.41",
+    "safetensors",
+    "torch>=2.4",
+    "transformers",
+]
+
+[project.optional-dependencies]
+portable = [
+    "scikit-image",
+    "trimesh",
+    "xatlas",
+]
+gaussian = ["gsplat"]
+training = ["peft"]
+test = [
+    "pytest",
+    "pytest-cov",
+]
+
+[project.urls]
+Repository = "https://github.com/suvadityamuk/diffusers-3d"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+diffusers_3d = ["py.typed", "schemas/*.json"]
+
+[tool.pytest.ini_options]
+addopts = "-ra"
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 119
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+ignore = ["C901", "E501"]
+select = ["C", "E", "F", "I", "W"]
+
+[tool.ruff.format]
+quote-style = "double"
