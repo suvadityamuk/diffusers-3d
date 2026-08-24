@@ -1,27 +1,17 @@
-"""Object-native 3D generation and fine-tuning built on Diffusers."""
-
-from ._version import __version__
-from .objects import (
-    CameraRig,
-    CoordinateSystem,
-    GaussianSplatAsset,
-    JSONPrimitive,
-    JSONValue,
-    Latent3DOutput,
-    MeshAsset,
-    Metadata,
+from ._validation import (
     MetadataValidationError,
-    Object3D,
-    Object3DKind,
-    Object3DPipelineOutput,
     Object3DValidationError,
-    OVoxelAsset,
-    PBRMaterial,
-    SparseVoxelAsset,
     TensorDeviceError,
     TensorDTypeError,
     TensorShapeError,
 )
+from .camera import CameraRig
+from .gaussian import GaussianSplatAsset
+from .material import PBRMaterial
+from .mesh import MeshAsset
+from .outputs import Latent3DOutput, Object3DPipelineOutput
+from .types import CoordinateSystem, JSONPrimitive, JSONValue, Metadata, Object3D, Object3DKind
+from .voxel import OVoxelAsset, SparseVoxelAsset
 
 __all__ = [
     "CameraRig",
@@ -43,5 +33,4 @@ __all__ = [
     "TensorDTypeError",
     "TensorDeviceError",
     "TensorShapeError",
-    "__version__",
 ]
