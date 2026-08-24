@@ -9,7 +9,7 @@ from ..execution import ModularObject3DPipeline, Object3DModel, Object3DPipeline
 from ..families.registrations import production_training_registrations
 from .exceptions import TrainingRegistrationError, TrainingTargetError
 from .recipe import TrainingRecipe3D
-from .types import ComponentPolicy
+from .types import ComponentPolicy, FrozenComponentPolicy
 
 _RECIPE_ID_PATTERN = re.compile(r"^[a-z][a-z0-9_.-]*$")
 _VERSION_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.+-]*$")
@@ -28,6 +28,7 @@ class TrainingRecipeRegistration:
     family_id: str
     component_policies: tuple[ComponentPolicy, ...]
     review_status: ReviewStatus
+    frozen_component_policies: tuple[FrozenComponentPolicy, ...] = ()
 
 
 class TrainingRecipeRegistry:
@@ -120,14 +121,24 @@ class TrainingRecipeRegistry:
             raise TrainingRegistrationError("component_policies must be a non-empty tuple")
         if any(type(policy) is not ComponentPolicy for policy in registration.component_policies):
             raise TrainingRegistrationError("component_policies must contain exact ComponentPolicy values")
+        if not isinstance(registration.frozen_component_policies, tuple) or any(
+            type(policy) is not FrozenComponentPolicy for policy in registration.frozen_component_policies
+        ):
+            raise TrainingRegistrationError(
+                "frozen_component_policies must be a tuple of exact FrozenComponentPolicy values"
+            )
         keys = [policy.key for policy in registration.component_policies]
         paths = [policy.component_path for policy in registration.component_policies]
+        frozen_paths = [policy.component_path for policy in registration.frozen_component_policies]
         if len(set(keys)) != len(keys):
             raise TrainingRegistrationError("component policy keys must be unique")
         if len(set(paths)) != len(paths):
             raise TrainingRegistrationError("component policy paths must be unique")
-        for index, path in enumerate(paths):
-            for other_path in paths[index + 1 :]:
+        if len(set(frozen_paths)) != len(frozen_paths):
+            raise TrainingRegistrationError("frozen component policy paths must be unique")
+        all_paths = [*paths, *frozen_paths]
+        for index, path in enumerate(all_paths):
+            for other_path in all_paths[index + 1 :]:
                 if (
                     not path
                     or not other_path
@@ -144,6 +155,7 @@ class TrainingRecipeRegistry:
             ("example_type", registration.example_type),
             ("batch_type", registration.batch_type),
             ("component_policies", registration.component_policies),
+            ("frozen_component_policies", registration.frozen_component_policies),
         )
         for name, expected in declarations:
             if getattr(recipe_type, name, None) != expected:
@@ -184,6 +196,7 @@ class TrainingRecipeRegistry:
             ("example_type", registration.example_type),
             ("batch_type", registration.batch_type),
             ("component_policies", registration.component_policies),
+            ("frozen_component_policies", registration.frozen_component_policies),
         )
         for name, expected in declarations:
             if getattr(recipe_type, name, None) != expected:

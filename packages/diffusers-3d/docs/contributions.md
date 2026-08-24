@@ -1,7 +1,7 @@
 # Integration contribution lifecycle
 
 An integration manifest records review evidence; it does not register code by itself. Every manifest uses schema
-`diffusers-3d-integration` version `1`, rejects unknown JSON fields at every level, and is validated without network
+`diffusers-3d-integration` version `2`, rejects unknown JSON fields at every level, and is validated without network
 access.
 
 Validate a local record with:
@@ -70,8 +70,13 @@ Training is a separate qualification for a reviewed package or upstream integrat
 - checkpoint save/load and continuation parity;
 - objective parity against the pinned upstream implementation.
 
-Review also checks typed examples and batches, exact component policies, gradient ownership, public checkpoint APIs,
-and deterministic resume identity. Missing or failed evidence keeps the integration inference-only.
+Review also checks typed examples and batches, exact trainable and frozen component policies, gradient ownership,
+public checkpoint APIs, and deterministic resume identity. Training manifest schema version `3` records canonical
+objective settings and optimizer/scheduler/batch/precision/seed settings. Checkpoints retain family inference
+artifacts and an `accelerator_state` continuation directory containing model, optimizer, scheduler, scaler, RNG,
+trainer counters, and data position. Exact continuation requires `dataloader_num_workers=0`; asynchronous dataset
+worker state is intentionally not claimed. `Object3DTrainer.train()` returns one CPU-only `TrainingSummary3D`
+instead of retaining every device output. Missing or failed evidence keeps the integration inference-only.
 
 ## Backend and license review
 

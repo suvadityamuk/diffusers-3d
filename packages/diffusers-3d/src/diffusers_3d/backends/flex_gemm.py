@@ -11,6 +11,7 @@ from .registry import BackendRegistry
 from .types import BackendCapability
 
 FLEX_GEMM_SOURCE_URL = "https://github.com/JeffreyXiang/FlexGEMM.git"
+FLEX_GEMM_SOURCE_REVISION = "6dd94a859c26ee8246888502eada3dd8ad85532e"
 FLEX_GEMM_BATCH_INDICES = "flex_gemm_batch_indices"
 
 
@@ -24,7 +25,7 @@ class FlexGemmBackend:
     def __init__(
         self,
         *,
-        source_revision: str,
+        source_revision: str = FLEX_GEMM_SOURCE_REVISION,
         build_id: str,
         source_url: str = FLEX_GEMM_SOURCE_URL,
         device: str | torch.device = "cuda",
@@ -33,8 +34,8 @@ class FlexGemmBackend:
     ) -> None:
         if source_url != FLEX_GEMM_SOURCE_URL:
             raise ValueError(f"FlexGEMM source_url must be {FLEX_GEMM_SOURCE_URL!r}")
-        if not isinstance(source_revision, str) or not source_revision.strip():
-            raise ValueError("source_revision must record the audited FlexGEMM commit")
+        if source_revision != FLEX_GEMM_SOURCE_REVISION:
+            raise ValueError(f"FlexGEMM source_revision must be {FLEX_GEMM_SOURCE_REVISION!r}")
         if not isinstance(build_id, str) or not build_id.strip():
             raise ValueError("build_id must record the PyTorch/Triton/compiler build")
         self.source_url = source_url
@@ -178,4 +179,9 @@ class FlexGemmBackend:
         )
 
 
-__all__ = ["FLEX_GEMM_BATCH_INDICES", "FLEX_GEMM_SOURCE_URL", "FlexGemmBackend"]
+__all__ = [
+    "FLEX_GEMM_BATCH_INDICES",
+    "FLEX_GEMM_SOURCE_REVISION",
+    "FLEX_GEMM_SOURCE_URL",
+    "FlexGemmBackend",
+]

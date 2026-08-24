@@ -19,9 +19,10 @@ from .types import FineTuneStrategy3D, LoRAFineTune
 
 TRAINING_MANIFEST_NAME = "diffusers_3d_training.json"
 TRAINING_MANIFEST_SCHEMA = "diffusers-3d-training"
-TRAINING_MANIFEST_VERSION = 2
+TRAINING_MANIFEST_VERSION = 3
 
 StrategyConfigValue = int | float | str
+ConfigValue = bool | int | float | str | None
 _QUALIFIED_TYPE_PATTERN = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)+$")
 _HASH_PATTERN = re.compile(r"^[0-9a-f]{64}$")
 
@@ -31,6 +32,21 @@ def trainable_parameter_hash(names: tuple[str, ...]) -> str:
 
     payload = json.dumps(sorted(names), ensure_ascii=True, separators=(",", ":")).encode("utf-8")
     return hashlib.sha256(payload).hexdigest()
+
+
+def _canonical_config(value: Mapping[str, ConfigValue], field_name: str) -> tuple[tuple[str, ConfigValue], ...]:
+    if not isinstance(value, Mapping):
+        raise TrainingManifestError(f"{field_name} must contain a JSON object")
+    entries = []
+    for name, item in value.items():
+        if not isinstance(name, str) or not name:
+            raise TrainingManifestError(f"{field_name} keys must be non-empty strings")
+        if item is not None and not isinstance(item, (bool, int, float, str)):
+            raise TrainingManifestError(f"{field_name} values must be JSON-safe scalars")
+        if isinstance(item, float) and not math.isfinite(item):
+            raise TrainingManifestError(f"{field_name} floating-point values must be finite")
+        entries.append((name, item))
+    return tuple(sorted(entries))
 
 
 @dataclass(frozen=True, slots=True)
@@ -46,6 +62,8 @@ class TrainingManifest3D:
     recipe_version: str
     strategy: str
     strategy_config: tuple[tuple[str, StrategyConfigValue], ...]
+    objective_config: tuple[tuple[str, ConfigValue], ...]
+    training_config: tuple[tuple[str, ConfigValue], ...]
     components: tuple[str, ...]
     base_model: str
     revision: str | None
@@ -137,6 +155,17 @@ class TrainingManifest3D:
                 or not 0 <= dropout < 1
             ):
                 raise TrainingManifestError("LoRA strategy dropout must be finite and in [0, 1)")
+        for field_name in ("objective_config", "training_config"):
+            value = getattr(self, field_name)
+            if not isinstance(value, tuple) or any(
+                not isinstance(entry, tuple) or len(entry) != 2 for entry in value
+            ):
+                raise TrainingManifestError(f"training manifest {field_name} must contain name/value pairs")
+            names = [entry[0] for entry in value]
+            if len(set(names)) != len(names):
+                raise TrainingManifestError(f"training manifest {field_name} must not contain duplicate names")
+            if _canonical_config(dict(value), field_name) != value:
+                raise TrainingManifestError(f"training manifest {field_name} must be canonical and sorted")
         if (
             not isinstance(self.trainable_parameter_names, tuple)
             or not self.trainable_parameter_names
@@ -168,6 +197,8 @@ class TrainingManifest3D:
         base_model: str,
         revision: str | None,
         trainable_parameter_names: tuple[str, ...],
+        objective_config: Mapping[str, ConfigValue],
+        training_config: Mapping[str, ConfigValue],
     ) -> TrainingManifest3D:
         names = tuple(sorted(trainable_parameter_names))
         strategy_config: tuple[tuple[str, StrategyConfigValue], ...] = ()
@@ -187,6 +218,8 @@ class TrainingManifest3D:
             recipe_version=recipe_version,
             strategy=strategy.kind.value,
             strategy_config=strategy_config,
+            objective_config=_canonical_config(objective_config, "objective_config"),
+            training_config=_canonical_config(training_config, "training_config"),
             components=tuple(sorted(strategy.components)),
             base_model=base_model,
             revision=revision,
@@ -203,6 +236,7 @@ class TrainingManifest3D:
             "diffusers_version": self.diffusers_version,
             "example_type": self.example_type,
             "family_id": self.family_id,
+            "objective_config": dict(self.objective_config),
             "package_version": self.package_version,
             "recipe_id": self.recipe_id,
             "recipe_version": self.recipe_version,
@@ -212,6 +246,7 @@ class TrainingManifest3D:
             "strategy": self.strategy,
             "strategy_config": dict(self.strategy_config),
             "target_type": self.target_type,
+            "training_config": dict(self.training_config),
             "trainable_parameter_hash": self.trainable_parameter_hash,
             "trainable_parameter_names": list(self.trainable_parameter_names),
         }
@@ -230,6 +265,14 @@ class TrainingManifest3D:
         strategy_config = data["strategy_config"]
         if not isinstance(strategy_config, Mapping):
             raise TrainingManifestError("strategy_config must contain a JSON object")
+        objective_config = data["objective_config"]
+        training_config = data["training_config"]
+        if not isinstance(objective_config, Mapping) or not isinstance(training_config, Mapping):
+            raise TrainingManifestError("objective_config and training_config must contain JSON objects")
+        if not isinstance(data["components"], list):
+            raise TrainingManifestError("components must contain a JSON array")
+        if not isinstance(data["trainable_parameter_names"], list):
+            raise TrainingManifestError("trainable_parameter_names must contain a JSON array")
         try:
             return cls(
                 schema=data["schema"],  # type: ignore[arg-type]
@@ -241,6 +284,8 @@ class TrainingManifest3D:
                 recipe_version=data["recipe_version"],  # type: ignore[arg-type]
                 strategy=data["strategy"],  # type: ignore[arg-type]
                 strategy_config=tuple(sorted(strategy_config.items())),  # type: ignore[arg-type]
+                objective_config=_canonical_config(objective_config, "objective_config"),  # type: ignore[arg-type]
+                training_config=_canonical_config(training_config, "training_config"),  # type: ignore[arg-type]
                 components=tuple(data["components"]),  # type: ignore[arg-type]
                 base_model=data["base_model"],  # type: ignore[arg-type]
                 revision=data["revision"],  # type: ignore[arg-type]
@@ -286,6 +331,7 @@ class TrainingManifest3D:
                 handle.flush()
                 os.fsync(handle.fileno())
             os.replace(temporary_path, destination)
+            os.chmod(destination, 0o644)
         except OSError as error:
             if temporary_path is not None:
                 temporary_path.unlink(missing_ok=True)

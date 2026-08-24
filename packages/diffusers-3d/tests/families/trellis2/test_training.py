@@ -102,8 +102,14 @@ def test_sparse_structure_recipe_registration_collation_full_step_and_checkpoint
     assert not any(
         parameter.requires_grad for parameter in tiny_trellis2_pipeline.sparse_structure_decoder.parameters()
     )
+    for component in (
+        tiny_trellis2_pipeline.conditioner,
+        tiny_trellis2_pipeline.sparse_structure_decoder,
+    ):
+        assert not component.training
+        assert all(parameter.device == trainer.accelerator.device for parameter in component.parameters())
     assert all(name.startswith("sparse_structure_flow_model.") for name in trainer.trainable_parameter_names)
-    assert len(trainer.train()) == 1
+    assert trainer.train().final_loss is not None
     checkpoint = trainer.save_checkpoint()
     assert checkpoint.is_file()
     assert TrainingManifest3D.load(tmp_path) == trainer.manifest

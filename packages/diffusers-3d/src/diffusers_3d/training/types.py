@@ -166,6 +166,35 @@ class ComponentPolicy:
 
 @final
 @dataclass(frozen=True, slots=True)
+class FrozenComponentPolicy:
+    """Exact frozen objective dependency that stays unwrapped and in evaluation mode."""
+
+    component_path: str
+    expected_types: tuple[type[nn.Module], ...]
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.component_path, str) or not _ATTRIBUTE_PATH_PATTERN.fullmatch(self.component_path):
+            raise TrainingPolicyError("frozen component_path must be an exact non-empty dotted attribute path")
+        if isinstance(self.expected_types, type) or not isinstance(self.expected_types, Sequence):
+            raise TrainingPolicyError("frozen expected_types must be a sequence of exact concrete torch module types")
+        expected_types = tuple(self.expected_types)
+        if not expected_types:
+            raise TrainingPolicyError("frozen expected_types must not be empty")
+        for expected_type in expected_types:
+            if (
+                not isinstance(expected_type, type)
+                or expected_type is nn.Module
+                or not issubclass(expected_type, nn.Module)
+                or inspect.isabstract(expected_type)
+            ):
+                raise TrainingPolicyError("frozen expected_types must contain exact concrete torch module types")
+        if len(set(expected_types)) != len(expected_types):
+            raise TrainingPolicyError("frozen expected_types must not contain duplicates")
+        object.__setattr__(self, "expected_types", expected_types)
+
+
+@final
+@dataclass(frozen=True, slots=True)
 class TrainingConfig3D:
     """Compact bounded training configuration."""
 
@@ -253,6 +282,28 @@ class TrainingConfig3D:
         if not isinstance(self.shuffle, bool) or not isinstance(self.cpu, bool):
             raise TrainingConfigurationError("shuffle and cpu must be booleans")
 
+    def resume_config(self) -> dict[str, bool | float | int | str]:
+        """Return the canonical training settings that must match on resume."""
+
+        return {
+            "adam_beta1": float(self.adam_beta1),
+            "adam_beta2": float(self.adam_beta2),
+            "adam_epsilon": float(self.adam_epsilon),
+            "cpu": self.cpu,
+            "dataloader_num_workers": self.dataloader_num_workers,
+            "gradient_accumulation_steps": self.gradient_accumulation_steps,
+            "learning_rate": float(self.learning_rate),
+            "lr_scheduler": self.lr_scheduler,
+            "lr_warmup_steps": self.lr_warmup_steps,
+            "max_grad_norm": float(self.max_grad_norm),
+            "max_train_steps": self.max_train_steps,
+            "mixed_precision": self.mixed_precision,
+            "seed": self.seed,
+            "shuffle": self.shuffle,
+            "train_batch_size": self.train_batch_size,
+            "weight_decay": float(self.weight_decay),
+        }
+
 
 MetricValue = float | torch.Tensor
 
@@ -287,13 +338,53 @@ class TrainingStep3DOutput:
         object.__setattr__(self, "metrics", MappingProxyType(metrics))
 
 
+@final
+@dataclass(frozen=True, slots=True)
+class TrainingSummary3D:
+    """Compact CPU-only summary for one bounded trainer run."""
+
+    final_loss: float | None
+    final_metrics: Mapping[str, float] = field(default_factory=dict)
+    micro_steps: int = 0
+    optimizer_steps: int = 0
+
+    def __post_init__(self) -> None:
+        if self.final_loss is not None and (
+            not isinstance(self.final_loss, (int, float))
+            or isinstance(self.final_loss, bool)
+            or not math.isfinite(self.final_loss)
+        ):
+            raise TrainingConfigurationError("final_loss must be a finite number or None")
+        if not isinstance(self.final_metrics, Mapping):
+            raise TrainingConfigurationError("final_metrics must be a mapping")
+        metrics = {}
+        for name, value in self.final_metrics.items():
+            if (
+                not isinstance(name, str)
+                or not name
+                or not isinstance(value, (int, float))
+                or isinstance(value, bool)
+                or not math.isfinite(value)
+            ):
+                raise TrainingConfigurationError("final_metrics must contain non-empty names and finite numbers")
+            metrics[name] = float(value)
+        for name in ("micro_steps", "optimizer_steps"):
+            value = getattr(self, name)
+            if not isinstance(value, int) or isinstance(value, bool) or value < 0:
+                raise TrainingConfigurationError(f"{name} must be a non-negative integer")
+        object.__setattr__(self, "final_loss", None if self.final_loss is None else float(self.final_loss))
+        object.__setattr__(self, "final_metrics", MappingProxyType(metrics))
+
+
 __all__ = [
     "ComponentPolicy",
     "FineTuneKind",
     "FineTuneStrategy3D",
+    "FrozenComponentPolicy",
     "FullFineTune",
     "LoRAFineTune",
     "MetricValue",
     "TrainingConfig3D",
+    "TrainingSummary3D",
     "TrainingStep3DOutput",
 ]

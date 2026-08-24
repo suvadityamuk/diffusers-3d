@@ -67,6 +67,10 @@ class ReviewedTrainingRecipe(TrainingRecipe3D[ReviewedObject3DPipeline, Object3D
     example_type = Object3DExample
     batch_type = ReviewedBatch
     component_policies = (REVIEWED_DENOISER_POLICY,)
+    frozen_component_policies = ()
+
+    def objective_config(self):
+        return {"stage": "mesh"}
 
     def collate(self, examples: Sequence[Object3DExample]) -> ReviewedBatch:
         images = []

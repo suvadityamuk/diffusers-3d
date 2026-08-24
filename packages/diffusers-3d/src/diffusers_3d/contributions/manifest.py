@@ -5,7 +5,7 @@ import math
 import os
 import re
 import tempfile
-from collections.abc import Mapping, Sequence
+from collections.abc import Mapping
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
@@ -117,7 +117,7 @@ def _string_tuple(
     identifiers: bool = False,
     allow_empty: bool = False,
 ) -> tuple[str, ...]:
-    if isinstance(value, str) or not isinstance(value, Sequence):
+    if not isinstance(value, (list, tuple)):
         raise IntegrationManifestError(f"{field_name} must be a JSON array of strings")
     items = tuple(value)
     if not items and not allow_empty:
@@ -137,7 +137,7 @@ def _record_tuple(
     *,
     field_name: str,
 ) -> tuple[Any, ...]:
-    if isinstance(value, (str, bytes)) or not isinstance(value, Sequence):
+    if not isinstance(value, (list, tuple)):
         raise IntegrationManifestError(f"{field_name} must be a JSON array")
     records = tuple(value)
     if any(not isinstance(record, record_type) for record in records):
@@ -324,7 +324,7 @@ class ComponentIntegration3D:
         )
         conversion = data["checkpoint_conversion"]
         parity = data["parity"]
-        if isinstance(parity, (str, bytes)) or not isinstance(parity, Sequence):
+        if not isinstance(parity, (list, tuple)):
             raise IntegrationManifestError("component.parity must be a JSON array")
         return cls(
             role=data["role"],  # type: ignore[arg-type]
@@ -586,7 +586,7 @@ class LicenseDeclarations3D:
     def from_dict(cls, value: object) -> LicenseDeclarations3D:
         data = _strict_fields(value, {"artifacts", "model"}, context="licenses")
         artifacts = data["artifacts"]
-        if isinstance(artifacts, (str, bytes)) or not isinstance(artifacts, Sequence):
+        if not isinstance(artifacts, (list, tuple)):
             raise IntegrationManifestError("licenses.artifacts must be a JSON array")
         model = data["model"]
         return cls(
@@ -625,7 +625,7 @@ class TrainingRecipeQualification3D:
                 field_name,
                 _qualified_name(getattr(self, field_name), field_name=f"training.{field_name}"),
             )
-        if isinstance(self.strategies, (str, FineTuneStrategy)) or not isinstance(self.strategies, Sequence):
+        if not isinstance(self.strategies, (list, tuple)):
             raise IntegrationManifestError("training.strategies must be a JSON array")
         strategies = tuple(
             _parse_enum(strategy, FineTuneStrategy, field_name="training.strategies") for strategy in self.strategies
@@ -822,9 +822,9 @@ class IntegrationManifest3D:
         )
         components = data["components"]
         backends = data["backends"]
-        if isinstance(components, (str, bytes)) or not isinstance(components, Sequence):
+        if not isinstance(components, (list, tuple)):
             raise IntegrationManifestError("components must be a JSON array")
-        if isinstance(backends, (str, bytes)) or not isinstance(backends, Sequence):
+        if not isinstance(backends, (list, tuple)):
             raise IntegrationManifestError("backends must be a JSON array")
         licenses = data["licenses"]
         training = data["training"]
@@ -900,6 +900,7 @@ class IntegrationManifest3D:
                 handle.flush()
                 os.fsync(handle.fileno())
             os.replace(temporary_path, destination)
+            os.chmod(destination, 0o644)
         except OSError as error:
             if temporary_path is not None:
                 temporary_path.unlink(missing_ok=True)

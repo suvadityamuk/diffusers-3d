@@ -154,6 +154,9 @@ def test_object3d_trainer_full_step_and_checkpoint_roundtrip(
     assert all(parameter.requires_grad for parameter in pipeline.denoiser.parameters())
     assert not any(parameter.requires_grad for parameter in pipeline.vae.parameters())
     assert not any(parameter.requires_grad for parameter in pipeline.conditioner.parameters())
+    for component in (pipeline.conditioner, pipeline.vae):
+        assert not component.training
+        assert all(parameter.device == trainer.accelerator.device for parameter in component.parameters())
     trainable_ids = {id(parameter) for parameter in trainer.trainable_parameters}
     assert trainable_ids == {id(parameter) for parameter in pipeline.denoiser.parameters()}
     assert {
@@ -161,8 +164,8 @@ def test_object3d_trainer_full_step_and_checkpoint_roundtrip(
     } == trainable_ids
     assert all(name.startswith("denoiser.") for name in trainer.trainable_parameter_names)
 
-    outputs = trainer.train()
-    assert len(outputs) == 1 and trainer.optimizer_steps == 1
+    summary = trainer.train()
+    assert summary.final_loss is not None and trainer.optimizer_steps == 1
     checkpoint_manifest = trainer.save_checkpoint()
     assert checkpoint_manifest.is_file()
     loaded_manifest = TrainingManifest3D.load(tmp_path)

@@ -145,12 +145,17 @@ class OVoxelAsset(BaseOutput, TensorDataMixin):
             raise TensorShapeError("base_color must have shape (num_voxels, 3) or (num_voxels, 4)")
         if bool(((self.base_color < 0) | (self.base_color > 1)).any()):
             raise Object3DValidationError("base_color values must be in [0, 1]")
-        for name in ("metallic", "roughness", "opacity"):
+        for name in ("metallic", "roughness"):
             tensor = getattr(self, name)
-            if tensor is not None:
-                validate_scalar_channel(name, tensor, count)
-                if bool(((tensor < 0) | (tensor > 1)).any()):
-                    raise Object3DValidationError(f"{name} values must be in [0, 1]")
+            if tensor is None:
+                raise Object3DValidationError(f"{name} must be a tensor")
+            validate_scalar_channel(name, tensor, count)
+            if bool(((tensor < 0) | (tensor > 1)).any()):
+                raise Object3DValidationError(f"{name} values must be in [0, 1]")
+        if self.opacity is not None:
+            validate_scalar_channel("opacity", self.opacity, count)
+            if bool(((self.opacity < 0) | (self.opacity > 1)).any()):
+                raise Object3DValidationError("opacity values must be in [0, 1]")
         if self.normals is not None:
             validate_tensor("normals", self.normals, rank=2, trailing_shape=(3,), floating=True)
             if self.normals.shape[0] != count:

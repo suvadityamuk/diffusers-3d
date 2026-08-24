@@ -71,6 +71,31 @@ def test_released_sparse_structure_objective_and_frozen_components(tiny_trellis_
     assert all(parameter.grad is None for parameter in pipeline.sparse_structure_decoder.parameters())
 
 
+def test_sparse_structure_compute_loss_accepts_accelerator_style_wrapper(tiny_trellis_pipeline):
+    class Wrapper(torch.nn.Module):
+        def __init__(self, module):
+            super().__init__()
+            self.module = module
+
+        def forward(self, *args, **kwargs):
+            return self.module(*args, **kwargs)
+
+    pipeline = tiny_trellis_pipeline
+    recipe = TrellisSparseStructureFlowRecipe(pipeline)
+    recipe.validate_target()
+    pipeline.sparse_structure_flow_model = Wrapper(pipeline.sparse_structure_flow_model)
+    clean = torch.zeros(1, 2, 4, 4, 4)
+    batch = TrellisSparseStructureBatch(
+        images=torch.zeros(1, 3, 8, 8),
+        sparse_structure_latents=clean,
+        noise=torch.ones_like(clean),
+        timesteps=torch.tensor([0.5]),
+        condition_dropout_mask=torch.tensor([False]),
+    )
+
+    assert recipe.compute_loss(batch).loss.ndim == 0
+
+
 def test_sparse_structure_recipe_registration_collation_and_full_trainer_checkpoint(
     tmp_path,
     tiny_trellis_pipeline,
@@ -105,10 +130,16 @@ def test_sparse_structure_recipe_registration_collation_and_full_trainer_checkpo
     assert not any(
         parameter.requires_grad for parameter in tiny_trellis_pipeline.sparse_structure_decoder.parameters()
     )
+    for component in (
+        tiny_trellis_pipeline.conditioner,
+        tiny_trellis_pipeline.sparse_structure_decoder,
+    ):
+        assert not component.training
+        assert all(parameter.device == trainer.accelerator.device for parameter in component.parameters())
     assert all(name.startswith("sparse_structure_flow_model.") for name in trainer.trainable_parameter_names)
 
-    outputs = trainer.train()
-    assert len(outputs) == 1 and trainer.optimizer_steps == 1
+    summary = trainer.train()
+    assert summary.final_loss is not None and trainer.optimizer_steps == 1
     checkpoint = trainer.save_checkpoint()
     assert checkpoint.is_file()
     assert TrainingManifest3D.load(tmp_path) == trainer.manifest

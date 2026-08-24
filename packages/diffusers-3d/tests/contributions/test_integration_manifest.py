@@ -20,6 +20,7 @@ def test_strict_deterministic_roundtrip_is_deeply_immutable(tmp_path, manifest_f
     assert IntegrationManifest3D.load(path) == manifest
     assert IntegrationManifest3D.loads(manifest.dumps()) == manifest
     assert not tuple(path.parent.glob(f".{path.name}.*.tmp"))
+    assert path.stat().st_mode & 0o044 == 0o044
     with pytest.raises(dataclasses.FrozenInstanceError):
         manifest.integration_id = "changed"
     with pytest.raises(dataclasses.FrozenInstanceError):
@@ -51,6 +52,11 @@ def test_missing_fields_and_wrong_json_types_are_rejected(manifest_factory):
 
     data = manifest_factory().to_dict()
     data["components"] = "not-an-array"
+    with pytest.raises(IntegrationManifestError, match="components must be a JSON array"):
+        IntegrationManifest3D.from_dict(data)
+
+    data = manifest_factory().to_dict()
+    data["components"] = {"reviewed-component": data["components"][0]}
     with pytest.raises(IntegrationManifestError, match="components must be a JSON array"):
         IntegrationManifest3D.from_dict(data)
 

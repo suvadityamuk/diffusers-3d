@@ -45,12 +45,9 @@ _DTYPE_PATTERN = re.compile(r"^[a-z][a-z0-9_]*$")
 
 
 def _as_nonempty_tuple(value: object, field_name: str) -> tuple[str, ...]:
-    if isinstance(value, str):
-        raise TypeError(f"{field_name} must be a sequence of strings, not a string")
-    try:
-        items = tuple(value)  # type: ignore[arg-type]
-    except TypeError as error:
-        raise TypeError(f"{field_name} must be a sequence of strings") from error
+    if not isinstance(value, (list, tuple)):
+        raise TypeError(f"{field_name} must be a list or tuple of strings")
+    items = tuple(value)
     if not items:
         raise ValueError(f"{field_name} must not be empty")
     if any(not isinstance(item, str) or not item for item in items):
@@ -61,12 +58,9 @@ def _as_nonempty_tuple(value: object, field_name: str) -> tuple[str, ...]:
 
 
 def _as_optional_tuple(value: object, field_name: str) -> tuple[str, ...]:
-    if isinstance(value, str):
-        raise TypeError(f"{field_name} must be a sequence of strings, not a string")
-    try:
-        items = tuple(value)  # type: ignore[arg-type]
-    except TypeError as error:
-        raise TypeError(f"{field_name} must be a sequence of strings") from error
+    if not isinstance(value, (list, tuple)):
+        raise TypeError(f"{field_name} must be a list or tuple of strings")
+    items = tuple(value)
     if any(not isinstance(item, str) or not item for item in items):
         raise ValueError(f"{field_name} must contain non-empty strings")
     if len(set(items)) != len(items):
@@ -75,12 +69,9 @@ def _as_optional_tuple(value: object, field_name: str) -> tuple[str, ...]:
 
 
 def _as_string_frozenset(value: object, field_name: str) -> frozenset[str]:
-    if isinstance(value, str):
-        raise TypeError(f"{field_name} must be a collection of strings, not a string")
-    try:
-        items = frozenset(value)  # type: ignore[arg-type]
-    except TypeError as error:
-        raise TypeError(f"{field_name} must be a collection of strings") from error
+    if not isinstance(value, (list, tuple, frozenset)):
+        raise TypeError(f"{field_name} must be a list, tuple, or frozenset of strings")
+    items = frozenset(value)
     if not items or any(not isinstance(item, str) or not item for item in items):
         raise ValueError(f"{field_name} must contain at least one non-empty string")
     return items
@@ -128,7 +119,7 @@ class BackendSpec:
             raise ValueError("distribution_names must contain valid Python distribution names")
         object.__setattr__(self, "distribution_names", distribution_names)
 
-        if isinstance(self.capabilities, (str, BackendCapability)):
+        if not isinstance(self.capabilities, (list, tuple, frozenset)):
             raise TypeError("capabilities must be a collection of BackendCapability values")
         try:
             capabilities = frozenset(BackendCapability(capability) for capability in self.capabilities)
@@ -192,13 +183,14 @@ class BackendStatus:
     distribution_name: str | None
     reason: str | None
     provenance_verified: bool = True
+    version_compatible: bool = True
     missing_import_names: tuple[str, ...] = ()
     missing_distribution_names: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         if not isinstance(self.spec, BackendSpec):
             raise TypeError("spec must be a BackendSpec")
-        for field_name in ("installed", "importable", "provenance_verified"):
+        for field_name in ("installed", "importable", "provenance_verified", "version_compatible"):
             if not isinstance(getattr(self, field_name), bool):
                 raise TypeError(f"{field_name} must be a bool")
         for field_name in ("version", "distribution_name", "reason"):
@@ -222,7 +214,7 @@ class BackendStatus:
 
     @property
     def available(self) -> bool:
-        return self.installed and self.importable and self.provenance_verified
+        return self.installed and self.importable and self.provenance_verified and self.version_compatible
 
 
 @dataclass(frozen=True, slots=True)
@@ -232,12 +224,9 @@ class BackendDiscoveryReport:
     statuses: tuple[BackendStatus, ...]
 
     def __post_init__(self) -> None:
-        if isinstance(self.statuses, BackendStatus):
-            raise TypeError("statuses must be a sequence of BackendStatus values")
-        try:
-            statuses = tuple(self.statuses)
-        except TypeError as error:
-            raise TypeError("statuses must be a sequence of BackendStatus values") from error
+        if not isinstance(self.statuses, (list, tuple)):
+            raise TypeError("statuses must be a list or tuple of BackendStatus values")
+        statuses = tuple(self.statuses)
         if any(not isinstance(status, BackendStatus) for status in statuses):
             raise TypeError("statuses must contain only BackendStatus values")
         object.__setattr__(self, "statuses", statuses)

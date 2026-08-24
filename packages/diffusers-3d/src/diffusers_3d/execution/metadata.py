@@ -53,12 +53,9 @@ def _normalize_identifiers(
     *,
     allow_empty: bool = False,
 ) -> tuple[str, ...]:
-    if isinstance(value, str):
-        raise Object3DMetadataError(f"{field_name} must be a sequence of strings, not a string")
-    try:
-        items = tuple(value)  # type: ignore[arg-type]
-    except TypeError as error:
-        raise Object3DMetadataError(f"{field_name} must be a sequence of strings") from error
+    if not isinstance(value, (list, tuple)):
+        raise Object3DMetadataError(f"{field_name} must be a JSON array or typed tuple of strings")
+    items = tuple(value)
     if not items and not allow_empty:
         raise Object3DMetadataError(f"{field_name} must not be empty")
     normalized = tuple(_normalize_identifier(item, field_name) for item in items)
@@ -68,12 +65,9 @@ def _normalize_identifiers(
 
 
 def _normalize_qualified_classes(value: object, field_name: str) -> tuple[str, ...]:
-    if isinstance(value, str):
-        raise Object3DMetadataError(f"{field_name} must be a sequence of fully-qualified class names")
-    try:
-        items = tuple(value)  # type: ignore[arg-type]
-    except TypeError as error:
-        raise Object3DMetadataError(f"{field_name} must be a sequence of fully-qualified class names") from error
+    if not isinstance(value, (list, tuple)):
+        raise Object3DMetadataError(f"{field_name} must be a JSON array or typed tuple")
+    items = tuple(value)
     if not items:
         raise Object3DMetadataError(f"{field_name} must not be empty")
     for item in items:
@@ -91,10 +85,10 @@ def _normalize_qualified_class(value: object, field_name: str) -> str:
 
 
 def _normalize_object_kinds(value: object, field_name: str) -> tuple[Object3DKind, ...]:
-    if isinstance(value, (str, Object3DKind)):
-        raise Object3DMetadataError(f"{field_name} must be a sequence of Object3DKind values")
+    if not isinstance(value, (list, tuple)):
+        raise Object3DMetadataError(f"{field_name} must be a JSON array or typed tuple of Object3DKind values")
     try:
-        items = tuple(Object3DKind(item) for item in value)  # type: ignore[arg-type]
+        items = tuple(Object3DKind(item) for item in value)
     except (TypeError, ValueError) as error:
         raise Object3DMetadataError(f"{field_name} must contain valid Object3DKind values") from error
     if not items:
@@ -384,6 +378,7 @@ class Object3DModelIndex:
                 handle.flush()
                 os.fsync(handle.fileno())
             os.replace(temporary_path, destination)
+            os.chmod(destination, 0o644)
         except OSError as error:
             if temporary_path is not None:
                 temporary_path.unlink(missing_ok=True)

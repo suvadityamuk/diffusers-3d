@@ -22,7 +22,14 @@ from ...objects._validation import TensorShapeError, validate_shared_device, val
 from ...objects.base import TensorDataMixin
 from ...training.exceptions import TrainingCheckpointError, TrainingTargetError
 from ...training.recipe import TrainingRecipe3D
-from ...training.types import ComponentPolicy, FineTuneKind, FineTuneStrategy3D, FullFineTune, TrainingStep3DOutput
+from ...training.types import (
+    ComponentPolicy,
+    FineTuneKind,
+    FineTuneStrategy3D,
+    FrozenComponentPolicy,
+    FullFineTune,
+    TrainingStep3DOutput,
+)
 from ..trellis.sparse import TrellisSparseTensor
 from .conditioner import Trellis2Dinov3Conditioner
 from .decoders import Trellis2SparseStructureDecoder
@@ -86,6 +93,13 @@ TRELLIS2_SPARSE_STRUCTURE_FLOW_POLICY = ComponentPolicy(
     expected_types=(Trellis2SparseStructureFlowModel,),
     supported_strategies=(FineTuneKind.FULL,),
 )
+TRELLIS2_SPARSE_STRUCTURE_FROZEN_COMPONENT_POLICIES = (
+    FrozenComponentPolicy(component_path="conditioner", expected_types=(Trellis2Dinov3Conditioner,)),
+    FrozenComponentPolicy(
+        component_path="sparse_structure_decoder",
+        expected_types=(Trellis2SparseStructureDecoder,),
+    ),
+)
 
 
 def _validate_hyperparameters(sigma_min: float, p_uncond: float) -> tuple[float, float]:
@@ -142,6 +156,7 @@ class Trellis2SparseStructureFlowRecipe(
     example_type = Trellis2SparseStructureExample
     batch_type = Trellis2SparseStructureBatch
     component_policies = (TRELLIS2_SPARSE_STRUCTURE_FLOW_POLICY,)
+    frozen_component_policies = TRELLIS2_SPARSE_STRUCTURE_FROZEN_COMPONENT_POLICIES
 
     def __init__(
         self,
@@ -160,6 +175,16 @@ class Trellis2SparseStructureFlowRecipe(
             raise ValueError("timestep_std must be positive")
         self.timestep_mean = float(timestep_mean)
         self.timestep_std = float(timestep_std)
+
+    def objective_config(self) -> Mapping[str, bool | float | int | str | None]:
+        return {
+            "p_uncond": self.p_uncond,
+            "sigma_min": self.sigma_min,
+            "stage": "sparse_structure",
+            "timestep_distribution": "logit_normal",
+            "timestep_mean": self.timestep_mean,
+            "timestep_std": self.timestep_std,
+        }
 
     def collate(
         self,
@@ -192,10 +217,10 @@ class Trellis2SparseStructureFlowRecipe(
         if type(batch) is not Trellis2SparseStructureBatch:
             raise TrainingTargetError("batch must be an exact Trellis2SparseStructureBatch")
         batch.validate()
-        self.validate_target()
         clean = batch.sparse_structure_latents
         model = self.target.sparse_structure_flow_model
-        expected = (clean.shape[0], model.config.in_channels, *([model.config.resolution] * 3))
+        model_config = self.component_config(model)
+        expected = (clean.shape[0], model_config.in_channels, *([model_config.resolution] * 3))
         if tuple(clean.shape) != expected:
             raise TensorShapeError(f"sparse_structure_latents must have shape {expected}")
         with torch.no_grad():
@@ -302,6 +327,9 @@ TRELLIS2_SHAPE_SLAT_FLOW_POLICY = ComponentPolicy(
     expected_types=(Trellis2SLatFlowModel,),
     supported_strategies=(FineTuneKind.FULL,),
 )
+TRELLIS2_SHAPE_SLAT_FROZEN_COMPONENT_POLICIES = (
+    FrozenComponentPolicy(component_path="conditioner", expected_types=(Trellis2Dinov3Conditioner,)),
+)
 
 
 class Trellis2ShapeSLatFlowRecipe(TrainingRecipe3D[Trellis2ImageTo3DPipeline, Trellis2SLatExample, Trellis2SLatBatch]):
@@ -314,6 +342,7 @@ class Trellis2ShapeSLatFlowRecipe(TrainingRecipe3D[Trellis2ImageTo3DPipeline, Tr
     example_type = Trellis2SLatExample
     batch_type = Trellis2SLatBatch
     component_policies = (TRELLIS2_SHAPE_SLAT_FLOW_POLICY,)
+    frozen_component_policies = TRELLIS2_SHAPE_SLAT_FROZEN_COMPONENT_POLICIES
 
     def __init__(
         self,
@@ -324,6 +353,14 @@ class Trellis2ShapeSLatFlowRecipe(TrainingRecipe3D[Trellis2ImageTo3DPipeline, Tr
     ) -> None:
         super().__init__(target)
         self.sigma_min, self.p_uncond = _validate_hyperparameters(sigma_min, p_uncond)
+
+    def objective_config(self) -> Mapping[str, bool | float | int | str | None]:
+        return {
+            "p_uncond": self.p_uncond,
+            "sigma_min": self.sigma_min,
+            "stage": "shape_slat",
+            "timestep_distribution": "uniform",
+        }
 
     def collate(self, examples: Sequence[Trellis2SLatExample]) -> Trellis2SLatBatch:
         if not examples or any(type(example) is not Trellis2SLatExample for example in examples):
@@ -349,11 +386,11 @@ class Trellis2ShapeSLatFlowRecipe(TrainingRecipe3D[Trellis2ImageTo3DPipeline, Tr
         if type(batch) is not Trellis2SLatBatch:
             raise TrainingTargetError("batch must be an exact Trellis2SLatBatch")
         batch.validate()
-        self.validate_target()
         sparse = batch.normalized_slat
         model = self.target.shape_slat_flow_model
-        if sparse.channels != model.config.in_channels:
-            raise TensorShapeError(f"normalized shape SLAT must have {model.config.in_channels} channels")
+        model_config = self.component_config(model)
+        if sparse.channels != model_config.in_channels:
+            raise TensorShapeError(f"normalized shape SLAT must have {model_config.in_channels} channels")
         with torch.no_grad():
             conditioning = self.target.conditioner(batch.images, value_range=(0.0, 1.0)).embeddings
         conditioning, dropout_mask = _drop_conditioning(
@@ -444,6 +481,9 @@ TRELLIS2_TEXTURE_SLAT_FLOW_POLICY = ComponentPolicy(
     expected_types=(Trellis2SLatFlowModel,),
     supported_strategies=(FineTuneKind.FULL,),
 )
+TRELLIS2_TEXTURE_SLAT_FROZEN_COMPONENT_POLICIES = (
+    FrozenComponentPolicy(component_path="conditioner", expected_types=(Trellis2Dinov3Conditioner,)),
+)
 
 
 class Trellis2TextureSLatFlowRecipe(
@@ -462,6 +502,7 @@ class Trellis2TextureSLatFlowRecipe(
     example_type = Trellis2TextureSLatExample
     batch_type = Trellis2TextureSLatBatch
     component_policies = (TRELLIS2_TEXTURE_SLAT_FLOW_POLICY,)
+    frozen_component_policies = TRELLIS2_TEXTURE_SLAT_FROZEN_COMPONENT_POLICIES
 
     def __init__(
         self,
@@ -472,6 +513,14 @@ class Trellis2TextureSLatFlowRecipe(
     ) -> None:
         super().__init__(target)
         self.sigma_min, self.p_uncond = _validate_hyperparameters(sigma_min, p_uncond)
+
+    def objective_config(self) -> Mapping[str, bool | float | int | str | None]:
+        return {
+            "p_uncond": self.p_uncond,
+            "sigma_min": self.sigma_min,
+            "stage": "texture_slat",
+            "timestep_distribution": "uniform",
+        }
 
     def collate(self, examples: Sequence[Trellis2TextureSLatExample]) -> Trellis2TextureSLatBatch:
         if not examples or any(type(example) is not Trellis2TextureSLatExample for example in examples):
@@ -504,13 +553,13 @@ class Trellis2TextureSLatFlowRecipe(
         if type(batch) is not Trellis2TextureSLatBatch:
             raise TrainingTargetError("batch must be an exact Trellis2TextureSLatBatch")
         batch.validate()
-        self.validate_target()
         texture = batch.normalized_texture_slat
         shape = batch.normalized_shape_slat
         model = self.target.texture_slat_flow_model
+        model_config = self.component_config(model)
         if (
-            texture.channels != model.config.out_channels
-            or texture.channels + shape.channels != model.config.in_channels
+            texture.channels != model_config.out_channels
+            or texture.channels + shape.channels != model_config.in_channels
         ):
             raise TensorShapeError("texture and shape channels do not match the texture flow concat contract")
         with torch.no_grad():
@@ -548,8 +597,11 @@ class Trellis2TextureSLatFlowRecipe(
 
 __all__ = [
     "TRELLIS2_SHAPE_SLAT_FLOW_POLICY",
+    "TRELLIS2_SHAPE_SLAT_FROZEN_COMPONENT_POLICIES",
     "TRELLIS2_SPARSE_STRUCTURE_FLOW_POLICY",
+    "TRELLIS2_SPARSE_STRUCTURE_FROZEN_COMPONENT_POLICIES",
     "TRELLIS2_TEXTURE_SLAT_FLOW_POLICY",
+    "TRELLIS2_TEXTURE_SLAT_FROZEN_COMPONENT_POLICIES",
     "Trellis2SLatBatch",
     "Trellis2SLatExample",
     "Trellis2ShapeSLatFlowRecipe",

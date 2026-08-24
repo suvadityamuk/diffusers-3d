@@ -4,9 +4,11 @@ from . import families as _families
 from ._version import __version__
 from .backends import (
     BACKEND_REGISTRY,
+    CUMESH_SOURCE_REVISION,
     CUMESH_SOURCE_URL,
     DEFAULT_BACKEND_SPECS,
     FLEX_GEMM_BATCH_INDICES,
+    FLEX_GEMM_SOURCE_REVISION,
     FLEX_GEMM_SOURCE_URL,
     OVOXEL_METADATA_PREFIX,
     OVOXEL_REFERENCE_REVISION,
@@ -148,6 +150,9 @@ from .objects import (
     TensorShapeError,
 )
 from .training import (
+    ACCELERATOR_STATE_DIRECTORY,
+    TRAINER_STATE_NAME,
+    TRAINER_STATE_SCHEMA_VERSION,
     TRAINING_ADAPTER_NAME,
     TRAINING_MANIFEST_NAME,
     TRAINING_MANIFEST_SCHEMA,
@@ -155,6 +160,7 @@ from .training import (
     ComponentPolicy,
     FineTuneKind,
     FineTuneStrategy3D,
+    FrozenComponentPolicy,
     FullFineTune,
     LoRAFineTune,
     MetricValue,
@@ -174,6 +180,7 @@ from .training import (
     TrainingRecipeRegistry,
     TrainingRegistrationError,
     TrainingStep3DOutput,
+    TrainingSummary3D,
     TrainingTargetError,
     create_training_recipe_registry,
     trainable_parameter_hash,
@@ -189,11 +196,14 @@ def __getattr__(name: str):
 
 
 __all__ = [
+    "ACCELERATOR_STATE_DIRECTORY",
     "BACKEND_REGISTRY",
+    "CUMESH_SOURCE_REVISION",
     "CUMESH_SOURCE_URL",
     "DEFAULT_FORBIDDEN_MARKER",
     "DEFAULT_BACKEND_SPECS",
     "FLEX_GEMM_BATCH_INDICES",
+    "FLEX_GEMM_SOURCE_REVISION",
     "FLEX_GEMM_SOURCE_URL",
     "IMAGE_TO_3D_TASK",
     "INTEGRATION_MANIFEST_NAME",
@@ -235,6 +245,7 @@ __all__ = [
     "DiffoctreerastBackendFacade",
     "FineTuneKind",
     "FineTuneStrategy3D",
+    "FrozenComponentPolicy",
     "FieldRenderingBackend",
     "FlexGemmBackend",
     "FineTuneStrategy",
@@ -369,8 +380,11 @@ __all__ = [
     "TrainingRecipeRegistration",
     "TrainingRecipeRegistry",
     "TrainingRegistrationError",
+    "TrainingSummary3D",
     "TrainingStep3DOutput",
     "TrainingTargetError",
+    "TRAINER_STATE_NAME",
+    "TRAINER_STATE_SCHEMA_VERSION",
     "UpstreamSource3D",
     "ValidationIssue3D",
     "ValidationReport3D",

@@ -26,7 +26,14 @@ from ...objects._validation import (
 from ...objects.base import TensorDataMixin
 from ...training.exceptions import TrainingCheckpointError, TrainingTargetError
 from ...training.recipe import TrainingRecipe3D
-from ...training.types import ComponentPolicy, FineTuneKind, FineTuneStrategy3D, FullFineTune, TrainingStep3DOutput
+from ...training.types import (
+    ComponentPolicy,
+    FineTuneKind,
+    FineTuneStrategy3D,
+    FrozenComponentPolicy,
+    FullFineTune,
+    TrainingStep3DOutput,
+)
 from .conditioner import Hunyuan3DDinov2Conditioner
 from .models import Hunyuan3DShapeDiTModel
 from .pipeline import Hunyuan3DImageToShapePipeline
@@ -121,6 +128,10 @@ HUNYUAN3D_DENOISER_POLICY = ComponentPolicy(
     expected_types=(Hunyuan3DShapeDiTModel,),
     supported_strategies=(FineTuneKind.FULL,),
 )
+HUNYUAN3D_FROZEN_COMPONENT_POLICIES = (
+    FrozenComponentPolicy(component_path="conditioner", expected_types=(Hunyuan3DDinov2Conditioner,)),
+    FrozenComponentPolicy(component_path="vae", expected_types=(Hunyuan3DShapeVAE,)),
+)
 
 
 class Hunyuan3DShapeFlowMatchingRecipe(
@@ -135,6 +146,13 @@ class Hunyuan3DShapeFlowMatchingRecipe(
     example_type = Hunyuan3DShapeExample
     batch_type = Hunyuan3DShapeBatch
     component_policies = (HUNYUAN3D_DENOISER_POLICY,)
+    frozen_component_policies = HUNYUAN3D_FROZEN_COMPONENT_POLICIES
+
+    def objective_config(self) -> Mapping[str, bool | float | int | str | None]:
+        return {
+            "stage": "shape",
+            "timestep_distribution": "uniform",
+        }
 
     def collate(self, examples: Sequence[Hunyuan3DShapeExample]) -> Hunyuan3DShapeBatch:
         images = []
@@ -187,7 +205,6 @@ class Hunyuan3DShapeFlowMatchingRecipe(
         if type(batch) is not Hunyuan3DShapeBatch:
             raise TrainingTargetError("batch must be an exact Hunyuan3DShapeBatch")
         batch.validate()
-        self.validate_target()
 
         if batch.shape_latents is None:
             raise NotImplementedError(
@@ -195,10 +212,11 @@ class Hunyuan3DShapeFlowMatchingRecipe(
                 "provide precomputed released-recipe shape_latents"
             )
         clean_latents = batch.shape_latents
+        denoiser_config = self.component_config(self.target.denoiser)
         expected_shape = (
             clean_latents.shape[0],
-            self.target.denoiser.config.input_size,
-            self.target.denoiser.config.in_channels,
+            denoiser_config.input_size,
+            denoiser_config.in_channels,
         )
         if clean_latents.shape != expected_shape:
             raise TensorShapeError(f"shape_latents must have shape {expected_shape}")
@@ -252,6 +270,7 @@ class Hunyuan3DShapeFlowMatchingRecipe(
 
 __all__ = [
     "HUNYUAN3D_DENOISER_POLICY",
+    "HUNYUAN3D_FROZEN_COMPONENT_POLICIES",
     "Hunyuan3DShapeBatch",
     "Hunyuan3DShapeExample",
     "Hunyuan3DShapeFlowMatchingRecipe",

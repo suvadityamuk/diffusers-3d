@@ -3,6 +3,7 @@ from __future__ import annotations
 import sys
 import types
 from dataclasses import dataclass
+from pathlib import Path
 
 import pytest
 import torch
@@ -13,9 +14,12 @@ from torch import nn
 
 import diffusers_3d.training.trainer as trainer_module
 from diffusers_3d import (
+    ACCELERATOR_STATE_DIRECTORY,
+    TRAINER_STATE_NAME,
     ComponentPolicy,
     ContributionStatus,
     FineTuneKind,
+    FrozenComponentPolicy,
     FullFineTune,
     LoRAFineTune,
     MeshAsset,
@@ -70,6 +74,15 @@ class OtherTinyBlock(TinyBlock):
     pass
 
 
+class TinyFrozenBlock(nn.Module):
+    def __init__(self) -> None:
+        super().__init__()
+        self.scale = nn.Parameter(torch.tensor(1.0))
+
+    def forward(self, inputs: torch.Tensor) -> torch.Tensor:
+        return inputs * self.scale
+
+
 class TinyTarget(Object3DModel):
     family_id = "tiny-training"
     component_role = "denoiser"
@@ -82,6 +95,7 @@ class TinyTarget(Object3DModel):
     def __init__(self) -> None:
         super().__init__()
         self.block = TinyBlock()
+        self.conditioner = TinyFrozenBlock()
         self.other = nn.Parameter(torch.tensor(3.0))
 
     def forward(self, inputs: torch.Tensor) -> torch.Tensor:
@@ -95,6 +109,10 @@ FULL_POLICY = ComponentPolicy(
     supported_strategies=(FineTuneKind.FULL,),
     full_parameter_names=("weight",),
 )
+FROZEN_POLICY = FrozenComponentPolicy(
+    component_path="conditioner",
+    expected_types=(TinyFrozenBlock,),
+)
 
 
 class TinyRecipe(TrainingRecipe3D[TinyTarget, Object3DExample, TinyBatch]):
@@ -105,6 +123,7 @@ class TinyRecipe(TrainingRecipe3D[TinyTarget, Object3DExample, TinyBatch]):
     example_type = Object3DExample
     batch_type = TinyBatch
     component_policies = (FULL_POLICY,)
+    frozen_component_policies = (FROZEN_POLICY,)
 
     def collate(self, examples):
         inputs = torch.stack([example.target.vertices[0, :1] for example in examples])
@@ -113,11 +132,21 @@ class TinyRecipe(TrainingRecipe3D[TinyTarget, Object3DExample, TinyBatch]):
     def validate_target(self) -> None:
         if self.target.block.weight.ndim != 0:
             raise ValueError("weight must be scalar")
+        if type(self.target.conditioner) is not TinyFrozenBlock:
+            raise ValueError("conditioner must be exact")
 
     def compute_loss(self, batch: TinyBatch) -> TrainingStep3DOutput:
-        prediction = self.target.block(batch.inputs)
+        with torch.no_grad():
+            conditioning = self.target.conditioner(batch.inputs)
+        prediction = self.target.block(batch.inputs) + conditioning * 0
         loss = torch.nn.functional.mse_loss(prediction, batch.labels)
         return TrainingStep3DOutput(loss=loss, metrics={"prediction_mean": prediction.mean()})
+
+    def save_weights(self, save_directory, strategy, components) -> None:
+        del strategy
+        component_directory = Path(save_directory) / "denoiser"
+        component_directory.mkdir(parents=True, exist_ok=True)
+        torch.save(components["denoiser"].state_dict(), component_directory / "pytorch_model.bin")
 
 
 class TinyRecipeMarker(TinyRecipe):
@@ -188,6 +217,7 @@ def make_registration(
         family_id=recipe_type.family_id,
         component_policies=recipe_type.component_policies,
         review_status=review_status,
+        frozen_component_policies=recipe_type.frozen_component_policies,
     )
 
 
@@ -216,6 +246,46 @@ def test_registry_is_reviewed_exact_and_read_only():
     registry.freeze()
     with pytest.raises(TrainingRegistrationError, match="read-only"):
         registry.register(registration)
+
+
+def test_prepare_moves_declared_frozen_components_to_device_and_eval(monkeypatch):
+    install_registry(monkeypatch, make_registration())
+    target = TinyTarget()
+    target.conditioner.train()
+
+    trainer = Object3DTrainer(
+        TinyRecipe(target),
+        CountingDataset(),
+        FullFineTune(("denoiser",)),
+        make_config(),
+    ).prepare()
+
+    conditioner = trainer.frozen_components["conditioner"]
+    assert conditioner is target.conditioner
+    assert not conditioner.training
+    assert all(parameter.device == trainer.accelerator.device for parameter in conditioner.parameters())
+    assert all(not parameter.requires_grad for parameter in conditioner.parameters())
+    assert all(id(parameter) not in {id(item) for item in trainer.trainable_parameters} for parameter in conditioner.parameters())
+
+
+def test_compute_loss_accepts_a_wrapped_selected_component_after_exact_validation():
+    class Wrapper(nn.Module):
+        def __init__(self, module: nn.Module) -> None:
+            super().__init__()
+            self.module = module
+
+        def forward(self, *args, **kwargs):
+            return self.module(*args, **kwargs)
+
+    target = TinyTarget()
+    recipe = TinyRecipe(target)
+    recipe.validate_target()
+    target.block = Wrapper(target.block)
+    batch = TinyBatch(inputs=torch.ones(1, 1), labels=torch.full((1, 1), 2.0))
+
+    output = recipe.compute_loss(batch)
+
+    assert output.loss.ndim == 0
 
 
 def test_registration_and_collate_require_exact_non_mapping_example_type(monkeypatch):
@@ -388,6 +458,10 @@ class SneakyRecipe(TinyRecipe):
     target_type = SneakyTarget
     example_type = Object3DExample
     component_policies = (SNEAKY_POLICY,)
+    frozen_component_policies = ()
+
+    def validate_target(self) -> None:
+        pass
 
 
 class ZeroBlock(nn.Module):
@@ -418,6 +492,7 @@ class ZeroRecipe(TinyRecipe):
     target_type = ZeroTarget
     example_type = Object3DExample
     component_policies = (ZERO_POLICY,)
+    frozen_component_policies = ()
 
     def validate_target(self) -> None:
         pass
@@ -474,6 +549,7 @@ class TinyPipelineRecipe(TinyRecipe):
     target_type = TinyTrainingPipeline
     example_type = Object3DExample
     component_policies = (PIPELINE_POLICY,)
+    frozen_component_policies = ()
 
     def validate_target(self) -> None:
         pass
@@ -494,9 +570,10 @@ def test_pipeline_training_uses_recipe_loss_not_inference_call(monkeypatch):
         make_config(max_train_steps=1),
     )
 
-    outputs = trainer.train()
+    summary = trainer.train()
 
-    assert len(outputs) == 1
+    assert summary.optimizer_steps == 1
+    assert summary.final_loss is not None
     assert pipeline.inference_calls == 0
     assert trainer.optimizer_steps == 1
 
@@ -518,11 +595,11 @@ def test_deterministic_full_train_step(monkeypatch):
         make_config(max_train_steps=1, learning_rate=1e-2),
     )
 
-    first_outputs = first.train()
-    second_outputs = second.train()
+    first_summary = first.train()
+    second_summary = second.train()
 
     torch.testing.assert_close(first_target.block.weight, second_target.block.weight)
-    torch.testing.assert_close(first_outputs[0].loss, second_outputs[0].loss)
+    assert first_summary.final_loss == pytest.approx(second_summary.final_loss)
     assert first_target.block.weight.item() != pytest.approx(0.5)
 
 
@@ -535,10 +612,65 @@ def test_gradient_accumulation_runs_a_bounded_number_of_updates(monkeypatch):
         make_config(max_train_steps=1, gradient_accumulation_steps=2),
     )
 
-    outputs = trainer.train()
+    summary = trainer.train()
 
     assert trainer.optimizer_steps == 1
-    assert 1 <= len(outputs) <= 2
+    assert summary.micro_steps in (1, 2)
+    assert summary.final_loss is not None
+
+
+def test_checkpoint_restores_full_state_counters_and_next_data_position(monkeypatch, tmp_path):
+    install_registry(monkeypatch, make_registration())
+    config = make_config(
+        max_train_steps=2,
+        learning_rate=1e-2,
+        lr_scheduler="linear",
+        output_dir=str(tmp_path),
+    )
+
+    uninterrupted_target = TinyTarget()
+    uninterrupted = Object3DTrainer(
+        TinyRecipe(uninterrupted_target),
+        CountingDataset((1.0, 2.0, 3.0)),
+        FullFineTune(("denoiser",)),
+        config,
+    )
+    uninterrupted.train(max_optimizer_steps=1)
+    expected_summary = uninterrupted.train(max_optimizer_steps=1)
+    expected_weight = uninterrupted_target.block.weight.detach().clone()
+    expected_optimizer_state = uninterrupted.optimizer.state_dict()
+
+    interrupted_target = TinyTarget()
+    interrupted = Object3DTrainer(
+        TinyRecipe(interrupted_target),
+        CountingDataset((1.0, 2.0, 3.0)),
+        FullFineTune(("denoiser",)),
+        config,
+    )
+    interrupted.train(max_optimizer_steps=1)
+    interrupted.save_checkpoint()
+
+    resumed_dataset = CountingDataset((1.0, 2.0, 3.0))
+    resumed_target = TinyTarget()
+    resumed = Object3DTrainer(
+        TinyRecipe(resumed_target),
+        resumed_dataset,
+        FullFineTune(("denoiser",)),
+        config,
+    )
+    resumed.load_checkpoint(tmp_path)
+
+    assert resumed.micro_steps == 1
+    assert resumed.optimizer_steps == 1
+    assert resumed_dataset.getitem_calls == 0
+    assert (tmp_path / ACCELERATOR_STATE_DIRECTORY / TRAINER_STATE_NAME).stat().st_mode & 0o044 == 0o044
+
+    resumed_summary = resumed.train(max_optimizer_steps=1)
+
+    assert resumed_dataset.getitem_calls == 1
+    assert resumed_summary.final_loss == pytest.approx(expected_summary.final_loss, abs=0.0)
+    torch.testing.assert_close(resumed_target.block.weight, expected_weight, atol=0.0, rtol=0.0)
+    assert resumed.optimizer.state_dict() == expected_optimizer_state
 
 
 class FakeAdapterWeights(nn.Module):
@@ -600,6 +732,7 @@ class LoraRecipe(TinyRecipe):
     target_type = LoraTarget
     example_type = Object3DExample
     component_policies = (LORA_POLICY,)
+    frozen_component_policies = ()
 
     def validate_target(self) -> None:
         pass

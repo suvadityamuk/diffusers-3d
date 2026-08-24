@@ -11,7 +11,9 @@ import pytest
 import torch
 
 from diffusers_3d import (
+    CUMESH_SOURCE_REVISION,
     FLEX_GEMM_BATCH_INDICES,
+    FLEX_GEMM_SOURCE_REVISION,
     BackendCapability,
     BackendLicenseClass,
     BackendSupportLevel,
@@ -352,7 +354,7 @@ def test_flex_gemm_cpu_fake_enforces_attestation_and_adapts_sparse_operations(
         return features.sum(dim=1, keepdim=True)
 
     module = types.ModuleType("flex_gemm")
-    module.__source_revision__ = "flex-revision"
+    module.__source_revision__ = FLEX_GEMM_SOURCE_REVISION
     module.__build_id__ = "torch-cpu-test"
     module.ops = types.SimpleNamespace(
         spconv=types.SimpleNamespace(sparse_submanifold_conv3d=sparse_submanifold_conv3d),
@@ -370,7 +372,6 @@ def test_flex_gemm_cpu_fake_enforces_attestation_and_adapts_sparse_operations(
         distribution_name="flex-gemm",
     )
     backend = FlexGemmBackend(
-        source_revision="flex-revision",
         build_id="torch-cpu-test",
         device="cpu",
         registry=registry_factory((spec,)),
@@ -397,7 +398,7 @@ def test_flex_gemm_cpu_fake_enforces_attestation_and_adapts_sparse_operations(
         torch.tensor([[0, 0, 1, 2], [1, 3, 2, 1]], dtype=torch.int32),
     )
     assert captured["dilation"] == (1, 2, 1)
-    assert projected.metadata["flex_gemm_source_revision"] == "flex-revision"
+    assert projected.metadata["flex_gemm_source_revision"] == FLEX_GEMM_SOURCE_REVISION
     sampled = backend.grid_sample_3d(voxels, torch.zeros(1, 2, 3), mode="trilinear")
     torch.testing.assert_close(sampled, torch.tensor([[3.0], [7.0]]))
     assert captured["mode"] == "trilinear"
@@ -405,7 +406,13 @@ def test_flex_gemm_cpu_fake_enforces_attestation_and_adapts_sparse_operations(
     module.__build_id__ = "different"
     with pytest.raises(RuntimeError, match="declares build"):
         FlexGemmBackend(
-            source_revision="flex-revision",
+            build_id="torch-cpu-test",
+            device="cpu",
+            registry=registry_factory((spec,)),
+        )
+    with pytest.raises(ValueError, match="source_revision"):
+        FlexGemmBackend(
+            source_revision="unreviewed",
             build_id="torch-cpu-test",
             device="cpu",
             registry=registry_factory((spec,)),
@@ -463,7 +470,7 @@ def test_cumesh_cpu_fake_covers_repair_simplify_remesh_uv_and_bvh(
         return vertices, faces
 
     module = types.ModuleType("cumesh")
-    module.__source_revision__ = "cumesh-revision"
+    module.__source_revision__ = CUMESH_SOURCE_REVISION
     module.__build_id__ = "cuda-api-cpu-fake"
     module.CuMesh = FakeCuMesh
     module.cuBVH = FakeBVH
@@ -480,11 +487,17 @@ def test_cumesh_cpu_fake_covers_repair_simplify_remesh_uv_and_bvh(
         distribution_name="cumesh",
     )
     backend = CuMeshBackend(
-        source_revision="cumesh-revision",
         build_id="cuda-api-cpu-fake",
         device="cpu",
         registry=registry_factory((spec,)),
     )
+    with pytest.raises(ValueError, match="source_revision"):
+        CuMeshBackend(
+            source_revision="unreviewed",
+            build_id="cuda-api-cpu-fake",
+            device="cpu",
+            registry=registry_factory((spec,)),
+        )
     mesh = MeshAsset(
         vertices=torch.tensor([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]]),
         faces=torch.tensor([[0, 1, 2]], dtype=torch.int64),

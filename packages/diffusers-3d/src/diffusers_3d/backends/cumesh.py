@@ -12,6 +12,7 @@ from .registry import BackendRegistry
 from .types import BackendCapability
 
 CUMESH_SOURCE_URL = "https://github.com/JeffreyXiang/CuMesh.git"
+CUMESH_SOURCE_REVISION = "12289e1062f0603f2f0d0771b02e1395d247f26f"
 
 
 class CuMeshBackend:
@@ -20,7 +21,7 @@ class CuMeshBackend:
     def __init__(
         self,
         *,
-        source_revision: str,
+        source_revision: str = CUMESH_SOURCE_REVISION,
         build_id: str,
         source_url: str = CUMESH_SOURCE_URL,
         device: str | torch.device = "cuda",
@@ -28,8 +29,8 @@ class CuMeshBackend:
     ) -> None:
         if source_url != CUMESH_SOURCE_URL:
             raise ValueError(f"CuMesh source_url must be {CUMESH_SOURCE_URL!r}")
-        if not isinstance(source_revision, str) or not source_revision.strip():
-            raise ValueError("source_revision must record the audited CuMesh commit")
+        if source_revision != CUMESH_SOURCE_REVISION:
+            raise ValueError(f"CuMesh source_revision must be {CUMESH_SOURCE_REVISION!r}")
         if not isinstance(build_id, str) or not build_id.strip():
             raise ValueError("build_id must record the PyTorch/CUDA/compiler build")
         self.source_url = source_url
@@ -213,4 +214,4 @@ class CuMeshBackend:
         return function(points, return_uvw=return_uvw)
 
 
-__all__ = ["CUMESH_SOURCE_URL", "CuMeshBackend"]
+__all__ = ["CUMESH_SOURCE_REVISION", "CUMESH_SOURCE_URL", "CuMeshBackend"]

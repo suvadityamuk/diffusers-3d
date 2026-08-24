@@ -207,7 +207,10 @@ def test_planned_default_specs_keep_import_distribution_and_policy_metadata_sepa
     assert "EasternJournalist" in specs["utils3d"].install_hint
     assert specs["kaolin"].license_class.value == "permissive"
     assert "kaolin.non_commercial" in specs["kaolin"].install_hint
-    assert specs["cumesh"].source_url is not None
+    assert specs["cumesh"].source_revision == "12289e1062f0603f2f0d0771b02e1395d247f26f"
+    assert specs["cumesh"].requires_source_provenance
+    assert specs["flex_gemm"].source_revision == "6dd94a859c26ee8246888502eada3dd8ad85532e"
+    assert specs["flex_gemm"].requires_source_provenance
     assert specs["o_voxel"].source_url is not None
     for name in ("utils3d", "nvdiffrast", "nvdiffrec_render", "diffoctreerast", "mip_gaussian"):
         assert specs[name].support_level is BackendSupportLevel.RESEARCH_ONLY

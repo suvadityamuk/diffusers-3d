@@ -32,6 +32,12 @@ def make_manifest(**kwargs) -> TrainingManifest3D:
         "base_model": "tests/base-object-3d",
         "revision": "abc123",
         "trainable_parameter_names": ("denoiser.z", "denoiser.a"),
+        "objective_config": {"sigma_min": 1e-5, "stage": "shape"},
+        "training_config": {
+            "gradient_accumulation_steps": 1,
+            "learning_rate": 1e-4,
+            "seed": 0,
+        },
     }
     arguments.update(kwargs)
     return TrainingManifest3D.create(**arguments)
@@ -52,6 +58,7 @@ def test_manifest_save_load_is_atomic_deterministic_and_hashed(tmp_path):
     assert trainable_parameter_hash(("denoiser.z", "denoiser.a")) == manifest.trainable_parameter_hash
     assert json.loads(first_bytes)["components"] == ["decoder", "denoiser"]
     assert json.loads(first_bytes)["example_type"].endswith(".ExactExample")
+    assert path.stat().st_mode & 0o044 == 0o044
 
 
 def test_manifest_resume_requires_an_exact_match(tmp_path):
@@ -62,6 +69,14 @@ def test_manifest_resume_requires_an_exact_match(tmp_path):
 
     mismatch = make_manifest(revision="different")
     with pytest.raises(TrainingManifestMismatchError, match="revision"):
+        loaded.validate_resume(mismatch)
+    mismatch = make_manifest(objective_config={"sigma_min": 0.1, "stage": "shape"})
+    with pytest.raises(TrainingManifestMismatchError, match="objective_config"):
+        loaded.validate_resume(mismatch)
+    mismatch = make_manifest(
+        training_config={"gradient_accumulation_steps": 1, "learning_rate": 2e-4, "seed": 0}
+    )
+    with pytest.raises(TrainingManifestMismatchError, match="training_config"):
         loaded.validate_resume(mismatch)
 
 
@@ -78,4 +93,9 @@ def test_manifest_rejects_hash_tampering_and_unknown_fields():
     data = manifest.to_dict()
     data["schema_version"] = True
     with pytest.raises(TrainingManifestError, match="schema"):
+        TrainingManifest3D.from_dict(data)
+
+    data = manifest.to_dict()
+    data["components"] = {"decoder": "spoofed", "denoiser": "spoofed"}
+    with pytest.raises(TrainingManifestError, match="JSON array"):
         TrainingManifest3D.from_dict(data)

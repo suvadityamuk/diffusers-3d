@@ -6,9 +6,9 @@ from typing import Any
 import torch
 
 from ..objects import OVoxelAsset
-from .cumesh import CUMESH_SOURCE_URL, CuMeshBackend
+from .cumesh import CUMESH_SOURCE_REVISION, CUMESH_SOURCE_URL, CuMeshBackend
 from .defaults import BACKEND_REGISTRY
-from .flex_gemm import FLEX_GEMM_SOURCE_URL, FlexGemmBackend
+from .flex_gemm import FLEX_GEMM_SOURCE_REVISION, FLEX_GEMM_SOURCE_URL, FlexGemmBackend
 from .o_voxel import OVoxelBackend, OVoxelCapability, official_tensors_from_ovoxel_asset
 from .registry import BackendRegistry
 from .types import BackendCapability, BackendSpec
@@ -71,9 +71,9 @@ class Trellis2PBRPostprocessFacade:
         self,
         asset: OVoxelAsset,
         *,
-        flex_gemm_source_revision: str,
+        flex_gemm_source_revision: str = FLEX_GEMM_SOURCE_REVISION,
         flex_gemm_build_id: str,
-        cumesh_source_revision: str,
+        cumesh_source_revision: str = CUMESH_SOURCE_REVISION,
         cumesh_build_id: str,
         accept_nvdiffrast_research_license: bool = False,
         device: str | torch.device = "cuda",

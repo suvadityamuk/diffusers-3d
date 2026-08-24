@@ -10,8 +10,9 @@ model-specific recipe.
 
 ## Status
 
-The package is pre-alpha. Object, loading, and training contracts use schema version `1`; contribution manifests use
-schema version `2`. Model integrations and optional compiled backends remain capability-gated.
+The package is pre-alpha. Loading metadata uses schema version `1`, training manifests use schema version `3`, and
+contribution manifests use schema version `2`. Model integrations and optional compiled backends remain
+capability-gated.
 
 ## First-release readiness
 
@@ -43,8 +44,8 @@ actions; the package remains at its development version until then.
   performed.
 - O-Voxel schema/uint8 packing and deterministic Morton-ordered NPZ are pure package code. `.vxz`, native dual-grid
   conversion, and voxel rendering require a separately compiled, pinned O-Voxel runtime.
-- FlexGEMM and CuMesh are MIT source builds with explicit revision/build attestations. Upstream TRELLIS.2 does not
-  pin their commits.
+- FlexGEMM and CuMesh are MIT source builds pinned by this package to audited commits with direct-URL provenance and
+  runtime revision/build attestations.
 - Production DINOv3 weights are gated under the separate DINOv3 License. nvdiffrast is a restricted research
   dependency and requires explicit acknowledgement; neither is redistributed or selected silently.
 

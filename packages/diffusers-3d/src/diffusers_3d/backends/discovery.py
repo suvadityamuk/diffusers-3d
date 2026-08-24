@@ -87,6 +87,7 @@ def discover_backend(
 
     importable = not missing_imports
     installed = distribution_name is not None
+    version_compatible = not installed or spec.tested_version is None or version == spec.tested_version
     provenance_verified = True
     provenance_error = None
     if installed and spec.requires_source_provenance:
@@ -101,6 +102,7 @@ def discover_backend(
         importable=importable,
         installed=installed,
         provenance_verified=provenance_verified,
+        version_compatible=version_compatible,
         provenance_error=provenance_error,
         version=version,
         missing_imports=missing_imports,
@@ -116,6 +118,7 @@ def discover_backend(
         distribution_name=distribution_name,
         reason=reason,
         provenance_verified=provenance_verified,
+        version_compatible=version_compatible,
         missing_import_names=tuple(missing_imports),
         missing_distribution_names=tuple(missing_distributions),
     )
@@ -162,6 +165,7 @@ def _unavailable_reason(
     importable: bool,
     installed: bool,
     provenance_verified: bool,
+    version_compatible: bool,
     provenance_error: str | None,
     version: str | None,
     missing_imports: list[str],
@@ -169,7 +173,7 @@ def _unavailable_reason(
     import_errors: list[str],
     distribution_errors: list[str],
 ) -> str | None:
-    if importable and installed and provenance_verified:
+    if importable and installed and provenance_verified and version_compatible:
         return None
 
     details = []
@@ -186,6 +190,8 @@ def _unavailable_reason(
 
     if not provenance_verified and provenance_error is not None:
         details.append(provenance_error)
+    if not version_compatible:
+        details.append(f"distribution version {version!r} does not match required tested version {spec.tested_version!r}")
     if not importable:
         details.append(f"the following imports are not discoverable: {', '.join(missing_imports)}")
     if import_errors:

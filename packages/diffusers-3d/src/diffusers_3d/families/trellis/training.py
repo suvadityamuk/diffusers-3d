@@ -22,7 +22,14 @@ from ...objects._validation import TensorShapeError, validate_shared_device, val
 from ...objects.base import TensorDataMixin
 from ...training.exceptions import TrainingCheckpointError, TrainingTargetError
 from ...training.recipe import TrainingRecipe3D
-from ...training.types import ComponentPolicy, FineTuneKind, FineTuneStrategy3D, FullFineTune, TrainingStep3DOutput
+from ...training.types import (
+    ComponentPolicy,
+    FineTuneKind,
+    FineTuneStrategy3D,
+    FrozenComponentPolicy,
+    FullFineTune,
+    TrainingStep3DOutput,
+)
 from .conditioner import TrellisDinov2Conditioner
 from .decoders import TrellisSparseStructureDecoder
 from .models import TrellisSLatFlowModel, TrellisSparseStructureFlowModel
@@ -92,6 +99,13 @@ TRELLIS_SPARSE_STRUCTURE_FLOW_POLICY = ComponentPolicy(
     expected_types=(TrellisSparseStructureFlowModel,),
     supported_strategies=(FineTuneKind.FULL,),
 )
+TRELLIS_SPARSE_STRUCTURE_FROZEN_COMPONENT_POLICIES = (
+    FrozenComponentPolicy(component_path="conditioner", expected_types=(TrellisDinov2Conditioner,)),
+    FrozenComponentPolicy(
+        component_path="sparse_structure_decoder",
+        expected_types=(TrellisSparseStructureDecoder,),
+    ),
+)
 
 
 class TrellisSparseStructureFlowRecipe(
@@ -110,6 +124,7 @@ class TrellisSparseStructureFlowRecipe(
     example_type = TrellisSparseStructureExample
     batch_type = TrellisSparseStructureBatch
     component_policies = (TRELLIS_SPARSE_STRUCTURE_FLOW_POLICY,)
+    frozen_component_policies = TRELLIS_SPARSE_STRUCTURE_FROZEN_COMPONENT_POLICIES
 
     def __init__(
         self,
@@ -133,6 +148,16 @@ class TrellisSparseStructureFlowRecipe(
         self.timestep_mean = float(timestep_mean)
         self.timestep_std = float(timestep_std)
         self.p_uncond = float(p_uncond)
+
+    def objective_config(self) -> Mapping[str, bool | float | int | str | None]:
+        return {
+            "p_uncond": self.p_uncond,
+            "sigma_min": self.sigma_min,
+            "stage": "sparse_structure",
+            "timestep_distribution": "logit_normal",
+            "timestep_mean": self.timestep_mean,
+            "timestep_std": self.timestep_std,
+        }
 
     def collate(
         self,
@@ -165,15 +190,15 @@ class TrellisSparseStructureFlowRecipe(
         if type(batch) is not TrellisSparseStructureBatch:
             raise TrainingTargetError("batch must be an exact TrellisSparseStructureBatch")
         batch.validate()
-        self.validate_target()
         clean = batch.sparse_structure_latents
         model = self.target.sparse_structure_flow_model
+        model_config = self.component_config(model)
         expected_shape = (
             clean.shape[0],
-            model.config.in_channels,
-            model.config.resolution,
-            model.config.resolution,
-            model.config.resolution,
+            model_config.in_channels,
+            model_config.resolution,
+            model_config.resolution,
+            model_config.resolution,
         )
         if tuple(clean.shape) != expected_shape:
             raise TensorShapeError(f"sparse_structure_latents must have shape {expected_shape}")
@@ -294,6 +319,9 @@ TRELLIS_SLAT_FLOW_POLICY = ComponentPolicy(
     expected_types=(TrellisSLatFlowModel,),
     supported_strategies=(FineTuneKind.FULL,),
 )
+TRELLIS_SLAT_FROZEN_COMPONENT_POLICIES = (
+    FrozenComponentPolicy(component_path="conditioner", expected_types=(TrellisDinov2Conditioner,)),
+)
 
 
 class TrellisSLatFlowRecipe(TrainingRecipe3D[TrellisImageTo3DPipeline, TrellisSLatExample, TrellisSLatBatch]):
@@ -306,6 +334,7 @@ class TrellisSLatFlowRecipe(TrainingRecipe3D[TrellisImageTo3DPipeline, TrellisSL
     example_type = TrellisSLatExample
     batch_type = TrellisSLatBatch
     component_policies = (TRELLIS_SLAT_FLOW_POLICY,)
+    frozen_component_policies = TRELLIS_SLAT_FROZEN_COMPONENT_POLICIES
 
     def __init__(
         self,
@@ -329,6 +358,16 @@ class TrellisSLatFlowRecipe(TrainingRecipe3D[TrellisImageTo3DPipeline, TrellisSL
         self.timestep_mean = float(timestep_mean)
         self.timestep_std = float(timestep_std)
         self.p_uncond = float(p_uncond)
+
+    def objective_config(self) -> Mapping[str, bool | float | int | str | None]:
+        return {
+            "p_uncond": self.p_uncond,
+            "sigma_min": self.sigma_min,
+            "stage": "slat",
+            "timestep_distribution": "logit_normal",
+            "timestep_mean": self.timestep_mean,
+            "timestep_std": self.timestep_std,
+        }
 
     def collate(self, examples: Sequence[TrellisSLatExample]) -> TrellisSLatBatch:
         if not examples or any(type(example) is not TrellisSLatExample for example in examples):
@@ -354,11 +393,11 @@ class TrellisSLatFlowRecipe(TrainingRecipe3D[TrellisImageTo3DPipeline, TrellisSL
         if type(batch) is not TrellisSLatBatch:
             raise TrainingTargetError("batch must be an exact TrellisSLatBatch")
         batch.validate()
-        self.validate_target()
         sparse = batch.normalized_slat
         model = self.target.slat_flow_model
-        if sparse.channels != model.config.in_channels:
-            raise TensorShapeError(f"normalized SLAT must have {model.config.in_channels} channels")
+        model_config = self.component_config(model)
+        if sparse.channels != model_config.in_channels:
+            raise TensorShapeError(f"normalized SLAT must have {model_config.in_channels} channels")
         with torch.no_grad():
             conditioning = self.target.conditioner(batch.images, value_range=(0.0, 1.0)).embeddings
         dropout_mask = (
@@ -401,7 +440,9 @@ class TrellisSLatFlowRecipe(TrainingRecipe3D[TrellisImageTo3DPipeline, TrellisSL
 
 __all__ = [
     "TRELLIS_SLAT_FLOW_POLICY",
+    "TRELLIS_SLAT_FROZEN_COMPONENT_POLICIES",
     "TRELLIS_SPARSE_STRUCTURE_FLOW_POLICY",
+    "TRELLIS_SPARSE_STRUCTURE_FROZEN_COMPONENT_POLICIES",
     "TrellisSLatBatch",
     "TrellisSLatExample",
     "TrellisSLatFlowRecipe",

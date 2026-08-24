@@ -44,6 +44,7 @@ def hunyuan3d_training_registrations(training_registration_type: type[Any]) -> t
             family_id=recipe.family_id,
             component_policies=recipe.component_policies,
             review_status=ReviewStatus.REVIEWED,
+            frozen_component_policies=recipe.frozen_component_policies,
         ),
     )
 

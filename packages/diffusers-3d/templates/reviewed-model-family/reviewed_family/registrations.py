@@ -30,4 +30,5 @@ REVIEWED_TRAINING_REGISTRATION = TrainingRecipeRegistration(
     family_id=ReviewedTrainingRecipe.family_id,
     component_policies=(REVIEWED_DENOISER_POLICY,),
     review_status=ReviewStatus.REVIEWED,
+    frozen_component_policies=ReviewedTrainingRecipe.frozen_component_policies,
 )

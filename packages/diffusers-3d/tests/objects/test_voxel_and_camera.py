@@ -98,6 +98,21 @@ def test_o_voxel_accepts_intersection_representation():
     assert voxel.dual_grid_topology is None
 
 
+@pytest.mark.parametrize("channel", ["metallic", "roughness"])
+def test_o_voxel_rejects_missing_mandatory_material_channels(channel):
+    arguments = {
+        "active_coordinates": torch.tensor([[0, 0, 0]], dtype=torch.int64),
+        "base_color": torch.ones(1, 3),
+        "metallic": torch.zeros(1),
+        "roughness": torch.ones(1),
+        "intersection_data": torch.ones(1, 2),
+    }
+    arguments[channel] = None
+
+    with pytest.raises(Object3DValidationError, match=f"{channel} must be a tensor"):
+        OVoxelAsset(**arguments)
+
+
 def test_o_voxel_requires_complete_geometry_schema():
     arguments = {
         "active_coordinates": torch.tensor([[0, 0, 0]], dtype=torch.int64),

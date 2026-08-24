@@ -13,6 +13,7 @@ from .exceptions import TrainingCheckpointError
 from .types import (
     ComponentPolicy,
     FineTuneStrategy3D,
+    FrozenComponentPolicy,
     FullFineTune,
     LoRAFineTune,
     TrainingStep3DOutput,
@@ -35,6 +36,7 @@ class TrainingRecipe3D(ABC, Generic[TargetT, ExampleT, BatchT]):
     example_type: ClassVar[type[object]]
     batch_type: ClassVar[type[object]]
     component_policies: ClassVar[tuple[ComponentPolicy, ...]]
+    frozen_component_policies: ClassVar[tuple[FrozenComponentPolicy, ...]] = ()
 
     def __init__(self, target: TargetT) -> None:
         self._target = target
@@ -42,6 +44,18 @@ class TrainingRecipe3D(ABC, Generic[TargetT, ExampleT, BatchT]):
     @property
     def target(self) -> TargetT:
         return self._target
+
+    def objective_config(self) -> Mapping[str, bool | float | int | str | None]:
+        """Return canonical JSON-safe settings that define this objective."""
+
+        return {}
+
+    @staticmethod
+    def component_config(component: nn.Module) -> object:
+        """Read config from an exact component or its Accelerator wrapper."""
+
+        wrapped = getattr(component, "module", None)
+        return getattr(wrapped if isinstance(wrapped, nn.Module) else component, "config")
 
     @abstractmethod
     def collate(self, examples: Sequence[ExampleT]) -> BatchT:
@@ -89,7 +103,10 @@ class TrainingRecipe3D(ABC, Generic[TargetT, ExampleT, BatchT]):
         strategy: FineTuneStrategy3D,
         components: Mapping[str, nn.Module],
     ) -> None:
-        """Recipe-owned resume hook called only after exact manifest validation."""
+        """Recipe-owned component artifact loader for explicit inference-weight restoration.
+
+        Trainer continuation uses the authoritative Accelerator state instead.
+        """
 
         del save_directory, strategy, components
         raise TrainingCheckpointError(f"{type(self).__name__} does not implement checkpoint resume")

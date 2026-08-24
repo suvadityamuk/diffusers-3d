@@ -74,9 +74,10 @@ until production sparse/GPU parity is measured.
 
 - `FlexGemmBackend` is limited to released submanifold sparse convolution and
   3D grid sampling. `CuMeshBackend` is limited to repair, simplify, remesh, UV,
-  and BVH operations. Both require caller-supplied audited source revisions,
-  build IDs, and matching module attestations. TRELLIS.2 itself clones their
-  MIT repositories without pinning commits.
+  and BVH operations. This package pins FlexGEMM at
+  `6dd94a859c26ee8246888502eada3dd8ad85532e` and CuMesh at
+  `12289e1062f0603f2f0d0771b02e1395d247f26f`; discovery and runtime loading
+  require matching source provenance, module revision attestations, and build IDs.
 - Compiled O-Voxel source is not vendored. Native conversion, `.vxz`, and voxel
   rendering were not run in the package CPU test matrix.
 - `Trellis2PBRPostprocessFacade` requires O-Voxel, CuMesh, FlexGEMM, and

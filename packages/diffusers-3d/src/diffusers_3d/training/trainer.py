@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+import json
+import os
+import shutil
+import tempfile
 from collections.abc import Iterator, Mapping, Sequence
 from contextlib import nullcontext
 from pathlib import Path
@@ -13,7 +17,7 @@ from diffusers.loaders import PeftAdapterMixin
 from diffusers.optimization import get_scheduler
 from torch import nn
 from torch.optim import AdamW, Optimizer
-from torch.utils.data import DataLoader
+from torch.utils.data import DataLoader, DistributedSampler
 
 from ..data import Object3DDataset
 from .exceptions import (
@@ -34,7 +38,12 @@ from .types import (
     LoRAFineTune,
     TrainingConfig3D,
     TrainingStep3DOutput,
+    TrainingSummary3D,
 )
+
+ACCELERATOR_STATE_DIRECTORY = "accelerator_state"
+TRAINER_STATE_NAME = "diffusers_3d_trainer_state.json"
+TRAINER_STATE_SCHEMA_VERSION = 1
 
 
 def _resolve_path(root: object, path: str) -> object:
@@ -124,11 +133,19 @@ class Object3DTrainer:
         self._lr_scheduler: Any = None
         self._dataloader: DataLoader | None = None
         self._components: Mapping[str, nn.Module] = MappingProxyType({})
+        self._frozen_components: Mapping[str, nn.Module] = MappingProxyType({})
+        self._selected_policies: Mapping[str, ComponentPolicy] = MappingProxyType({})
         self._trainable_parameters: tuple[nn.Parameter, ...] = ()
         self._trainable_parameter_names: tuple[str, ...] = ()
         self._manifest: TrainingManifest3D | None = None
         self._micro_steps = 0
         self._optimizer_steps = 0
+        self._dataloader_generator: torch.Generator | None = None
+        self._dataloader_sampler: DistributedSampler | None = None
+        self._dataloader_iterator: Iterator[object] | None = None
+        self._dataloader_epoch = 0
+        self._dataloader_position = 0
+        self._dataloader_epoch_generator_state: torch.Tensor | None = None
 
     @property
     def prepared(self) -> bool:
@@ -165,6 +182,12 @@ class Object3DTrainer:
         return self._components
 
     @property
+    def frozen_components(self) -> Mapping[str, nn.Module]:
+        if not self._prepared:
+            raise TrainingConfigurationError("trainer is not prepared")
+        return self._frozen_components
+
+    @property
     def trainable_parameters(self) -> tuple[nn.Parameter, ...]:
         if not self._prepared:
             raise TrainingConfigurationError("trainer is not prepared")
@@ -185,6 +208,10 @@ class Object3DTrainer:
     @property
     def optimizer_steps(self) -> int:
         return self._optimizer_steps
+
+    @property
+    def micro_steps(self) -> int:
+        return self._micro_steps
 
     def prepare(self) -> Object3DTrainer:
         if self._prepared:
@@ -231,8 +258,25 @@ class Object3DTrainer:
                         f"{', '.join(sorted(missing_targets))}"
                     )
 
+        frozen_components: dict[str, nn.Module] = {}
+        for policy in registration.frozen_component_policies:
+            component = _resolve_path(target, policy.component_path)
+            if type(component) not in policy.expected_types:
+                expected = ", ".join(
+                    f"{expected_type.__module__}.{expected_type.__qualname__}"
+                    for expected_type in policy.expected_types
+                )
+                raise TrainingTargetError(
+                    f"Frozen component at {policy.component_path!r} must have exact type ({expected}); "
+                    f"got {type(component).__module__}.{type(component).__qualname__}"
+                )
+            frozen_components[policy.component_path] = component
+
         if len({id(component) for component in selected_components.values()}) != len(selected_components):
             raise TrainingTargetError("Selected component keys must resolve to distinct exact component objects")
+        all_managed_components = [*selected_components.values(), *frozen_components.values()]
+        if len({id(component) for component in all_managed_components}) != len(all_managed_components):
+            raise TrainingTargetError("Trainable and frozen component policies must resolve to distinct objects")
         self.recipe.validate_target()
         if not isinstance(self.dataset, Object3DDataset):
             raise TrainingConfigurationError("dataset must implement the runtime-checkable Object3DDataset protocol")
@@ -245,8 +289,13 @@ class Object3DTrainer:
 
         original_target = target
         original_components = dict(selected_components)
+        original_frozen_modes = {path: component.training for path, component in frozen_components.items()}
+        original_frozen_devices = {}
+        for path, component in frozen_components.items():
+            tensors = tuple(component.parameters()) + tuple(component.buffers())
+            original_frozen_devices[path] = tensors[0].device if tensors else None
         before_parameters = _reachable_named_parameters(target)
-        for key, component in selected_components.items():
+        for key, component in {**selected_components, **frozen_components}.items():
             component_parameter_ids = {
                 id(parameter)
                 for _, parameter in nn.Module.named_parameters(
@@ -380,8 +429,21 @@ class Object3DTrainer:
             if optimizer_parameter_ids != expected_parameter_ids:
                 raise TrainableParameterError("Optimizer parameters do not exactly match the audited parameter set")
 
+            set_seed(self.config.seed)
+            accelerator = Accelerator(
+                gradient_accumulation_steps=self.config.gradient_accumulation_steps,
+                mixed_precision=self.config.mixed_precision,
+                cpu=self.config.cpu,
+            )
             generator = torch.Generator()
             generator.manual_seed(self.config.seed)
+            sampler = DistributedSampler(
+                self.dataset,
+                num_replicas=accelerator.num_processes,
+                rank=accelerator.process_index,
+                shuffle=self.config.shuffle,
+                seed=self.config.seed,
+            )
 
             def collate_examples(examples: Sequence[object]) -> object:
                 if any(type(example) is not registration.example_type for example in examples):
@@ -405,7 +467,7 @@ class Object3DTrainer:
             dataloader = DataLoader(
                 self.dataset,
                 batch_size=self.config.train_batch_size,
-                shuffle=self.config.shuffle,
+                sampler=sampler,
                 num_workers=self.config.dataloader_num_workers,
                 collate_fn=collate_examples,
                 generator=generator,
@@ -416,12 +478,10 @@ class Object3DTrainer:
                 num_warmup_steps=self.config.lr_warmup_steps,
                 num_training_steps=self.config.max_train_steps,
             )
-            set_seed(self.config.seed)
-            accelerator = Accelerator(
-                gradient_accumulation_steps=self.config.gradient_accumulation_steps,
-                mixed_precision=self.config.mixed_precision,
-                cpu=self.config.cpu,
-            )
+            for component in frozen_components.values():
+                component.to(accelerator.device)
+                component.requires_grad_(False)
+                component.eval()
 
             unique_components: list[nn.Module] = []
             component_indices: dict[str, int] = {}
@@ -433,11 +493,10 @@ class Object3DTrainer:
                     unique_components.append(component)
                 component_indices[key] = component_id_to_index[id(component)]
 
-            prepared = accelerator.prepare(*unique_components, optimizer, dataloader, lr_scheduler)
+            prepared = accelerator.prepare(*unique_components, optimizer, lr_scheduler)
             prepared_values = prepared if isinstance(prepared, tuple) else (prepared,)
             wrapped_components = prepared_values[: len(unique_components)]
-            optimizer = prepared_values[-3]
-            dataloader = prepared_values[-2]
+            optimizer = prepared_values[-2]
             lr_scheduler = prepared_values[-1]
 
             for key in self.strategy.components:
@@ -455,6 +514,8 @@ class Object3DTrainer:
             self._lr_scheduler = lr_scheduler
             self._dataloader = dataloader
             self._components = MappingProxyType(dict(selected_components))
+            self._frozen_components = MappingProxyType(dict(frozen_components))
+            self._selected_policies = MappingProxyType(dict(selected_policies))
             self._trainable_parameters = trainable_parameters
             self._trainable_parameter_names = trainable_parameter_names
             self._manifest = TrainingManifest3D.create(
@@ -467,7 +528,16 @@ class Object3DTrainer:
                 base_model=self.config.base_model,
                 revision=self.config.revision,
                 trainable_parameter_names=trainable_parameter_names,
+                objective_config=self.recipe.objective_config(),
+                training_config={
+                    **self.config.resume_config(),
+                    "distributed_type": accelerator.distributed_type.value,
+                    "num_processes": accelerator.num_processes,
+                },
             )
+            self._dataloader_generator = generator
+            self._dataloader_sampler = sampler
+            self._dataloader_epoch_generator_state = generator.get_state().clone()
             self._optimizer.zero_grad(set_to_none=True)
             for component in self._components.values():
                 component.train()
@@ -492,6 +562,13 @@ class Object3DTrainer:
                 if parameter_id not in requires_grad_snapshot:
                     parameter.requires_grad_(False)
             self._components = MappingProxyType(original_components)
+            for path, component in frozen_components.items():
+                original_device = original_frozen_devices[path]
+                if original_device is not None:
+                    component.to(original_device)
+                component.train(original_frozen_modes[path])
+            self._frozen_components = MappingProxyType({})
+            self._selected_policies = MappingProxyType({})
             raise
 
     def _move_batch(self, batch: object) -> object:
@@ -537,34 +614,201 @@ class Object3DTrainer:
         }
         return TrainingStep3DOutput(loss=output.loss.detach(), metrics=detached_metrics)
 
-    def train(self) -> tuple[TrainingStep3DOutput, ...]:
+    def _start_dataloader_epoch(
+        self,
+        *,
+        skip_batches: int = 0,
+        generator_state: torch.Tensor | None = None,
+    ) -> None:
+        if self._dataloader_generator is None:
+            raise TrainingConfigurationError("trainer dataloader generator is unavailable")
+        if self._dataloader_sampler is None:
+            raise TrainingConfigurationError("trainer distributed sampler is unavailable")
+        if generator_state is not None:
+            self._dataloader_generator.set_state(generator_state)
+        self._dataloader_sampler.set_epoch(self._dataloader_epoch)
+        self._dataloader_epoch_generator_state = self._dataloader_generator.get_state().clone()
+        dataloader = self.dataloader
+        if skip_batches:
+            dataloader = self.accelerator.skip_first_batches(dataloader, skip_batches)
+        self._dataloader_iterator = iter(dataloader)
+
+    def _next_batch(self) -> object:
+        if self._dataloader_iterator is None:
+            self._start_dataloader_epoch()
+        assert self._dataloader_iterator is not None
+        try:
+            batch = next(self._dataloader_iterator)
+        except StopIteration:
+            self._dataloader_epoch += 1
+            self._dataloader_position = 0
+            self._start_dataloader_epoch()
+            assert self._dataloader_iterator is not None
+            batch = next(self._dataloader_iterator)
+        self._dataloader_position += 1
+        return batch
+
+    def train(self, max_optimizer_steps: int | None = None) -> TrainingSummary3D:
         if not self._prepared:
             self.prepare()
-        outputs = []
-        iterator = iter(self.dataloader)
-        while self._optimizer_steps < self.config.max_train_steps:
-            try:
-                batch = next(iterator)
-            except StopIteration:
-                iterator = iter(self.dataloader)
-                batch = next(iterator)
-            outputs.append(self.train_step(batch))
-        return tuple(outputs)
+        if max_optimizer_steps is not None and (
+            not isinstance(max_optimizer_steps, int)
+            or isinstance(max_optimizer_steps, bool)
+            or max_optimizer_steps <= 0
+        ):
+            raise TrainingConfigurationError("max_optimizer_steps must be a positive integer or None")
+        target_optimizer_steps = self.config.max_train_steps
+        if max_optimizer_steps is not None:
+            target_optimizer_steps = min(
+                target_optimizer_steps,
+                self._optimizer_steps + max_optimizer_steps,
+            )
+        final_output = None
+        while self._optimizer_steps < target_optimizer_steps:
+            final_output = self.train_step(self._next_batch())
+        final_metrics = {}
+        final_loss = None
+        if final_output is not None:
+            final_loss = float(final_output.loss.float().cpu())
+            final_metrics = {
+                name: float(value.float().cpu()) if isinstance(value, torch.Tensor) else float(value)
+                for name, value in final_output.metrics.items()
+            }
+        return TrainingSummary3D(
+            final_loss=final_loss,
+            final_metrics=final_metrics,
+            micro_steps=self._micro_steps,
+            optimizer_steps=self._optimizer_steps,
+        )
 
     def _checkpoint_components(self) -> Mapping[str, nn.Module]:
-        return MappingProxyType(
-            {key: self.accelerator.unwrap_model(component) for key, component in self._components.items()}
+        components = {}
+        for key, component in self._components.items():
+            unwrapped = self.accelerator.unwrap_model(component)
+            policy = self._selected_policies[key]
+            if type(unwrapped) not in policy.expected_types:
+                raise TrainingCheckpointError(
+                    f"Checkpoint component {key!r} must unwrap to an exact reviewed component type"
+                )
+            components[key] = unwrapped
+        return MappingProxyType(components)
+
+    def _trainer_state_dict(self) -> dict[str, object]:
+        if self._dataloader_epoch_generator_state is None:
+            raise TrainingCheckpointError("dataloader generator state is unavailable")
+        return {
+            "dataloader_epoch": self._dataloader_epoch,
+            "dataloader_epoch_generator_state": self._dataloader_epoch_generator_state.tolist(),
+            "dataloader_position": self._dataloader_position,
+            "micro_steps": self._micro_steps,
+            "optimizer_steps": self._optimizer_steps,
+            "schema_version": TRAINER_STATE_SCHEMA_VERSION,
+        }
+
+    def _save_trainer_state(self, state_directory: Path) -> None:
+        destination = state_directory / TRAINER_STATE_NAME
+        payload = json.dumps(self._trainer_state_dict(), indent=2, sort_keys=True) + "\n"
+        file_descriptor, temporary_name = tempfile.mkstemp(
+            dir=state_directory,
+            prefix=f".{TRAINER_STATE_NAME}.",
+            suffix=".tmp",
+        )
+        temporary_path = Path(temporary_name)
+        try:
+            with os.fdopen(file_descriptor, "w", encoding="utf-8", newline="\n") as handle:
+                handle.write(payload)
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.replace(temporary_path, destination)
+            os.chmod(destination, 0o644)
+        except OSError as error:
+            temporary_path.unlink(missing_ok=True)
+            raise TrainingCheckpointError(f"Could not atomically save trainer state to {destination}") from error
+
+    def _save_accelerator_state(self, directory: Path) -> None:
+        destination = directory / ACCELERATOR_STATE_DIRECTORY
+        temporary = directory / f".{ACCELERATOR_STATE_DIRECTORY}.tmp"
+        backup = directory / f".{ACCELERATOR_STATE_DIRECTORY}.backup"
+        if self.accelerator.is_main_process:
+            shutil.rmtree(temporary, ignore_errors=True)
+            shutil.rmtree(backup, ignore_errors=True)
+            temporary.mkdir(parents=True)
+        self.accelerator.wait_for_everyone()
+        try:
+            self.accelerator.save_state(temporary, safe_serialization=True)
+            self.accelerator.wait_for_everyone()
+            if self.accelerator.is_main_process:
+                self._save_trainer_state(temporary)
+                if destination.exists():
+                    os.replace(destination, backup)
+                os.replace(temporary, destination)
+                shutil.rmtree(backup, ignore_errors=True)
+            self.accelerator.wait_for_everyone()
+        except Exception as error:
+            if self.accelerator.is_main_process:
+                shutil.rmtree(temporary, ignore_errors=True)
+                if backup.exists() and not destination.exists():
+                    os.replace(backup, destination)
+            raise TrainingCheckpointError(f"Could not save Accelerator state to {destination}") from error
+
+    def _load_trainer_state(self, state_directory: Path) -> None:
+        path = state_directory / TRAINER_STATE_NAME
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as error:
+            raise TrainingCheckpointError(f"Could not read trainer state from {path}") from error
+        expected_fields = {
+            "dataloader_epoch",
+            "dataloader_epoch_generator_state",
+            "dataloader_position",
+            "micro_steps",
+            "optimizer_steps",
+            "schema_version",
+        }
+        if not isinstance(data, dict) or set(data) != expected_fields:
+            raise TrainingCheckpointError("trainer state has invalid fields")
+        if data["schema_version"] != TRAINER_STATE_SCHEMA_VERSION:
+            raise TrainingCheckpointError("trainer state has an unsupported schema version")
+        for name in ("dataloader_epoch", "dataloader_position", "micro_steps", "optimizer_steps"):
+            value = data[name]
+            if not isinstance(value, int) or isinstance(value, bool) or value < 0:
+                raise TrainingCheckpointError(f"trainer state {name} must be a non-negative integer")
+        generator_values = data["dataloader_epoch_generator_state"]
+        if not isinstance(generator_values, list) or any(
+            not isinstance(value, int) or isinstance(value, bool) or not 0 <= value <= 255
+            for value in generator_values
+        ):
+            raise TrainingCheckpointError("trainer state generator state must be a JSON byte array")
+        if data["optimizer_steps"] > self.config.max_train_steps:
+            raise TrainingCheckpointError("trainer state optimizer_steps exceeds configured max_train_steps")
+        self._dataloader_epoch = data["dataloader_epoch"]
+        self._dataloader_position = data["dataloader_position"]
+        self._micro_steps = data["micro_steps"]
+        self._optimizer_steps = data["optimizer_steps"]
+        generator_state = torch.tensor(generator_values, dtype=torch.uint8)
+        self._dataloader_iterator = None
+        self._start_dataloader_epoch(
+            skip_batches=self._dataloader_position,
+            generator_state=generator_state,
         )
 
     def save_checkpoint(self, checkpoint_directory: str | Path | None = None) -> Path:
         if not self._prepared:
             self.prepare()
+        if self.config.dataloader_num_workers != 0:
+            raise TrainingCheckpointError(
+                "Exact checkpoint continuation requires dataloader_num_workers=0"
+            )
         directory = Path(checkpoint_directory) if checkpoint_directory is not None else self.config.output_dir
         if directory is None:
             raise TrainingCheckpointError("checkpoint_directory or config.output_dir is required")
         self.accelerator.wait_for_everyone()
         if self.accelerator.is_main_process:
             directory.mkdir(parents=True, exist_ok=True)
+        self.accelerator.wait_for_everyone()
+        self._checkpoint_components()
+        self._save_accelerator_state(directory)
+        if self.accelerator.is_main_process:
             self.recipe.save_weights(directory, self.strategy, self._checkpoint_components())
             self.manifest.save(directory)
         self.accelerator.wait_for_everyone()
@@ -578,8 +822,24 @@ class Object3DTrainer:
         return loaded
 
     def load_checkpoint(self, checkpoint_directory: str | Path) -> None:
+        if self.config.dataloader_num_workers != 0:
+            raise TrainingCheckpointError(
+                "Exact checkpoint continuation requires dataloader_num_workers=0"
+            )
         self.validate_resume(checkpoint_directory)
-        self.recipe.load_weights(checkpoint_directory, self.strategy, self._checkpoint_components())
+        state_directory = Path(checkpoint_directory) / ACCELERATOR_STATE_DIRECTORY
+        if not state_directory.is_dir():
+            raise TrainingCheckpointError(f"Accelerator state directory {state_directory} does not exist")
+        self.accelerator.wait_for_everyone()
+        self.accelerator.load_state(state_directory)
+        self._checkpoint_components()
+        self._load_trainer_state(state_directory)
+        self.accelerator.wait_for_everyone()
 
 
-__all__ = ["Object3DTrainer"]
+__all__ = [
+    "ACCELERATOR_STATE_DIRECTORY",
+    "TRAINER_STATE_NAME",
+    "TRAINER_STATE_SCHEMA_VERSION",
+    "Object3DTrainer",
+]

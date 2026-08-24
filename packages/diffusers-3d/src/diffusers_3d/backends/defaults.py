@@ -4,6 +4,8 @@ from .registry import BackendRegistry
 from .types import BackendCapability, BackendLicenseClass, BackendSpec, BackendSupportLevel
 
 _UTILS3D_REVISION = "9a4eb15e4021b67b12c460c7057d642626897ec8"
+_FLEX_GEMM_REVISION = "6dd94a859c26ee8246888502eada3dd8ad85532e"
+_CUMESH_REVISION = "12289e1062f0603f2f0d0771b02e1395d247f26f"
 
 
 DEFAULT_BACKEND_SPECS = (
@@ -119,10 +121,13 @@ DEFAULT_BACKEND_SPECS = (
         dtypes=frozenset({"float16", "bfloat16", "float32"}),
         differentiable=True,
         install_hint=(
-            "Build FlexGEMM from an audited pinned JeffreyXiang/FlexGEMM revision with a compatible Triton toolchain"
+            f"Build FlexGEMM from JeffreyXiang/FlexGEMM revision {_FLEX_GEMM_REVISION} "
+            "with a compatible Triton toolchain"
         ),
         tested_build="Source build; PyTorch and Triton versions must be recorded together",
         source_url="https://github.com/JeffreyXiang/FlexGEMM.git",
+        source_revision=_FLEX_GEMM_REVISION,
+        requires_source_provenance=True,
     ),
     BackendSpec(
         name="cumesh",
@@ -140,10 +145,13 @@ DEFAULT_BACKEND_SPECS = (
         dtypes=frozenset({"float32"}),
         differentiable=False,
         install_hint=(
-            "Build CuMesh from an audited pinned JeffreyXiang/CuMesh revision against the active PyTorch and CUDA"
+            f"Build CuMesh from JeffreyXiang/CuMesh revision {_CUMESH_REVISION} "
+            "against the active PyTorch and CUDA"
         ),
         tested_build="Source build; PyTorch, CUDA, compiler, and GPU architecture must be recorded",
         source_url="https://github.com/JeffreyXiang/CuMesh.git",
+        source_revision=_CUMESH_REVISION,
+        requires_source_provenance=True,
     ),
     BackendSpec(
         name="kaolin",

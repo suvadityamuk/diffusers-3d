@@ -3,7 +3,7 @@
 Importing this module never imports an optional third-party backend.
 """
 
-from .cumesh import CUMESH_SOURCE_URL, CuMeshBackend
+from .cumesh import CUMESH_SOURCE_REVISION, CUMESH_SOURCE_URL, CuMeshBackend
 from .defaults import BACKEND_REGISTRY, DEFAULT_BACKEND_SPECS, create_default_backend_registry
 from .discovery import discover_backend
 from .exceptions import (
@@ -13,7 +13,12 @@ from .exceptions import (
     BackendPolicyError,
     BackendUnavailableError,
 )
-from .flex_gemm import FLEX_GEMM_BATCH_INDICES, FLEX_GEMM_SOURCE_URL, FlexGemmBackend
+from .flex_gemm import (
+    FLEX_GEMM_BATCH_INDICES,
+    FLEX_GEMM_SOURCE_REVISION,
+    FLEX_GEMM_SOURCE_URL,
+    FlexGemmBackend,
+)
 from .gsplat import GsplatBackend
 from .kaolin_flexicubes import KaolinFlexiCubesBackend
 from .o_voxel import (
@@ -64,9 +69,11 @@ from .xatlas import XAtlasBackend
 
 __all__ = [
     "BACKEND_REGISTRY",
+    "CUMESH_SOURCE_REVISION",
     "CUMESH_SOURCE_URL",
     "DEFAULT_BACKEND_SPECS",
     "FLEX_GEMM_BATCH_INDICES",
+    "FLEX_GEMM_SOURCE_REVISION",
     "FLEX_GEMM_SOURCE_URL",
     "OVOXEL_METADATA_PREFIX",
     "OVOXEL_REFERENCE_REVISION",

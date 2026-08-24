@@ -31,9 +31,10 @@ through its returned vertex mapping and rejects alignment-ambiguous custom chann
 The TRELLIS.2 adapters intentionally expose only reviewed narrow API surfaces:
 
 - `FlexGemmBackend` delegates submanifold sparse convolution and 3D grid sampling. `CuMeshBackend` delegates repair,
-  simplify, narrow-band remesh, UV unwrap, BVH construction, and unsigned distance. Both require an audited source
-  revision and a build ID, and the loaded wrapper must attest to both. TRELLIS.2's setup script clones these MIT
-  projects without commit pins, so the package does not invent a fixed upstream revision.
+  simplify, narrow-band remesh, UV unwrap, BVH construction, and unsigned distance. The package pins FlexGEMM at
+  `6dd94a859c26ee8246888502eada3dd8ad85532e` and CuMesh at
+  `12289e1062f0603f2f0d0771b02e1395d247f26f`. Discovery requires matching `direct_url.json` VCS provenance, and
+  the loaded runtime wrappers must attest to the pinned revision and caller-supplied build ID.
 - `OVoxelBackend` provides pure tensor schema conversion, official uint8 packing, and deterministic Morton-ordered
   NPZ without loading an extension. `.vxz`, flexible-dual-grid mesh extraction, and voxel rendering are separate
   native capabilities delegated to the O-Voxel API from pinned TRELLIS.2 revision

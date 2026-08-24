@@ -43,6 +43,10 @@ def test_backend_spec_is_deeply_immutable_and_normalizes_values(spec_factory):
         ({"dtypes": frozenset()}, ValueError),
         ({"differentiable": 1}, TypeError),
         ({"distribution_names": (), "source_url": None}, ValueError),
+        ({"import_names": {"valid_module": "spoofed"}}, TypeError),
+        ({"distribution_names": (name for name in ("valid-distribution",))}, TypeError),
+        ({"capabilities": {BackendCapability.CONVERSION}}, TypeError),
+        ({"devices": {"cpu"}}, TypeError),
     ],
 )
 def test_backend_spec_rejects_invalid_metadata(spec_factory, changes, error_type):
@@ -161,6 +165,46 @@ def test_discovery_accepts_required_pinned_source_provenance(spec_factory):
     assert status.provenance_verified
     assert status.available
     assert status.reason is None
+
+
+def test_discovery_rejects_an_installed_untested_version(spec_factory):
+    spec = replace(spec_factory("versioned"), tested_version="2.4.1")
+
+    status = discover_backend(
+        spec,
+        module_finder=lambda _: object(),
+        version_getter=lambda _: "2.4.0",
+    )
+
+    assert status.installed and status.importable
+    assert not status.version_compatible
+    assert not status.available
+    assert "does not match required tested version" in status.reason
+
+
+def test_discovery_rejects_missing_direct_url_for_required_source(spec_factory):
+    spec = replace(
+        spec_factory("source-build"),
+        source_url="https://github.com/expected/project.git",
+        source_revision="0123456789abcdef",
+        requires_source_provenance=True,
+    )
+
+    class Distribution:
+        def read_text(self, filename: str) -> None:
+            assert filename == "direct_url.json"
+            return None
+
+    status = discover_backend(
+        spec,
+        module_finder=lambda _: object(),
+        version_getter=lambda _: "1.0.0",
+        distribution_getter=lambda _: Distribution(),
+    )
+
+    assert not status.provenance_verified
+    assert not status.available
+    assert "has no direct_url.json" in status.reason
 
 
 def test_discovery_does_not_import_optional_package(tmp_path, monkeypatch, spec_factory):

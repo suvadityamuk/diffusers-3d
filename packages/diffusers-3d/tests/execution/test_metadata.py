@@ -26,6 +26,7 @@ def test_metadata_is_immutable_canonical_and_deterministic(
     assert loaded == metadata
     assert second_path.read_bytes() == first_contents
     assert first_contents.endswith(b"\n")
+    assert first_path.stat().st_mode & 0o044 == 0o044
     with pytest.raises(FrozenInstanceError):
         metadata.family_id = "changed"  # type: ignore[misc]
 
@@ -91,6 +92,10 @@ def test_metadata_rejects_unknown_fields_invalid_json_and_schema(
         Object3DModelIndex.from_dict(unknown)
     with pytest.raises(Object3DSchemaError, match="Unsupported"):
         replace(metadata, schema_version=2)
+    spoofed = metadata.to_dict()
+    spoofed["task_ids"] = {"image-to-3d": "spoofed"}
+    with pytest.raises(Object3DMetadataError, match="JSON array"):
+        Object3DModelIndex.from_dict(spoofed)
 
     invalid_directory = tmp_path / "invalid"
     invalid_directory.mkdir()
