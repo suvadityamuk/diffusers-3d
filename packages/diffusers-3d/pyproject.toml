@@ -23,6 +23,7 @@ classifiers = [
 dependencies = [
     "accelerate",
     "diffusers>=0.40.0.dev0,<0.41",
+    "huggingface-hub",
     "safetensors",
     "torch>=2.4",
     "transformers",
