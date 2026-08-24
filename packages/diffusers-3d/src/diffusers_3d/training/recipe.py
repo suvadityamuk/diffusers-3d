@@ -1,0 +1,99 @@
+from __future__ import annotations
+
+from abc import ABC, abstractmethod
+from collections.abc import Mapping, Sequence
+from pathlib import Path
+from typing import ClassVar, Generic, TypeVar
+
+from diffusers.loaders import PeftAdapterMixin
+from torch import nn
+
+from ..data import Object3DExample
+from ..execution import ModularObject3DPipeline, Object3DModel, Object3DPipeline
+from .exceptions import TrainingCheckpointError
+from .types import (
+    ComponentPolicy,
+    FineTuneStrategy3D,
+    FullFineTune,
+    LoRAFineTune,
+    TrainingStep3DOutput,
+)
+
+TRAINING_ADAPTER_NAME = "object3d_training"
+
+TargetT = TypeVar("TargetT", bound=Object3DModel | Object3DPipeline | ModularObject3DPipeline)
+BatchT = TypeVar("BatchT")
+
+
+class TrainingRecipe3D(ABC, Generic[TargetT, BatchT]):
+    """Reviewed model-specific objective over an exact object-3D target."""
+
+    recipe_id: ClassVar[str]
+    recipe_version: ClassVar[str]
+    family_id: ClassVar[str]
+    target_type: ClassVar[
+        type[Object3DModel] | type[Object3DPipeline] | type[ModularObject3DPipeline]
+    ]
+    batch_type: ClassVar[type[object]]
+    component_policies: ClassVar[tuple[ComponentPolicy, ...]]
+
+    def __init__(self, target: TargetT) -> None:
+        self._target = target
+
+    @property
+    def target(self) -> TargetT:
+        return self._target
+
+    @abstractmethod
+    def collate(self, examples: Sequence[Object3DExample]) -> BatchT:
+        """Build the recipe's exact typed batch."""
+
+    @abstractmethod
+    def validate_target(self) -> None:
+        """Validate model-specific target invariants without mutating the target."""
+
+    @abstractmethod
+    def compute_loss(self, batch: BatchT) -> TrainingStep3DOutput:
+        """Compute the training objective directly from components, never pipeline inference."""
+
+    def save_weights(
+        self,
+        save_directory: str | Path,
+        strategy: FineTuneStrategy3D,
+        components: Mapping[str, nn.Module],
+    ) -> None:
+        """Save selected weights through public component APIs."""
+
+        directory = Path(save_directory)
+        for key in strategy.components:
+            component = components[key]
+            component_directory = directory / key
+            if type(strategy) is LoRAFineTune:
+                if not isinstance(component, PeftAdapterMixin):
+                    raise TrainingCheckpointError(
+                        f"LoRA component {key!r} does not expose the public PeftAdapterMixin save API"
+                    )
+                component.save_lora_adapter(component_directory, adapter_name=TRAINING_ADAPTER_NAME)
+            elif type(strategy) is FullFineTune:
+                save_pretrained = getattr(component, "save_pretrained", None)
+                if not callable(save_pretrained):
+                    raise TrainingCheckpointError(
+                        f"Full component {key!r} has no save_pretrained API; its recipe must override save_weights"
+                    )
+                save_pretrained(component_directory)
+            else:
+                raise TrainingCheckpointError(f"unsupported fine-tuning strategy {type(strategy).__name__}")
+
+    def load_weights(
+        self,
+        save_directory: str | Path,
+        strategy: FineTuneStrategy3D,
+        components: Mapping[str, nn.Module],
+    ) -> None:
+        """Recipe-owned resume hook called only after exact manifest validation."""
+
+        del save_directory, strategy, components
+        raise TrainingCheckpointError(f"{type(self).__name__} does not implement checkpoint resume")
+
+
+__all__ = ["TRAINING_ADAPTER_NAME", "TrainingRecipe3D"]
