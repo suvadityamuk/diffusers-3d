@@ -8,6 +8,8 @@ from safetensors.torch import save_file
 from diffusers_3d import AutoPipelineForImageTo3D, Trellis2ImageTo3DPipeline
 from diffusers_3d.families.trellis2.conversion import convert_trellis2_checkpoint
 
+pytestmark = pytest.mark.integration
+
 
 def _write_component(root, stem, upstream_name, model):
     (root / f"{stem}.json").write_text(

@@ -17,6 +17,8 @@ from diffusers_3d import (
 )
 from diffusers_3d.training.registry import _TRAINING_RECIPE_REGISTRY
 
+pytestmark = pytest.mark.integration
+
 
 def test_released_flow_matching_equation_and_frozen_components(tiny_hunyuan_pipeline):
     pipeline = tiny_hunyuan_pipeline

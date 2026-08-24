@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import pytest
 import torch
 
 from diffusers_3d import (
@@ -17,6 +18,8 @@ from diffusers_3d import (
     TrellisSparseTensor,
 )
 from diffusers_3d.training.registry import _TRAINING_RECIPE_REGISTRY
+
+pytestmark = pytest.mark.integration
 
 
 def test_released_sparse_structure_logit_normal_objective_backward_and_frozen_components(

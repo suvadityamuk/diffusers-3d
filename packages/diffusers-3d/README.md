@@ -84,3 +84,6 @@ explicit backend installation. See [docs/backends.md](docs/backends.md).
 
 See the [contribution guide](CONTRIBUTING.md), [lifecycle and review checklists](docs/contributions.md), and
 [contribution templates](templates/README.md) for integration and promotion requirements.
+
+Verification commands and the distinction between tiny CPU parity and production GPU quality are documented in
+[docs/testing.md](docs/testing.md) and [docs/compatibility.md](docs/compatibility.md).

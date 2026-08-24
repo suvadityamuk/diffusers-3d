@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import types
 
+import pytest
 import torch
 
 from diffusers_3d import (
@@ -10,6 +11,8 @@ from diffusers_3d import (
     MeshAsset,
     Object3DPipelineOutput,
 )
+
+pytestmark = pytest.mark.integration
 
 
 def _triangle_decode(self, latents, **kwargs):

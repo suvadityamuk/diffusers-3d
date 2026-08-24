@@ -10,13 +10,45 @@ import pytest
 import torch
 
 from diffusers_3d import Hunyuan3DShapeDiTModel, Hunyuan3DShapeVAE
+from diffusers_3d.families.hunyuan3d import HUNYUAN3D_REFERENCE_REVISION
+
+pytestmark = pytest.mark.reference_parity
 
 REFERENCE_ROOT = Path("/tmp/Hunyuan3D-2.1/hy3dshape/hy3dshape")
+REFERENCE_REPOSITORY_ROOT = REFERENCE_ROOT.parents[1]
+
+
+def _assert_pinned_revision() -> None:
+    git_directory = REFERENCE_REPOSITORY_ROOT / ".git"
+    head_path = git_directory / "HEAD"
+    if not head_path.is_file():
+        pytest.skip("the Hunyuan3D reference checkout has no verifiable revision metadata")
+    head = head_path.read_text(encoding="utf-8").strip()
+    if head.startswith("ref: "):
+        reference = head.removeprefix("ref: ")
+        revision_path = git_directory / reference
+        if revision_path.is_file():
+            head = revision_path.read_text(encoding="utf-8").strip()
+        else:
+            packed_refs = git_directory / "packed-refs"
+            if not packed_refs.is_file():
+                pytest.skip("the Hunyuan3D reference checkout revision is not resolvable")
+            revisions = {
+                name: revision
+                for revision, name in (
+                    line.split(" ", maxsplit=1)
+                    for line in packed_refs.read_text(encoding="utf-8").splitlines()
+                    if line and not line.startswith(("#", "^"))
+                )
+            }
+            head = revisions.get(reference, "")
+    assert head == HUNYUAN3D_REFERENCE_REVISION
 
 
 def _load_pinned_reference():
     if not REFERENCE_ROOT.is_dir():
         pytest.skip("the pinned Hunyuan3D-2.1 reference checkout is unavailable")
+    _assert_pinned_revision()
     package = "_hunyuan3d_test_reference"
     for name in (package, f"{package}.models", f"{package}.models.denoisers"):
         module = types.ModuleType(name)
@@ -45,6 +77,7 @@ def _load_pinned_reference():
 def _load_pinned_vae_reference():
     if not REFERENCE_ROOT.is_dir():
         pytest.skip("the pinned Hunyuan3D-2.1 reference checkout is unavailable")
+    _assert_pinned_revision()
     package = "_hunyuan3d_vae_test_reference"
     for name in (package, f"{package}.models", f"{package}.models.autoencoders"):
         module = types.ModuleType(name)
@@ -88,6 +121,7 @@ def _load_pinned_vae_reference():
 def _load_standalone_reference(relative_path: str, module_name: str, class_name: str):
     if not REFERENCE_ROOT.is_dir():
         pytest.skip("the pinned Hunyuan3D-2.1 reference checkout is unavailable")
+    _assert_pinned_revision()
     spec = importlib.util.spec_from_file_location(module_name, REFERENCE_ROOT / relative_path)
     module = importlib.util.module_from_spec(spec)
     sys.modules[module_name] = module

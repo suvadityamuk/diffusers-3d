@@ -15,9 +15,38 @@ from diffusers_3d import (
     TrellisSparseStructureFlowModel,
 )
 
+pytestmark = pytest.mark.reference_parity
+
 REFERENCE_ROOT = Path("/tmp/TRELLIS")
 REFERENCE_PACKAGE = "_diffusers_3d_trellis_reference"
 _REFERENCE_TYPES: tuple[type[torch.nn.Module], type[torch.nn.Module]] | None = None
+
+
+def _assert_pinned_revision() -> None:
+    git_directory = REFERENCE_ROOT / ".git"
+    head_path = git_directory / "HEAD"
+    if not head_path.is_file():
+        pytest.skip("the TRELLIS reference checkout has no verifiable revision metadata")
+    head = head_path.read_text(encoding="utf-8").strip()
+    if head.startswith("ref: "):
+        reference = head.removeprefix("ref: ")
+        revision_path = git_directory / reference
+        if revision_path.is_file():
+            head = revision_path.read_text(encoding="utf-8").strip()
+        else:
+            packed_refs = git_directory / "packed-refs"
+            if not packed_refs.is_file():
+                pytest.skip("the TRELLIS reference checkout revision is not resolvable")
+            revisions = {
+                name: revision
+                for revision, name in (
+                    line.split(" ", maxsplit=1)
+                    for line in packed_refs.read_text(encoding="utf-8").splitlines()
+                    if line and not line.startswith(("#", "^"))
+                )
+            }
+            head = revisions.get(reference, "")
+    assert head == TRELLIS_REFERENCE_REVISION
 
 
 def _load_module(name: str, path: Path, *, package: bool = False):
@@ -38,9 +67,7 @@ def _load_pinned_reference():
     source_root = REFERENCE_ROOT / "trellis"
     if not source_root.is_dir():
         pytest.skip("the pinned TRELLIS reference checkout is unavailable")
-    revision_path = REFERENCE_ROOT / ".git" / "refs" / "heads" / "main"
-    if revision_path.is_file():
-        assert revision_path.read_text(encoding="utf-8").strip() == TRELLIS_REFERENCE_REVISION
+    _assert_pinned_revision()
 
     os.environ["ATTN_BACKEND"] = "sdpa"
     for name, path in (

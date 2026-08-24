@@ -35,6 +35,7 @@ diffusers-3d-check-release = "diffusers_3d.contributions.removal:release_check_m
 diffusers-3d-convert-hunyuan3d = "diffusers_3d.families.hunyuan3d.conversion:main"
 diffusers-3d-convert-trellis = "diffusers_3d.families.trellis.conversion:main"
 diffusers-3d-convert-trellis2 = "diffusers_3d.families.trellis2.conversion:main"
+diffusers-3d-report = "diffusers_3d.compatibility:main"
 diffusers-3d-validate = "diffusers_3d.contributions.cli:main"
 
 [project.optional-dependencies]
@@ -79,9 +80,14 @@ diffusers_3d = [
 ]
 
 [tool.pytest.ini_options]
-addopts = "-ra"
+addopts = "-ra --strict-markers"
 markers = [
     "portable: requires the optional portable geometry backends",
+    "accelerated: requires an actual GPU or compiled accelerated backend",
+    "research_only: requires an explicitly accepted research-only backend or license",
+    "reference_parity: compares against a pinned upstream reference checkout",
+    "integration: exercises multiple package subsystems together",
+    "release: verifies release metadata or built distribution contents",
 ]
 testpaths = ["tests"]
 

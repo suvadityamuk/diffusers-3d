@@ -58,6 +58,7 @@ from .backends import (
     read_ovoxel_npz,
     write_ovoxel_npz,
 )
+from .compatibility import compatibility_report
 from .contributions import (
     DEFAULT_FORBIDDEN_MARKER,
     INTEGRATION_MANIFEST_NAME,
@@ -376,6 +377,7 @@ __all__ = [
     "ValidationSeverity",
     "XAtlasBackend",
     "__version__",
+    "compatibility_report",
     "create_default_backend_registry",
     "create_training_recipe_registry",
     "convert_trellis_checkpoint",

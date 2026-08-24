@@ -11,6 +11,8 @@ from diffusers_3d import (
     TrellisImageTo3DPipeline,
 )
 
+pytestmark = pytest.mark.integration
+
 
 def test_portable_sparse_structure_pipeline_is_deterministic(tiny_trellis_pipeline):
     image = torch.linspace(0.0, 1.0, 3 * 8 * 8).reshape(3, 8, 8)

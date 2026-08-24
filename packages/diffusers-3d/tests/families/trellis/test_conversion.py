@@ -13,6 +13,8 @@ from diffusers_3d import (
 )
 from diffusers_3d.families.trellis.conversion import convert_trellis_checkpoint
 
+pytestmark = pytest.mark.integration
+
 
 def _write_component(root, stem, upstream_name, model):
     (root / f"{stem}.json").write_text(

@@ -1,6 +1,7 @@
 name: Diffusers 3D
 
 on:
+  workflow_dispatch:
   pull_request:
     paths:
       - "packages/diffusers-3d/**"
@@ -10,17 +11,59 @@ on:
       - main
     paths:
       - "packages/diffusers-3d/**"
+      - ".github/workflows/diffusers_3d.yml"
 
 permissions:
   contents: read
 
+# GPU, compiled-backend, research-license, and production-checkpoint quality
+# verification is intentionally manual and documented in
+# packages/diffusers-3d/docs/testing.md. GitHub CPU jobs are not evidence for it.
 jobs:
+  quality-and-manifests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Install validation dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install torch --index-url https://download.pytorch.org/whl/cpu
+          python -m pip install -e .
+          python -m pip install -e "packages/diffusers-3d[test,training]" --no-deps
+          python -m pip install accelerate peft pytest ruff safetensors transformers
+      - name: Check project AI guides
+        run: python utils/check_ai.py
+      - name: Check formatting, imports, and strict marker collection
+        run: |
+          python -m ruff check packages/diffusers-3d/src packages/diffusers-3d/tests packages/diffusers-3d/tools
+          python -m pytest packages/diffusers-3d/tests --collect-only -q
+      - name: Validate every shipped family manifest
+        run: |
+          python - <<'PY'
+          import subprocess
+          from pathlib import Path
+
+          manifests = sorted(
+              Path("packages/diffusers-3d/src/diffusers_3d/families").glob(
+                  "*/diffusers_3d_integration.json"
+              )
+          )
+          if not manifests:
+              raise SystemExit("no family manifests found")
+          for manifest in manifests:
+              subprocess.run(["diffusers-3d-validate", str(manifest)], check=True)
+          PY
+
   core-cpu:
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
-        python-version: ["3.10", "3.12"]
+        python-version: ["3.10", "3.11", "3.12"]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -32,12 +75,13 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install torch --index-url https://download.pytorch.org/whl/cpu
           python -m pip install -e .
-          python -m pip install -e "packages/diffusers-3d[test]" --no-deps
+          python -m pip install -e "packages/diffusers-3d[test,training]" --no-deps
           python -m pip install accelerate peft pytest pytest-cov safetensors transformers
-      - name: Verify CPU-only import and tests
+      - name: Verify CPU import and all backend-independent tests
         run: |
           python -c "import diffusers_3d"
-          python -m pytest packages/diffusers-3d/tests
+          python -m pytest packages/diffusers-3d/tests \
+            -m "not portable and not accelerated and not research_only and not release"
 
   portable:
     runs-on: ubuntu-latest
@@ -56,3 +100,72 @@ jobs:
           python -m pip install accelerate pytest pytest-cov safetensors scikit-image transformers trimesh xatlas
       - name: Run portable backend tests
         run: python -m pytest packages/diffusers-3d/tests -m portable
+
+  release-manifests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Install release-test dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install torch --index-url https://download.pytorch.org/whl/cpu
+          python -m pip install -e .
+          python -m pip install -e "packages/diffusers-3d[test,training]" --no-deps
+          python -m pip install accelerate peft pytest safetensors transformers
+      - name: Check aggregate manifests, registry evidence, and release policy
+        run: python -m pytest packages/diffusers-3d/tests -m release
+
+  wheel-build-install:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Install build and local Diffusers dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install torch --index-url https://download.pytorch.org/whl/cpu
+          python -m pip install -e .
+          python -m pip install accelerate build safetensors transformers
+      - name: Build and verify the wheel contents
+        run: |
+          python -m build --wheel --outdir packages/diffusers-3d/wheelhouse packages/diffusers-3d
+          wheel="$(python -c 'from pathlib import Path; paths=list(Path("packages/diffusers-3d/wheelhouse").glob("*.whl")); assert len(paths) == 1; print(paths[0])')"
+          python packages/diffusers-3d/tools/verify_wheel.py "$wheel"
+          python -m zipfile -e "$wheel" packages/diffusers-3d/wheel-unpacked
+      - name: Install wheel and import outside the checkout
+        run: |
+          wheel="$(python -c 'from pathlib import Path; print(next(Path("packages/diffusers-3d/wheelhouse").glob("*.whl")))')"
+          python -m pip install --no-deps --force-reinstall "$wheel"
+          python -m pip check
+          diffusers-3d-check-release packages/diffusers-3d/src/diffusers_3d packages/diffusers-3d/wheel-unpacked
+          cd /tmp
+          python -I -c "import diffusers_3d; print(diffusers_3d.__version__)"
+          diffusers-3d-report --compact
+
+  diffusers-local-current-minor:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Install the local Diffusers 0.40 minor once
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install torch --index-url https://download.pytorch.org/whl/cpu
+          python -m pip install -e .
+          python -m pip install -e "packages/diffusers-3d[test]" --no-deps
+          python -m pip install accelerate pytest safetensors transformers
+      - name: Verify declared local/current-minor compatibility
+        run: |
+          python -c "import diffusers; assert diffusers.__version__.split('.')[:2] == ['0', '40'], diffusers.__version__"
+          python -m pip check
+          python -m pytest packages/diffusers-3d/tests/execution

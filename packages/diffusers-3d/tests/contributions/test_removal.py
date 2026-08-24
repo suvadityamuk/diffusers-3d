@@ -1,6 +1,10 @@
 from __future__ import annotations
 
+import pytest
+
 from diffusers_3d import DEFAULT_FORBIDDEN_MARKER, scan_forbidden_marker
+
+pytestmark = pytest.mark.release
 
 
 def test_forbidden_marker_scan_covers_source_and_build_paths(tmp_path):

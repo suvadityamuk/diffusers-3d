@@ -8,6 +8,8 @@ from safetensors.torch import save_file
 from diffusers_3d import AutoPipelineForImageTo3D, Hunyuan3DImageToShapePipeline
 from diffusers_3d.families.hunyuan3d.conversion import convert_hunyuan3d_checkpoint
 
+pytestmark = pytest.mark.integration
+
 
 def _aggregate_state(conditioner, denoiser, vae):
     state = {f"model.{key}": value for key, value in denoiser.state_dict().items()}

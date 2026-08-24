@@ -11,6 +11,8 @@ from diffusers_3d import (
     Trellis2ImageTo3DPipeline,
 )
 
+pytestmark = pytest.mark.integration
+
 
 def test_reviewed_sparse_structure_pipeline_is_deterministic_and_uses_released_defaults(tiny_trellis2_pipeline):
     pipeline = tiny_trellis2_pipeline

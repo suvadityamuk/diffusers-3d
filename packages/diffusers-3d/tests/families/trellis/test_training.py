@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import pytest
 import torch
 
 from diffusers_3d import (
@@ -15,6 +16,8 @@ from diffusers_3d import (
     TrellisSparseTensor,
 )
 from diffusers_3d.training.registry import _TRAINING_RECIPE_REGISTRY
+
+pytestmark = pytest.mark.integration
 
 
 def _pipeline_parameter_flags(pipeline):
