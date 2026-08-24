@@ -1,0 +1,64 @@
+{
+  "backends": [
+    {
+      "capabilities": [
+        "tensor-compute"
+      ],
+      "distribution": "torch",
+      "install_hint": "Install the versions declared by the Hub repository requirements.",
+      "license_class": "permissive",
+      "license_identifier": "BSD-3-Clause",
+      "name": "torch",
+      "required": true,
+      "source": null,
+      "support_level": "portable",
+      "version": "2.4"
+    }
+  ],
+  "components": [
+    {
+      "checkpoint_conversion": null,
+      "class_name": "block.ExperimentalObject3DBlock",
+      "parity": [],
+      "role": "custom-block"
+    }
+  ],
+  "integration_id": "experimental-object3d-block",
+  "level": "experimental_hub",
+  "licenses": {
+    "artifacts": [
+      {
+        "artifact": "remote-code",
+        "license": {
+          "classification": "permissive",
+          "identifier": "Apache-2.0",
+          "url": "https://www.apache.org/licenses/LICENSE-2.0"
+        }
+      }
+    ],
+    "model": {
+      "classification": "permissive",
+      "identifier": "Apache-2.0",
+      "url": "https://www.apache.org/licenses/LICENSE-2.0"
+    }
+  },
+  "schema": "diffusers-3d-integration",
+  "schema_version": 1,
+  "training": null,
+  "upstream": {
+    "repository": "https://huggingface.co/your-org/your-object3d-block",
+    "revision": "1111111111111111111111111111111111111111"
+  },
+  "workflow": {
+    "input_representations": [
+      "latent-tensor"
+    ],
+    "output_representations": [
+      "mesh"
+    ],
+    "task_ids": [
+      "image-to-3d"
+    ],
+    "workflow": "modular-pipeline"
+  }
+}

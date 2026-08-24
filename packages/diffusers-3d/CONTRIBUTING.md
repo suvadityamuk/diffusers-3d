@@ -2,6 +2,14 @@
 
 New work progresses through three levels.
 
+The versioned manifest schema, promotion flow, conversion/parity checklist, trainability review, and backend/license
+review are documented in [docs/contributions.md](docs/contributions.md). Start from the
+[contribution templates](templates/README.md) and validate the completed local record with:
+
+```bash
+diffusers-3d-validate path/to/integration_manifest.json
+```
+
 ## Experimental Hub contribution
 
 Publish custom `ModularPipelineBlocks` with a pinned revision and explicit requirements. Remote code is
@@ -40,3 +48,6 @@ Do not add a mandatory geometry, rendering, or CUDA dependency. Optional adapter
 
 Source dependencies must be commit-pinned in `requirements/backends`. Do not use an unrelated package with a
 colliding PyPI name.
+
+Before release, use the offline removal checker described in
+[the lifecycle guide](docs/contributions.md#release-removal-check) against every selected source and build path.

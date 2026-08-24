@@ -29,6 +29,10 @@ dependencies = [
     "transformers",
 ]
 
+[project.scripts]
+diffusers-3d-check-release = "diffusers_3d.contributions.removal:release_check_main"
+diffusers-3d-validate = "diffusers_3d.contributions.cli:main"
+
 [project.optional-dependencies]
 portable = [
     "scikit-image",

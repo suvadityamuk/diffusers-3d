@@ -1,0 +1,99 @@
+# Integration contribution lifecycle
+
+An integration manifest records review evidence; it does not register code by itself. Every manifest uses schema
+`diffusers-3d-integration` version `1`, rejects unknown JSON fields at every level, and is validated without network
+access.
+
+Validate a local record with:
+
+```bash
+diffusers-3d-validate path/to/integration_manifest.json
+```
+
+## 1. Hub remote-code staging
+
+Use an experimental Hub custom block to iterate on an inference workflow before package review.
+
+- Pin the Hub repository to a full immutable commit digest.
+- Declare the task, workflow, input/output representations, dependencies, and licenses known at this stage.
+- Require consumers to opt into remote code explicitly.
+- Do not add the class to package model, pipeline, or training registries.
+- Do not declare a training qualification. Experimental blocks are inference-only.
+
+The starter in [`templates/experimental-custom-block`](../templates/experimental-custom-block) includes the block
+source, modular config, and manifest.
+
+## 2. Reviewed companion-package integration
+
+Promotion replaces remote code with exact package-owned classes and immutable review evidence. A reviewed integration
+must declare:
+
+- the full upstream repository commit digest;
+- every exact model, pipeline, scheduler, processor, or converter class and its unique role;
+- task routing and tensor-native input/output representations;
+- checkpoint conversion and public `save_pretrained`/`from_pretrained` round trips;
+- component and end-to-end parity tests against the pinned upstream implementation;
+- every runtime backend, support level, install path, version/build constraint, and license classification;
+- upstream model and redistributed artifact licenses.
+
+Registries resolve exact classes. A subclass, structurally similar class, or class from a different revision does not
+inherit review.
+
+### Conversion and parity checklist
+
+1. Map one upstream component at a time and load converted state dictionaries with `strict=True`.
+2. Save and reload through public Diffusers APIs; do not add custom runtime weight fetching.
+3. Compare freshly converted and reference components side by side on deterministic CPU float32 inputs.
+4. Record the executable test path, reference behavior, tolerances, and passing result in the manifest.
+5. Run a tiny real-class pipeline save/load round trip and verify object-native output semantics.
+6. Verify task metadata, coordinate conventions, representation channels, dtype, and device preservation.
+7. Keep conversion tests distinct from normal model and pipeline contract tests.
+
+Use [`templates/reviewed-model-family`](../templates/reviewed-model-family) as the package skeleton.
+
+## 3. Optional upstream Diffusers primitive
+
+After package review, dependency-light and generally useful primitives may be proposed to Diffusers. Object-3D task
+metadata, specialized backends, and training authorization can remain in this companion package.
+
+Moving a model, scheduler, guider, loader, or utility upstream does not make it trainable. Training still requires the
+exact recipe qualification below, and the companion registry must continue to reject unreviewed targets and
+subclasses.
+
+## Trainability review
+
+Training is a separate qualification for a reviewed package or upstream integration. Its manifest record must pin:
+
+- recipe identifier, recipe version, recipe class, target class, typed batch class, and stable registration;
+- supported full or LoRA strategies and the exact trainable component roles;
+- backward parity for recipe-owned parameters;
+- checkpoint save/load and continuation parity;
+- objective parity against the pinned upstream implementation.
+
+Review also checks typed examples and batches, exact component policies, gradient ownership, public checkpoint APIs,
+and deterministic resume identity. Missing or failed evidence keeps the integration inference-only.
+
+## Backend and license review
+
+Every backend declaration includes its capabilities, distribution or pinned source, tested version/build constraint,
+support classification, exact license identifier, coarse license classification, and actionable installation hint.
+
+- `portable` backends should work without a source build or vendor runtime.
+- `accelerated` backends may require device-specific wheels or builds.
+- `research_only` backends are never selected implicitly and generate a validation warning.
+- `restricted` and `unknown` licenses generate warnings and require explicit review.
+
+Model weights and every converted or generated artifact need separate license records. A permissive package license
+does not override a model, checkpoint, renderer, or dataset license.
+
+## Release-removal check
+
+The temporary contract-validation family remains in the package while the public contracts settle. Before a release,
+scan each selected source and built-artifact path:
+
+```bash
+diffusers-3d-check-release src build
+```
+
+The command reports every forbidden-marker path, line, and column and exits nonzero until removal is complete. Callers
+may use `--marker` for another release-blocking marker.

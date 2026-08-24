@@ -47,4 +47,5 @@ explicit backend installation. See [docs/backends.md](docs/backends.md).
 3. Stable dependency-light primitives may be proposed upstream to Diffusers. Upstream availability alone does not
    make a component trainable through this package.
 
-See [CONTRIBUTING.md](CONTRIBUTING.md) for the integration and promotion requirements.
+See the [contribution guide](CONTRIBUTING.md), [lifecycle and review checklists](docs/contributions.md), and
+[contribution templates](templates/README.md) for integration and promotion requirements.
