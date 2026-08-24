@@ -4,8 +4,11 @@ from pathlib import Path
 
 from diffusers_3d import (
     BackendLicenseClass,
+    Hunyuan3DDinov2Conditioner,
     Hunyuan3DImageToShapePipeline,
+    Hunyuan3DShapeDiTModel,
     Hunyuan3DShapeFlowMatchingRecipe,
+    Hunyuan3DShapeVAE,
     IntegrationManifest3D,
     validate_integration_manifest,
 )
@@ -41,18 +44,30 @@ def test_hunyuan_manifest_is_valid_with_expected_restricted_license_warnings():
 def test_manifest_matches_exact_production_registrations_and_evidence():
     manifest = IntegrationManifest3D.load(FAMILY_ROOT / "diffusers_3d_integration.json")
     component_classes = {component.class_name for component in manifest.components}
-    registered_model_classes = {
-        registration.metadata.model_class
-        for registration in _MODEL_REGISTRY
-        if registration.metadata.family_id == manifest.integration_id
+    assert _MODEL_REGISTRY.frozen
+    assert _PIPELINE_REGISTRY.frozen
+    assert _TRAINING_RECIPE_REGISTRY.frozen
+    registered_model_types = {registration.model_class for registration in _MODEL_REGISTRY}
+    registered_pipeline_types = {registration.pipeline_class for registration in _PIPELINE_REGISTRY}
+    registered_recipe_types = {registration.recipe_type for registration in _TRAINING_RECIPE_REGISTRY}
+    assert registered_model_types == {
+        Hunyuan3DDinov2Conditioner,
+        Hunyuan3DShapeDiTModel,
+        Hunyuan3DShapeVAE,
     }
-    registered_pipeline_classes = {
-        registration.metadata.pipeline_class
-        for registration in _PIPELINE_REGISTRY
-        if registration.metadata.family_id == manifest.integration_id
-    }
+    assert registered_pipeline_types == {Hunyuan3DImageToShapePipeline}
+    assert registered_recipe_types == {Hunyuan3DShapeFlowMatchingRecipe}
+    registered_model_classes = {registration.metadata.model_class for registration in _MODEL_REGISTRY}
+    registered_pipeline_classes = {registration.metadata.pipeline_class for registration in _PIPELINE_REGISTRY}
     assert registered_model_classes.issubset(component_classes)
     assert registered_pipeline_classes == {_qualified_name(Hunyuan3DImageToShapePipeline)}
+    assert (
+        _PIPELINE_REGISTRY.resolve(
+            Hunyuan3DImageToShapePipeline.object3d_model_index(),
+            "image-to-3d",
+        )
+        is Hunyuan3DImageToShapePipeline
+    )
 
     training = manifest.training
     registration = _TRAINING_RECIPE_REGISTRY.resolve(

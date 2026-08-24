@@ -116,13 +116,13 @@ def scan_forbidden_marker(
 def release_check_main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         prog="diffusers-3d-check-release",
-        description="Scan selected source/build paths for a forbidden temporary marker.",
+        description="Scan selected source/build paths for a reserved release-blocking marker.",
     )
     parser.add_argument("paths", nargs="+", help="Source or build files/directories to scan.")
     parser.add_argument(
         "--marker",
         default=DEFAULT_FORBIDDEN_MARKER,
-        help="Forbidden marker text (defaults to the temporary contract-family marker).",
+        help="Forbidden marker text (defaults to the package's reserved release marker).",
     )
     arguments = parser.parse_args(argv)
     report = scan_forbidden_marker(arguments.paths, marker=arguments.marker)

@@ -86,14 +86,28 @@ support classification, exact license identifier, coarse license classification,
 Model weights and every converted or generated artifact need separate license records. A permissive package license
 does not override a model, checkpoint, renderer, or dataset license.
 
-## Release-removal check
+## First-release check
 
-The temporary contract-validation family remains in the package while the public contracts settle. Before a release,
-scan each selected source and built-artifact path:
+The pre-release-only scaffold has been removed. The first code release must satisfy this checklist:
+
+1. Production execution and training registries are frozen and contain only exact reviewed family registrations.
+2. Tiny model, pipeline, auto-loading, typed training, and checkpoint round trips cover every registered family.
+3. The full tests, Ruff checks, package installation/import smoke test, and every integration manifest validator pass.
+4. A wheel is built in a clean temporary directory, unpacked, and checked separately from the source tree.
+5. Neither source nor wheel contains the reserved release marker or removed scaffold names and paths.
+6. Version finalization and publication remain explicit maintainer actions after the code gate.
+
+Run the offline checker over all selected source paths and the unpacked wheel:
 
 ```bash
-diffusers-3d-check-release src build
+diffusers-3d-check-release src tests templates docs README.md CONTRIBUTING.md pyproject.toml
+diffusers-3d-check-release /tmp/diffusers-3d-wheel
 ```
 
-The command reports every forbidden-marker path, line, and column and exits nonzero until removal is complete. Callers
-may use `--marker` for another release-blocking marker.
+The command reports every reserved-marker path, line, and column and exits nonzero until removal is complete. Its
+default marker is reconstructed at runtime so the checker does not place the blocked byte sequence in its own wheel.
+Callers may use `--marker` for another release-blocking marker.
+
+For Hunyuan3D-2.1, release notes must state that the VAE is decode-only, training requires precomputed shape latents,
+no official approximately 7 GB checkpoint/GPU quality run has been performed, and Hunyuan-derived code and converted
+checkpoints remain under the restricted Tencent Hunyuan 3D 2.1 Community License Agreement.

@@ -36,6 +36,21 @@ gradient-ownership tests, and checkpoint continuation tests.
 Only dependency-light, generally useful model, scheduler, guider, or loading primitives should be proposed upstream.
 The companion package retains object-3D task metadata and training authorization.
 
+## First-release gate
+
+Before publication, maintainers must confirm:
+
+- [ ] the production registries contain only exact reviewed family registrations and are frozen;
+- [ ] tiny model, pipeline, auto-loader, training, and checkpoint tests pass for every registered family;
+- [ ] integration manifests validate and all license warnings are understood;
+- [ ] Ruff and the full package test suite pass;
+- [ ] both the source tree and an unpacked wheel pass `diffusers-3d-check-release`;
+- [ ] the wheel contains no pre-release-only scaffold names, paths, or modules.
+
+For the current Hunyuan3D integration, review must account for its decode-only VAE, precomputed-latent-only training,
+the absence of an official approximately 7 GB checkpoint/GPU quality run, and the restricted Tencent Hunyuan 3D 2.1
+Community License Agreement. Code readiness does not select a final version or publish the package.
+
 ## Dependency requirements
 
 Do not add a mandatory geometry, rendering, or CUDA dependency. Optional adapters must:

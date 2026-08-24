@@ -10,8 +10,30 @@ model-specific recipe.
 
 ## Status
 
-The package is pre-alpha. Public contracts use schema version `1`; model integrations and optional compiled
-backends remain capability-gated.
+The package is pre-alpha. Object, loading, and training contracts use schema version `1`; contribution manifests use
+schema version `2`. Model integrations and optional compiled backends remain capability-gated.
+
+## First-release readiness
+
+The code release gate requires all of the following before publication:
+
+- [x] Production execution and training registries contain only reviewed Hunyuan3D classes and are immutable.
+- [x] Pre-release-only scaffold code and tests are absent from source and built packages.
+- [x] Tiny Hunyuan3D model, pipeline, auto-loading, training, and checkpoint round trips pass.
+- [x] The Hunyuan3D integration manifest validates with only its expected restricted-license warnings.
+- [x] Source and unpacked wheel scans pass with the default release checker.
+
+This checklist covers code readiness only. Selecting a final version and publishing a release are separate maintainer
+actions; the package remains at its development version until then.
+
+## Current Hunyuan3D limitations
+
+- The shape VAE is decode-only. Its point-cloud encoder is not included.
+- Training supports precomputed shape latents only; surface-sample encoding is not implemented.
+- No official approximately 7 GB checkpoint/GPU quality run has been performed, so production mesh quality and
+  production-resolution GPU parity are not claimed.
+- Hunyuan-derived code and converted checkpoints are governed by the restricted Tencent Hunyuan 3D 2.1 Community
+  License Agreement, not the package's Apache-2.0 glue-code license.
 
 ## Design principles
 

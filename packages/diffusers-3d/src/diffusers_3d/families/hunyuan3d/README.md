@@ -58,17 +58,22 @@ optimizer parameter sets, and exact package checkpoint weight restoration.
 
 ## Explicit limitations
 
-- The VAE point-cloud encoder is not ported because the released path depends
-  on `torch_cluster.fps`. `encode()` and surface-sample training raise
-  `NotImplementedError`; precompute latents with the official licensed stack.
+- The VAE is decode-only. Its point-cloud encoder is not ported because the
+  released path depends on `torch_cluster.fps`; `encode()` raises
+  `NotImplementedError`.
+- Training accepts precomputed shape latents only. Surface-sample training is
+  not implemented, so latents must be precomputed with the official licensed
+  stack.
 - FlashVDM, hierarchical volume decoding, DISO/DMC extraction, dual/multiview
   conditioning, and texture generation are unsupported.
 - Core mesh output does not import or return `trimesh`.
 - CI exercises tiny CPU configurations without downloads. The composed parity
-  test stops at scalar-field logits and does not establish official-checkpoint
-  mesh quality. Full official checkpoint loading, production-resolution GPU
-  output parity, quality metrics, and end-to-end GPU parity were not run here
-  and are not claimed.
+  test stops at scalar-field logits. No official approximately 7 GB
+  checkpoint/GPU quality run was performed. Full official checkpoint loading,
+  production-resolution GPU output parity, quality metrics, and end-to-end GPU
+  parity are not claimed.
+- Hunyuan-derived code and converted checkpoints remain under the restricted
+  Tencent Hunyuan 3D 2.1 Community License Agreement.
 
 Install the mesh backend and converter dependency with:
 

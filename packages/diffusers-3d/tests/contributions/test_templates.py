@@ -34,7 +34,7 @@ def test_template_python_skeletons_compile():
         compile(path.read_text(encoding="utf-8"), str(path), "exec")
 
 
-def test_templates_do_not_contain_temporary_validation_marker():
+def test_templates_are_release_marker_clean():
     report = scan_forbidden_marker((TEMPLATES,), marker=DEFAULT_FORBIDDEN_MARKER)
 
     assert report.is_clean

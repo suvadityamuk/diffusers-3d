@@ -25,6 +25,18 @@ def test_tiny_decode_field_chunking_and_save_load(tmp_path):
         torch.testing.assert_close(loaded.decode(latents).sample, decoded)
 
 
+def test_tiny_decoder_is_tensor_native_and_differentiable():
+    vae = Hunyuan3DShapeVAE(**Hunyuan3DShapeVAE.tiny_config())
+    latents = torch.randn(1, 4, 8, requires_grad=True)
+
+    decoded = vae.decode(latents).sample
+    decoded.square().mean().backward()
+
+    assert decoded.shape == (1, vae.config.num_latents, vae.config.width)
+    assert latents.grad is not None
+    assert vae.post_kl.weight.grad is not None
+
+
 @pytest.mark.portable
 def test_tiny_sphere_field_returns_mesh_asset():
     vae = Hunyuan3DShapeVAE(**Hunyuan3DShapeVAE.tiny_config())
