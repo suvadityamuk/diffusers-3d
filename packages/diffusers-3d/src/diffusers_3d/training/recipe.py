@@ -31,9 +31,7 @@ class TrainingRecipe3D(ABC, Generic[TargetT, BatchT]):
     recipe_id: ClassVar[str]
     recipe_version: ClassVar[str]
     family_id: ClassVar[str]
-    target_type: ClassVar[
-        type[Object3DModel] | type[Object3DPipeline] | type[ModularObject3DPipeline]
-    ]
+    target_type: ClassVar[type[Object3DModel] | type[Object3DPipeline] | type[ModularObject3DPipeline]]
     batch_type: ClassVar[type[object]]
     component_policies: ClassVar[tuple[ComponentPolicy, ...]]
 
