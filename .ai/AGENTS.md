@@ -73,3 +73,11 @@ Task-specific guides live in `.ai/skills/` and are loaded on demand by AI agents
 ## Self-review before a PR
 
 Before opening a PR, run self-review against [review-rules.md](references/review-rules.md). The [self-review skill](skills/self-review/SKILL.md) runs this as the same pass the `@claude` CI reviewer uses. Share the final report on the PR (description or comment) — see the skill for details.
+
+## Cursor Cloud specific instructions
+
+- **CPU-only, no GPU.** This VM has no CUDA/GPU (`diffusers-cli env` reports `PyTorch ... (False)`). Torch is the CPU wheel (installed from `https://download.pytorch.org/whl/cpu`). Anything gated on a GPU won't run here: `@slow` / `RUN_SLOW=1` nightly integration tests, `@require_torch_gpu`, quantization backends (bitsandbytes, etc.), and most `tests/pipelines/**` integration tests that load full checkpoints. Stick to CPU unit tests (schedulers, small model/pipeline unit tests with tiny dummy components).
+- **The venv already exists at `.venv`** (the update script builds it). Activate with `source .venv/bin/activate` before running anything; `diffusers` is installed editable, so `src/` edits are picked up immediately with no reinstall.
+- **Lint/format/test/run** commands are the standard ones in the `Makefile` (`make quality` to check, `make style` to fix) and Setup section above (`uv pip install -e ".[dev]"`). Run tests with `python -m pytest tests/<path>` (e.g. `python -m pytest tests/schedulers/test_scheduler_ddpm.py`).
+- **Network to the HF Hub works** and many CPU tests plus `diffusers-cli run` download tiny fixture repos (e.g. `hf-internal-testing/tiny-random-*`) on demand. Expect a "sending unauthenticated requests" warning — that's fine; set `HF_TOKEN` only if you hit rate limits.
+- **CPU smoke test / hello-world:** `diffusers-cli run --model hf-internal-testing/tiny-stable-diffusion-torch --pipeline-kwargs '{"prompt": "a cat", "num_inference_steps": 5}' --output /tmp/out.png`. Use the `...-torch` repo, not `hf-internal-testing/tiny-stable-diffusion-pipe` (the latter's `model_index.json` references a Flax component and fails to load in this torch-only env).
