@@ -57,6 +57,9 @@ diffusers_3d = ["py.typed", "schemas/*.json"]
 
 [tool.pytest.ini_options]
 addopts = "-ra"
+markers = [
+    "portable: requires the optional portable geometry backends",
+]
 testpaths = ["tests"]
 
 [tool.ruff]

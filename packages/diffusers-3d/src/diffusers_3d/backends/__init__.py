@@ -24,6 +24,8 @@ from .protocols import (
     TensorMap,
 )
 from .registry import BackendRegistry
+from .scikit_image import ScikitImageBackend
+from .trimesh import TrimeshBackend
 from .types import (
     BackendCapability,
     BackendDiscoveryReport,
@@ -32,6 +34,7 @@ from .types import (
     BackendStatus,
     BackendSupportLevel,
 )
+from .xatlas import XAtlasBackend
 
 __all__ = [
     "BACKEND_REGISTRY",
@@ -54,9 +57,12 @@ __all__ = [
     "MeshRasterizerBackend",
     "NativeRepresentationBackend",
     "PBRBakingBackend",
+    "ScikitImageBackend",
     "SparseComputeBackend",
     "SurfaceExtractionBackend",
     "TensorMap",
+    "TrimeshBackend",
+    "XAtlasBackend",
     "create_default_backend_registry",
     "discover_backend",
 ]

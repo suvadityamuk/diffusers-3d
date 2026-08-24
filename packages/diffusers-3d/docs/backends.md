@@ -9,10 +9,20 @@ Backends implement package-owned protocols and are classified as:
 The package never imports optional backends at top level. Backend selection is explicit when multiple
 implementations can change numerical or visual output.
 
-## Planned and supported adapters
+## Supported portable adapters
 
-- Geometry: trimesh, xatlas, and CuMesh.
-- Surface extraction: scikit-image marching cubes and permissive Kaolin/FlexiCubes.
+`TrimeshBackend`, `ScikitImageBackend`, and `XAtlasBackend` implement CPU mesh I/O/processing, marching cubes, and
+UV unwrapping respectively. Constructing an adapter explicitly selects its exact entry in `BACKEND_REGISTRY` before
+the optional module is imported. Their NumPy/CPU conversions are non-differentiable.
+
+Trimesh I/O supports OBJ, PLY, GLB, and STL. The adapter rejects channels, transforms, or coordinate-system metadata
+that a requested format cannot preserve instead of silently dropping them. XAtlas remaps vertex-aligned channels
+through its returned vertex mapping and rejects alignment-ambiguous custom channels.
+
+## Planned accelerated and reference adapters
+
+- Geometry: CuMesh.
+- Surface extraction: permissive Kaolin/FlexiCubes.
 - Sparse compute: spconv and FlexGEMM.
 - Gaussian rendering: gsplat.
 - Native representations: O-Voxel conversion and codecs.
