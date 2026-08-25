@@ -97,19 +97,4 @@ class TrainingRecipe3D(ABC, Generic[TargetT, ExampleT, BatchT]):
             else:
                 raise TrainingCheckpointError(f"unsupported fine-tuning strategy {type(strategy).__name__}")
 
-    def load_weights(
-        self,
-        save_directory: str | Path,
-        strategy: FineTuneStrategy3D,
-        components: Mapping[str, nn.Module],
-    ) -> None:
-        """Recipe-owned component artifact loader for explicit inference-weight restoration.
-
-        Trainer continuation uses the authoritative Accelerator state instead.
-        """
-
-        del save_directory, strategy, components
-        raise TrainingCheckpointError(f"{type(self).__name__} does not implement checkpoint resume")
-
-
 __all__ = ["TRAINING_ADAPTER_NAME", "TrainingRecipe3D"]

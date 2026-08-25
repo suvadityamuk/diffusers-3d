@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import random
 import sys
 import types
 from dataclasses import dataclass, replace
 from pathlib import Path
 
+import numpy as np
 import pytest
 import torch
 from diffusers import DiffusionPipeline, ModelMixin
@@ -150,6 +152,26 @@ class TinyRecipe(TrainingRecipe3D[TinyTarget, Object3DExample, TinyBatch]):
         component_directory = Path(save_directory) / "denoiser"
         component_directory.mkdir(parents=True, exist_ok=True)
         torch.save(components["denoiser"].state_dict(), component_directory / "pytorch_model.bin")
+
+
+class StochasticTinyRecipe(TinyRecipe):
+    recipe_id = "stochastic-tiny-objective"
+    recipe_version = "1.0"
+    family_id = "tiny-training"
+    target_type = TinyTarget
+    example_type = Object3DExample
+    batch_type = TinyBatch
+    component_policies = (FULL_POLICY,)
+    frozen_component_policies = (FROZEN_POLICY,)
+
+    def compute_loss(self, batch: TinyBatch) -> TrainingStep3DOutput:
+        with torch.no_grad():
+            conditioning = self.target.conditioner(batch.inputs)
+        random_offset = random.random() + float(np.random.random())
+        random_offset = batch.inputs.new_tensor(random_offset) + torch.rand((), device=batch.inputs.device)
+        prediction = self.target.block(batch.inputs) + conditioning * 0 + random_offset
+        loss = torch.nn.functional.mse_loss(prediction, batch.labels)
+        return TrainingStep3DOutput(loss=loss, metrics={"random_offset": random_offset})
 
 
 class TinyRecipeMarker(TinyRecipe):
@@ -737,6 +759,140 @@ def test_checkpoint_requires_accumulation_boundary_and_resumes_after_one(monkeyp
     assert resumed_summary.final_loss == pytest.approx(expected_summary.final_loss, abs=0.0)
     torch.testing.assert_close(resumed_target.block.weight, expected_weight, atol=0.0, rtol=0.0)
     assert resumed.optimizer.state_dict() == expected_optimizer_state
+
+
+def test_stochastic_checkpoint_continuation_restores_all_rng_state(monkeypatch, tmp_path):
+    install_registry(monkeypatch, make_registration(StochasticTinyRecipe))
+    config = make_config(
+        max_train_steps=2,
+        learning_rate=1e-2,
+        max_grad_norm=100.0,
+        output_dir=str(tmp_path),
+    )
+    values = (1.0, 2.0, 3.0)
+
+    uninterrupted_target = TinyTarget()
+    uninterrupted = Object3DTrainer(
+        StochasticTinyRecipe(uninterrupted_target),
+        CountingDataset(values),
+        FullFineTune(("denoiser",)),
+        config,
+    )
+    uninterrupted.train(max_optimizer_steps=1)
+    expected_summary = uninterrupted.train(max_optimizer_steps=1)
+    expected_weight = uninterrupted_target.block.weight.detach().clone()
+    expected_optimizer_state = uninterrupted.optimizer.state_dict()
+
+    interrupted = Object3DTrainer(
+        StochasticTinyRecipe(TinyTarget()),
+        CountingDataset(values),
+        FullFineTune(("denoiser",)),
+        config,
+    )
+    interrupted.train(max_optimizer_steps=1)
+    interrupted.save_checkpoint()
+
+    resumed_target = TinyTarget()
+    resumed = Object3DTrainer(
+        StochasticTinyRecipe(resumed_target),
+        CountingDataset(values),
+        FullFineTune(("denoiser",)),
+        config,
+    )
+    resumed.load_checkpoint(tmp_path)
+    resumed_summary = resumed.train(max_optimizer_steps=1)
+
+    assert resumed_summary.final_loss == pytest.approx(expected_summary.final_loss, abs=0.0)
+    assert resumed_summary.final_metrics == pytest.approx(expected_summary.final_metrics, abs=0.0)
+    torch.testing.assert_close(resumed_target.block.weight, expected_weight, atol=0.0, rtol=0.0)
+    assert resumed.optimizer.state_dict() == expected_optimizer_state
+
+
+def _save_stochastic_checkpoint(monkeypatch, checkpoint_directory):
+    install_registry(monkeypatch, make_registration(StochasticTinyRecipe))
+    config = make_config(max_train_steps=2, output_dir=str(checkpoint_directory))
+    trainer = Object3DTrainer(
+        StochasticTinyRecipe(TinyTarget()),
+        CountingDataset(),
+        FullFineTune(("denoiser",)),
+        config,
+    )
+    trainer.train(max_optimizer_steps=1)
+    trainer.save_checkpoint()
+    return config
+
+
+def test_checkpoint_rejects_deleted_rng_state(monkeypatch, tmp_path):
+    config = _save_stochastic_checkpoint(monkeypatch, tmp_path)
+    (tmp_path / ACCELERATOR_STATE_DIRECTORY / "random_states_0.pkl").unlink()
+    resumed = Object3DTrainer(
+        StochasticTinyRecipe(TinyTarget()),
+        CountingDataset(),
+        FullFineTune(("denoiser",)),
+        config,
+    )
+
+    with pytest.raises(TrainingCheckpointError, match="Required RNG state"):
+        resumed.load_checkpoint(tmp_path)
+
+
+def test_checkpoint_rejects_corrupt_rng_state(monkeypatch, tmp_path):
+    config = _save_stochastic_checkpoint(monkeypatch, tmp_path)
+    (tmp_path / ACCELERATOR_STATE_DIRECTORY / "random_states_0.pkl").write_bytes(b"not a torch checkpoint")
+    resumed = Object3DTrainer(
+        StochasticTinyRecipe(TinyTarget()),
+        CountingDataset(),
+        FullFineTune(("denoiser",)),
+        config,
+    )
+
+    with pytest.raises(TrainingCheckpointError, match="safely load RNG state"):
+        resumed.load_checkpoint(tmp_path)
+
+
+def test_checkpoint_rejects_incompatible_rng_state(monkeypatch, tmp_path):
+    config = _save_stochastic_checkpoint(monkeypatch, tmp_path)
+    torch.save(
+        {
+            "numpy_random_seed": np.random.get_state(),
+            "random_state": random.getstate(),
+            "step": "not-an-integer",
+            "torch_manual_seed": torch.get_rng_state(),
+        },
+        tmp_path / ACCELERATOR_STATE_DIRECTORY / "random_states_0.pkl",
+    )
+    resumed = Object3DTrainer(
+        StochasticTinyRecipe(TinyTarget()),
+        CountingDataset(),
+        FullFineTune(("denoiser",)),
+        config,
+    )
+
+    with pytest.raises(TrainingCheckpointError, match="step must be a non-negative integer"):
+        resumed.load_checkpoint(tmp_path)
+
+
+def test_exact_checkpoint_persistence_rejects_multiple_processes_before_filesystem(monkeypatch, tmp_path):
+    install_registry(monkeypatch, make_registration())
+    checkpoint_directory = tmp_path / "not-created"
+    trainer = Object3DTrainer(
+        TinyRecipe(TinyTarget()),
+        CountingDataset(),
+        FullFineTune(("denoiser",)),
+        make_config(max_train_steps=1, output_dir=str(checkpoint_directory)),
+    ).prepare()
+    require_single_process = trainer_module._require_single_process_checkpoint
+
+    def simulate_multiple_processes(_actual_num_processes, operation):
+        require_single_process(2, operation)
+
+    monkeypatch.setattr(trainer_module, "_require_single_process_checkpoint", simulate_multiple_processes)
+    with pytest.raises(TrainingCheckpointError, match="num_processes == 1"):
+        trainer.save_checkpoint()
+    assert not checkpoint_directory.exists()
+    with pytest.raises(TrainingCheckpointError, match="num_processes == 1"):
+        trainer.load_checkpoint(checkpoint_directory)
+    assert not checkpoint_directory.exists()
 
 
 def test_checkpoint_resume_rejects_changed_dataset_fingerprint(monkeypatch, tmp_path):

@@ -10,24 +10,20 @@ from __future__ import annotations
 import math
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
-from pathlib import Path
 
 import torch
 import torch.nn.functional as F
-from torch import nn
 
 from ...data import ImageCondition
 from ...objects import SparseVoxelAsset
 from ...objects._validation import TensorShapeError, validate_shared_device, validate_tensor
 from ...objects.base import TensorDataMixin
-from ...training.exceptions import TrainingCheckpointError, TrainingTargetError
+from ...training.exceptions import TrainingTargetError
 from ...training.recipe import TrainingRecipe3D
 from ...training.types import (
     ComponentPolicy,
     FineTuneKind,
-    FineTuneStrategy3D,
     FrozenComponentPolicy,
-    FullFineTune,
     TrainingStep3DOutput,
 )
 from ..trellis.sparse import TrellisSparseTensor
@@ -251,24 +247,6 @@ class Trellis2SparseStructureFlowRecipe(
                 "condition_dropout_fraction": dropout_mask.float().mean().detach(),
             },
         )
-
-    def load_weights(
-        self,
-        save_directory: str | Path,
-        strategy: FineTuneStrategy3D,
-        components: Mapping[str, nn.Module],
-    ) -> None:
-        if type(strategy) is not FullFineTune or strategy.components != ("sparse_structure_flow_model",):
-            raise TrainingCheckpointError("TRELLIS.2 resume supports only full sparse-structure flow fine-tuning")
-        model = components.get("sparse_structure_flow_model")
-        if type(model) is not Trellis2SparseStructureFlowModel:
-            raise TrainingCheckpointError("TRELLIS.2 checkpoint flow model has the wrong exact type")
-        loaded = Trellis2SparseStructureFlowModel.from_pretrained(
-            Path(save_directory) / "sparse_structure_flow_model",
-            local_files_only=True,
-        )
-        model.load_state_dict(loaded.state_dict(), strict=True)
-
 
 @dataclass(frozen=True, slots=True)
 class Trellis2SLatExample(TensorDataMixin):

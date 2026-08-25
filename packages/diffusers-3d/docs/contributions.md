@@ -78,7 +78,12 @@ scheduler, scaler, RNG, trainer counters, and data position. Exact continuation 
 `dataloader_num_workers=0`, a synchronized optimizer-step boundary, and a non-empty caller-supplied
 `dataset_fingerprint`. The fingerprint must identify the exact dataset contents, ordering, preprocessing, and
 sampling contract; changing it is a resume-manifest mismatch. The trainer does not infer this identity from an
-arbitrary dataset object, and asynchronous dataset worker state is intentionally not claimed.
+arbitrary dataset object, and asynchronous dataset worker state is intentionally not claimed. Distributed training
+is supported, but exact checkpoint save/load currently requires `accelerator.num_processes == 1`; multi-process
+persistence is rejected before filesystem or collective operations. Resume strictly validates this process's
+Accelerator RNG payload and explicitly restores Python, NumPy, CPU torch, and recorded available device RNG states.
+Accelerator state is the authoritative continuation format. Recipe `save_weights()` artifacts remain inference
+artifacts and are not a second resume path.
 `Object3DTrainer.train()` returns one CPU-only `TrainingSummary3D` instead of retaining every device output. Missing
 or failed evidence keeps the integration inference-only.
 

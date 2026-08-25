@@ -27,7 +27,7 @@ class TrainingDependencyError(Object3DTrainingError, ImportError):
 
 
 class TrainingCheckpointError(Object3DTrainingError):
-    """Raised when recipe-owned checkpoint weights cannot be saved or loaded."""
+    """Raised when exact training checkpoint state cannot be saved or loaded."""
 
 
 class TrainingManifestError(TrainingCheckpointError, ValueError):

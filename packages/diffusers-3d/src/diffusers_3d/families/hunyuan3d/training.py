@@ -10,11 +10,9 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
-from pathlib import Path
 
 import torch
 import torch.nn.functional as F
-from torch import nn
 
 from ...data import ImageCondition
 from ...objects._validation import (
@@ -24,14 +22,12 @@ from ...objects._validation import (
     validate_tensor,
 )
 from ...objects.base import TensorDataMixin
-from ...training.exceptions import TrainingCheckpointError, TrainingTargetError
+from ...training.exceptions import TrainingTargetError
 from ...training.recipe import TrainingRecipe3D
 from ...training.types import (
     ComponentPolicy,
     FineTuneKind,
-    FineTuneStrategy3D,
     FrozenComponentPolicy,
-    FullFineTune,
     TrainingStep3DOutput,
 )
 from .conditioner import Hunyuan3DDinov2Conditioner
@@ -249,24 +245,6 @@ class Hunyuan3DShapeFlowMatchingRecipe(
                 "mean_timestep": timesteps.mean().detach(),
             },
         )
-
-    def load_weights(
-        self,
-        save_directory: str | Path,
-        strategy: FineTuneStrategy3D,
-        components: Mapping[str, nn.Module],
-    ) -> None:
-        if type(strategy) is not FullFineTune or strategy.components != ("denoiser",):
-            raise TrainingCheckpointError("Hunyuan3D checkpoint resume supports only full denoiser fine-tuning")
-        denoiser = components.get("denoiser")
-        if type(denoiser) is not Hunyuan3DShapeDiTModel:
-            raise TrainingCheckpointError("Hunyuan3D checkpoint denoiser has the wrong exact type")
-        loaded = Hunyuan3DShapeDiTModel.from_pretrained(
-            Path(save_directory) / "denoiser",
-            local_files_only=True,
-        )
-        denoiser.load_state_dict(loaded.state_dict(), strict=True)
-
 
 __all__ = [
     "HUNYUAN3D_DENOISER_POLICY",

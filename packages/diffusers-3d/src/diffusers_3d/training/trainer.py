@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import random
 import shutil
 import tempfile
 from collections.abc import Iterator, Mapping, Sequence
@@ -10,8 +11,10 @@ from pathlib import Path
 from types import MappingProxyType
 from typing import Any, ClassVar
 
+import numpy as np
 import torch
 from accelerate import Accelerator
+from accelerate.utils import load as load_accelerator_file
 from accelerate.utils import set_seed
 from diffusers.loaders import PeftAdapterMixin
 from diffusers.optimization import get_scheduler
@@ -47,6 +50,169 @@ ACCELERATOR_STATE_DIRECTORY = "accelerator_state"
 FROZEN_COMPONENT_STATE_DIRECTORY = "frozen_components"
 TRAINER_STATE_NAME = "diffusers_3d_trainer_state.json"
 TRAINER_STATE_SCHEMA_VERSION = 1
+
+_REQUIRED_RNG_STATE_FIELDS = frozenset(
+    {
+        "numpy_random_seed",
+        "random_state",
+        "step",
+        "torch_manual_seed",
+    }
+)
+_DEVICE_RNG_STATE_FIELDS = {
+    "torch_cuda_manual_seed": "cuda",
+    "torch_hpu_manual_seed": "hpu",
+    "torch_mlu_manual_seed": "mlu",
+    "torch_musa_manual_seed": "musa",
+    "torch_neuron_manual_seed": "neuron",
+    "torch_sdaa_manual_seed": "sdaa",
+    "torch_xpu_manual_seed": "xpu",
+}
+_DEVICE_TYPE_RNG_STATE_FIELDS = {device_type: field_name for field_name, device_type in _DEVICE_RNG_STATE_FIELDS.items()}
+_OPTIONAL_RNG_STATE_FIELDS = frozenset({*_DEVICE_RNG_STATE_FIELDS, "xm_seed"})
+
+
+def _require_single_process_checkpoint(num_processes: int, operation: str) -> None:
+    if num_processes != 1:
+        raise TrainingCheckpointError(
+            f"Exact checkpoint {operation} currently requires accelerator.num_processes == 1; "
+            "distributed training remains supported without checkpoint persistence"
+        )
+
+
+def _validate_rng_tensor(value: object, field_name: str) -> torch.Tensor:
+    if (
+        not isinstance(value, torch.Tensor)
+        or value.dtype is not torch.uint8
+        or value.ndim != 1
+        or value.numel() == 0
+        or value.device.type != "cpu"
+    ):
+        raise TrainingCheckpointError(f"RNG state {field_name} must be a non-empty CPU uint8 tensor")
+    return value
+
+
+def _validate_device_rng_states(value: object, field_name: str, device_type: str) -> list[torch.Tensor]:
+    if not isinstance(value, list) or not value:
+        raise TrainingCheckpointError(f"RNG state {field_name} must be a non-empty list of device states")
+    states = [_validate_rng_tensor(state, f"{field_name}[{index}]") for index, state in enumerate(value)]
+    backend = getattr(torch, device_type, None)
+    setter = getattr(backend, "set_rng_state_all", None)
+    is_available = getattr(backend, "is_available", None)
+    if backend is None or not callable(setter) or (callable(is_available) and not is_available()):
+        raise TrainingCheckpointError(
+            f"RNG state {field_name} requires the unavailable torch.{device_type} device backend"
+        )
+    device_count = getattr(backend, "device_count", None)
+    if callable(device_count) and len(states) != device_count():
+        raise TrainingCheckpointError(
+            f"RNG state {field_name} contains {len(states)} device states, but torch.{device_type} "
+            f"reports {device_count()} devices"
+        )
+    return states
+
+
+def _load_validated_rng_state(
+    state_directory: Path,
+    *,
+    process_index: int,
+    device_type: str,
+) -> dict[str, object]:
+    path = state_directory / f"random_states_{process_index}.pkl"
+    if not path.is_file():
+        raise TrainingCheckpointError(f"Required RNG state {path} does not exist")
+    try:
+        state = load_accelerator_file(path, map_location="cpu")
+    except Exception as error:
+        raise TrainingCheckpointError(f"Could not safely load RNG state from {path}") from error
+    if type(state) is not dict:
+        raise TrainingCheckpointError("RNG state must contain an exact dictionary")
+    fields = set(state)
+    missing = _REQUIRED_RNG_STATE_FIELDS.difference(fields)
+    unexpected = fields.difference(_REQUIRED_RNG_STATE_FIELDS | _OPTIONAL_RNG_STATE_FIELDS)
+    if missing or unexpected:
+        details = []
+        if missing:
+            details.append(f"missing={','.join(sorted(missing))}")
+        if unexpected:
+            details.append(f"unexpected={','.join(sorted(unexpected))}")
+        raise TrainingCheckpointError(f"RNG state fields are invalid: {'; '.join(details)}")
+
+    step = state["step"]
+    if not isinstance(step, int) or isinstance(step, bool) or step < 0:
+        raise TrainingCheckpointError("RNG state step must be a non-negative integer")
+
+    python_state = state["random_state"]
+    if type(python_state) is not tuple or len(python_state) != 3:
+        raise TrainingCheckpointError("RNG state random_state must be a Python random state tuple")
+    try:
+        random.Random().setstate(python_state)
+    except (TypeError, ValueError) as error:
+        raise TrainingCheckpointError("RNG state random_state is incompatible with Python random") from error
+
+    numpy_state = state["numpy_random_seed"]
+    if (
+        type(numpy_state) is not tuple
+        or len(numpy_state) != 5
+        or not isinstance(numpy_state[0], str)
+        or not isinstance(numpy_state[1], np.ndarray)
+        or numpy_state[1].dtype != np.uint32
+        or numpy_state[1].ndim != 1
+        or not isinstance(numpy_state[2], int)
+        or isinstance(numpy_state[2], bool)
+        or not isinstance(numpy_state[3], int)
+        or isinstance(numpy_state[3], bool)
+        or numpy_state[3] not in (0, 1)
+        or not isinstance(numpy_state[4], (int, float))
+        or isinstance(numpy_state[4], bool)
+        or not np.isfinite(numpy_state[4])
+    ):
+        raise TrainingCheckpointError("RNG state numpy_random_seed has invalid fields")
+    try:
+        np.random.RandomState().set_state(numpy_state)
+    except (TypeError, ValueError) as error:
+        raise TrainingCheckpointError("RNG state numpy_random_seed is incompatible with NumPy") from error
+
+    cpu_state = _validate_rng_tensor(state["torch_manual_seed"], "torch_manual_seed")
+    try:
+        torch.Generator(device="cpu").set_state(cpu_state)
+    except RuntimeError as error:
+        raise TrainingCheckpointError("RNG state torch_manual_seed is incompatible with torch") from error
+
+    for field_name, stored_device_type in _DEVICE_RNG_STATE_FIELDS.items():
+        if field_name in state:
+            _validate_device_rng_states(state[field_name], field_name, stored_device_type)
+    required_device_field = _DEVICE_TYPE_RNG_STATE_FIELDS.get(device_type)
+    if required_device_field is not None and required_device_field not in state:
+        raise TrainingCheckpointError(
+            f"RNG state is missing {required_device_field} for the active {device_type} training device"
+        )
+    if device_type == "xla":
+        if "xm_seed" not in state:
+            raise TrainingCheckpointError("RNG state is missing xm_seed for the active XLA training device")
+    elif device_type not in {"cpu", *_DEVICE_TYPE_RNG_STATE_FIELDS}:
+        raise TrainingCheckpointError(f"Exact RNG checkpoint restoration does not support device type {device_type!r}")
+    if "xm_seed" in state and (
+        not isinstance(state["xm_seed"], int) or isinstance(state["xm_seed"], bool) or state["xm_seed"] < 0
+    ):
+        raise TrainingCheckpointError("RNG state xm_seed must be a non-negative integer")
+    return state
+
+
+def _restore_rng_state(state: Mapping[str, object]) -> None:
+    try:
+        random.setstate(state["random_state"])
+        np.random.set_state(state["numpy_random_seed"])
+        torch.set_rng_state(state["torch_manual_seed"])
+        for field_name, device_type in _DEVICE_RNG_STATE_FIELDS.items():
+            if field_name in state:
+                getattr(torch, device_type).set_rng_state_all(state[field_name])
+        if "xm_seed" in state:
+            import torch_xla.core.xla_model as xm
+
+            xm.set_rng_state(state["xm_seed"])
+    except Exception as error:
+        raise TrainingCheckpointError("Could not explicitly restore the validated RNG state") from error
 
 
 def _resolve_path(root: object, path: str) -> object:
@@ -776,26 +942,25 @@ class Object3DTrainer:
         destination = directory / ACCELERATOR_STATE_DIRECTORY
         temporary = directory / f".{ACCELERATOR_STATE_DIRECTORY}.tmp"
         backup = directory / f".{ACCELERATOR_STATE_DIRECTORY}.backup"
-        if self.accelerator.is_main_process:
-            shutil.rmtree(temporary, ignore_errors=True)
-            shutil.rmtree(backup, ignore_errors=True)
-            temporary.mkdir(parents=True)
-        self.accelerator.wait_for_everyone()
+        shutil.rmtree(temporary, ignore_errors=True)
+        shutil.rmtree(backup, ignore_errors=True)
         try:
+            temporary.mkdir(parents=True)
             self.accelerator.save_state(temporary, safe_serialization=True)
-            self.accelerator.wait_for_everyone()
-            if self.accelerator.is_main_process:
-                self._save_trainer_state(temporary)
-                if destination.exists():
-                    os.replace(destination, backup)
-                os.replace(temporary, destination)
-                shutil.rmtree(backup, ignore_errors=True)
-            self.accelerator.wait_for_everyone()
+            _load_validated_rng_state(
+                temporary,
+                process_index=self.accelerator.process_index,
+                device_type=self.accelerator.device.type,
+            )
+            self._save_trainer_state(temporary)
+            if destination.exists():
+                os.replace(destination, backup)
+            os.replace(temporary, destination)
+            shutil.rmtree(backup, ignore_errors=True)
         except Exception as error:
-            if self.accelerator.is_main_process:
-                shutil.rmtree(temporary, ignore_errors=True)
-                if backup.exists() and not destination.exists():
-                    os.replace(backup, destination)
+            shutil.rmtree(temporary, ignore_errors=True)
+            if backup.exists() and not destination.exists():
+                os.replace(backup, destination)
             raise TrainingCheckpointError(f"Could not save Accelerator state to {destination}") from error
 
     def _load_trainer_state(self, state_directory: Path) -> None:
@@ -846,6 +1011,7 @@ class Object3DTrainer:
             raise TrainingCheckpointError("Exact checkpoint continuation requires dataset_fingerprint")
         if not self._prepared:
             self.prepare()
+        _require_single_process_checkpoint(self.accelerator.num_processes, "saving")
         if not self.accelerator.sync_gradients:
             raise TrainingCheckpointError(
                 "Checkpoint saving requires a synchronized optimizer-step boundary; "
@@ -854,16 +1020,14 @@ class Object3DTrainer:
         directory = Path(checkpoint_directory) if checkpoint_directory is not None else self.config.output_dir
         if directory is None:
             raise TrainingCheckpointError("checkpoint_directory or config.output_dir is required")
-        self.accelerator.wait_for_everyone()
-        if self.accelerator.is_main_process:
+        try:
             directory.mkdir(parents=True, exist_ok=True)
-        self.accelerator.wait_for_everyone()
+        except OSError as error:
+            raise TrainingCheckpointError(f"Could not create checkpoint directory {directory}") from error
         self._checkpoint_components()
         self._save_accelerator_state(directory)
-        if self.accelerator.is_main_process:
-            self.recipe.save_weights(directory, self.strategy, self._checkpoint_components())
-            self.manifest.save(directory)
-        self.accelerator.wait_for_everyone()
+        self.recipe.save_weights(directory, self.strategy, self._checkpoint_components())
+        self.manifest.save(directory)
         return directory / "diffusers_3d_training.json"
 
     def validate_resume(self, checkpoint_directory: str | Path) -> TrainingManifest3D:
@@ -878,15 +1042,27 @@ class Object3DTrainer:
     def load_checkpoint(self, checkpoint_directory: str | Path) -> None:
         if self.config.dataloader_num_workers != 0:
             raise TrainingCheckpointError("Exact checkpoint continuation requires dataloader_num_workers=0")
+        if not self._prepared:
+            self.prepare()
+        _require_single_process_checkpoint(self.accelerator.num_processes, "loading")
         self.validate_resume(checkpoint_directory)
         state_directory = Path(checkpoint_directory) / ACCELERATOR_STATE_DIRECTORY
         if not state_directory.is_dir():
             raise TrainingCheckpointError(f"Accelerator state directory {state_directory} does not exist")
-        self.accelerator.wait_for_everyone()
-        self.accelerator.load_state(state_directory)
+        rng_state = _load_validated_rng_state(
+            state_directory,
+            process_index=self.accelerator.process_index,
+            device_type=self.accelerator.device.type,
+        )
+        try:
+            self.accelerator.load_state(state_directory)
+        except TrainingCheckpointError:
+            raise
+        except Exception as error:
+            raise TrainingCheckpointError(f"Could not load Accelerator state from {state_directory}") from error
         self._checkpoint_components()
+        _restore_rng_state(rng_state)
         self._load_trainer_state(state_directory)
-        self.accelerator.wait_for_everyone()
 
 
 __all__ = [
