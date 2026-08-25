@@ -601,7 +601,7 @@ class Hunyuan3DShapeVAE(Object3DModel):
         if field.ndim != 4:
             raise ValueError("field_output.field must have shape (batch, x, y, z)")
         bounds = field_output.bounds
-        spacing = tuple((bounds[index + 3] - bounds[index]) / (field.shape[index + 1] - 1) for index in range(3))
+        spacing = tuple((bounds[index + 3] - bounds[index]) / field.shape[index + 1] for index in range(3))
         extractor = ScikitImageBackend() if backend is None else backend
         offset = torch.tensor(bounds[:3], dtype=torch.float32)
         meshes = []
@@ -617,7 +617,7 @@ class Hunyuan3DShapeVAE(Object3DModel):
                 MeshAsset(
                     vertices=mesh.vertices + offset,
                     faces=mesh.faces,
-                    normals=mesh.normals,
+                    normals=None,
                     metadata={
                         "family": self.family_id,
                         "level": float(level),

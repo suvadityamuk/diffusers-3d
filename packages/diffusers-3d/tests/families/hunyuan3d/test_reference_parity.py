@@ -292,7 +292,7 @@ def test_tiny_vae_decoder_matches_pinned_reference():
 
 
 @pytest.mark.portable
-def test_hunyuan_surface_topology_and_winding_match_pinned_reference():
+def test_hunyuan_surface_vertices_topology_and_winding_match_pinned_reference():
     pytest.importorskip("skimage")
     _load_pinned_vae_reference()
     reference_type = sys.modules[
@@ -313,8 +313,12 @@ def test_hunyuan_surface_topology_and_winding_match_pinned_reference():
         Hunyuan3DShapeFieldOutput(field=field.unsqueeze(0), bounds=bounds)
     )[0]
 
+    expected_vertices = torch.from_numpy(expected_vertices.copy()).to(torch.float32)
     assert torch.equal(actual.faces, torch.from_numpy(expected_faces.copy()).to(torch.int64))
-    assert actual.vertices.shape == torch.from_numpy(expected_vertices).shape
+    torch.testing.assert_close(actual.vertices, expected_vertices, atol=1e-7, rtol=0.0)
+    torch.testing.assert_close(actual.vertices.amin(dim=0), expected_vertices.amin(dim=0), atol=1e-7, rtol=0.0)
+    torch.testing.assert_close(actual.vertices.amax(dim=0), expected_vertices.amax(dim=0), atol=1e-7, rtol=0.0)
+    assert actual.normals is None
 
     def winding(vertices, faces):
         triangles = vertices[faces]
@@ -323,7 +327,7 @@ def test_hunyuan_surface_topology_and_winding_match_pinned_reference():
         return torch.sign((normals * radial).sum(dim=1).mean())
 
     assert winding(actual.vertices, actual.faces) == winding(
-        torch.from_numpy(expected_vertices.copy()),
+        expected_vertices,
         torch.from_numpy(expected_faces.copy()).to(torch.int64),
     )
 
