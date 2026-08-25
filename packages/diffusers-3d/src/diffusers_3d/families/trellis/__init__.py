@@ -18,7 +18,6 @@ _EXPORT_MODULES = {
     "TrellisSLatFlowOutput": ".models",
     "TrellisSLatFlowRecipe": ".training",
     "TrellisSLatGaussianDecoder": ".decoders",
-    "TrellisSLatMeshDecoder": ".decoders",
     "TrellisSLatRadianceFieldDecoder": ".decoders",
     "TrellisSparseStructureBatch": ".training",
     "TrellisSparseStructureDecoder": ".decoders",

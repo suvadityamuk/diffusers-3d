@@ -6,12 +6,10 @@ import pytest
 import torch
 
 from diffusers_3d import (
-    BackendUnavailableError,
     CoordinateSystem,
     GaussianSplatAsset,
     SparseVoxelAsset,
     TrellisSLatGaussianDecoder,
-    TrellisSLatMeshDecoder,
     TrellisSLatRadianceFieldDecoder,
     TrellisSparseStructureDecoder,
     TrellisSparseTensor,
@@ -97,11 +95,8 @@ def test_gaussian_decoder_maps_released_parameterization_to_canonical_asset():
     }
 
 
-def test_unported_mesh_and_radiance_decoders_fail_explicitly():
+def test_unported_radiance_decoder_fails_explicitly():
     sparse = TrellisSparseTensor(torch.tensor([[0, 0, 0, 0]]), torch.zeros(1, 8))
-    mesh = TrellisSLatMeshDecoder()
-    with pytest.raises((BackendUnavailableError, NotImplementedError), match="Kaolin|kaolin|mesh field"):
-        mesh(sparse)
     radiance = TrellisSLatRadianceFieldDecoder()
     with pytest.raises(NotImplementedError, match="package-native Object3D"):
         radiance(sparse)

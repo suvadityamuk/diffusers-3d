@@ -34,7 +34,6 @@ _TRELLIS_EXPORTS = {
     "TrellisSLatFlowOutput",
     "TrellisSLatFlowRecipe",
     "TrellisSLatGaussianDecoder",
-    "TrellisSLatMeshDecoder",
     "TrellisSLatRadianceFieldDecoder",
     "TrellisSparseStructureBatch",
     "TrellisSparseStructureDecoder",

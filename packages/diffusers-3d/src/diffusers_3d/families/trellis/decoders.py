@@ -578,77 +578,6 @@ class TrellisSLatGaussianDecoder(Object3DModel):
         return TrellisGaussianDecoderOutput(assets=assets)
 
 
-class TrellisSLatMeshDecoder(Object3DModel):
-    """Capability gate for the not-yet-ported TRELLIS SLAT mesh field decoder."""
-
-    family_id = "trellis"
-    component_role = "slat-mesh-decoder"
-    supported_object_kinds = (Object3DKind.MESH,)
-    required_backends = ("kaolin", "spconv")
-    contribution_status = ContributionStatus.EXPERIMENTAL_HUB
-    review_status = ReviewStatus.UNREVIEWED
-
-    @register_to_config
-    def __init__(
-        self,
-        resolution: int = 64,
-        model_channels: int = 768,
-        latent_channels: int = 8,
-        num_blocks: int = 12,
-        num_heads: int | None = 12,
-        num_head_channels: int = 64,
-        mlp_ratio: float = 4.0,
-        attn_mode: str = "swin",
-        window_size: int = 8,
-        pe_mode: str = "ape",
-        use_fp16: bool = True,
-        use_checkpoint: bool = False,
-        qk_rms_norm: bool = False,
-        representation_config: dict[str, Any] | None = None,
-    ) -> None:
-        super().__init__()
-        del num_head_channels
-        if min(resolution, model_channels, latent_channels, num_blocks, window_size) <= 0:
-            raise ValueError("decoder dimensions must be positive")
-        if num_heads is not None and (num_heads <= 0 or model_channels % num_heads):
-            raise ValueError("model_channels must be divisible by num_heads")
-        if attn_mode not in {"full", "shift_window", "shift_sequence", "shift_order", "swin"}:
-            raise ValueError("unsupported sparse attention mode")
-        if pe_mode not in {"ape", "rope"}:
-            raise ValueError("pe_mode must be 'ape' or 'rope'")
-        self.resolution = resolution
-        self.representation_config = {} if representation_config is None else dict(representation_config)
-
-    @classmethod
-    def production_config(cls) -> dict[str, Any]:
-        return {
-            "resolution": 64,
-            "model_channels": 768,
-            "latent_channels": 8,
-            "num_blocks": 12,
-            "num_heads": 12,
-            "mlp_ratio": 4,
-            "attn_mode": "swin",
-            "window_size": 8,
-            "use_fp16": True,
-            "representation_config": {"use_color": True},
-        }
-
-    def forward(self, hidden_states: TrellisSparseTensor) -> None:
-        del hidden_states
-        BACKEND_REGISTRY.select(
-            BackendCapability.SURFACE_EXTRACTION,
-            name="kaolin",
-            device="cuda",
-            dtype="float32",
-            differentiable=True,
-        )
-        raise NotImplementedError(
-            "the TRELLIS SLAT mesh field network is not ported; the permissive Kaolin FlexiCubes adapter alone is "
-            "not sufficient to decode an official mesh checkpoint"
-        )
-
-
 class TrellisSLatRadianceFieldDecoder(Object3DModel):
     """Explicit future type for unsupported TRELLIS radiance-field decoding."""
 
@@ -715,7 +644,6 @@ class TrellisSLatRadianceFieldDecoder(Object3DModel):
 __all__ = [
     "TrellisGaussianDecoderOutput",
     "TrellisSLatGaussianDecoder",
-    "TrellisSLatMeshDecoder",
     "TrellisSLatRadianceFieldDecoder",
     "TrellisSparseStructureDecoder",
     "TrellisSparseStructureDecoderOutput",

@@ -151,6 +151,7 @@ from .objects import (
 )
 from .training import (
     ACCELERATOR_STATE_DIRECTORY,
+    FROZEN_COMPONENT_STATE_DIRECTORY,
     TRAINER_STATE_NAME,
     TRAINER_STATE_SCHEMA_VERSION,
     TRAINING_ADAPTER_NAME,
@@ -245,6 +246,7 @@ __all__ = [
     "DiffoctreerastBackendFacade",
     "FineTuneKind",
     "FineTuneStrategy3D",
+    "FROZEN_COMPONENT_STATE_DIRECTORY",
     "FrozenComponentPolicy",
     "FieldRenderingBackend",
     "FlexGemmBackend",
@@ -353,7 +355,6 @@ __all__ = [
     "TrellisSLatFlowOutput",
     "TrellisSLatFlowRecipe",
     "TrellisSLatGaussianDecoder",
-    "TrellisSLatMeshDecoder",
     "TrellisSLatRadianceFieldDecoder",
     "TrellisSparseStructureBatch",
     "TrellisSparseStructureDecoder",
