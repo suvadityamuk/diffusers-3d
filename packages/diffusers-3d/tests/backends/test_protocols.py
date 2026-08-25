@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from inspect import signature
 from typing import get_type_hints
 
 import torch
@@ -8,6 +9,7 @@ from diffusers_3d.backends import (
     FieldRenderingBackend,
     GaussianRasterizerBackend,
     GeometryProcessingBackend,
+    KaolinFlexiCubesBackend,
     MeshRasterizerBackend,
     NativeRepresentationBackend,
     PBRBakingBackend,
@@ -74,6 +76,13 @@ def test_runtime_protocols_reject_missing_methods():
     assert not isinstance(implementation, NativeRepresentationBackend)
     assert not isinstance(implementation, PBRBakingBackend)
     assert not isinstance(implementation, FieldRenderingBackend)
+
+
+def test_surface_extraction_protocol_signature_is_compatible_with_kaolin_adapter():
+    protocol_parameters = signature(SurfaceExtractionBackend.extract_surface).parameters
+    kaolin_parameters = signature(KaolinFlexiCubesBackend.extract_surface).parameters
+
+    assert tuple(protocol_parameters) == tuple(kaolin_parameters) == ("self", "field", "level", "spacing")
 
 
 def test_protocol_signatures_use_tensor_and_object_contracts():

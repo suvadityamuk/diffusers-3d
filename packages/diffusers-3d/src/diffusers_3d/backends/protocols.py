@@ -67,8 +67,6 @@ class SurfaceExtractionBackend(Protocol):
         *,
         level: float = 0.0,
         spacing: Sequence[float] | None = None,
-        gradient_direction: str = "ascent",
-        allow_degenerate: bool = False,
     ) -> MeshAsset: ...
 
 
