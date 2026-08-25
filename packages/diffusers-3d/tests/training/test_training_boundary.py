@@ -895,6 +895,40 @@ def test_exact_checkpoint_persistence_rejects_multiple_processes_before_filesyst
     assert not checkpoint_directory.exists()
 
 
+@pytest.mark.parametrize("operation", ["saving", "loading"])
+def test_unprepared_checkpoint_rejects_declared_world_size_before_prepare(monkeypatch, tmp_path, operation):
+    install_registry(monkeypatch, make_registration())
+    checkpoint_directory = tmp_path / "not-created"
+    trainer = Object3DTrainer(
+        TinyRecipe(TinyTarget()),
+        CountingDataset(),
+        FullFineTune(("denoiser",)),
+        make_config(max_train_steps=1, output_dir=str(checkpoint_directory)),
+    )
+    monkeypatch.setenv("WORLD_SIZE", "2")
+
+    def unexpected_prepare():
+        raise AssertionError("prepare must not run for a declared multi-process checkpoint operation")
+
+    monkeypatch.setattr(trainer, "prepare", unexpected_prepare)
+    with pytest.raises(TrainingCheckpointError, match="num_processes == 1"):
+        if operation == "saving":
+            trainer.save_checkpoint()
+        else:
+            trainer.load_checkpoint(checkpoint_directory)
+    assert not trainer.prepared
+    assert not checkpoint_directory.exists()
+
+
+def test_checkpoint_preflight_reads_initialized_distributed_world_size(monkeypatch):
+    monkeypatch.delenv("WORLD_SIZE", raising=False)
+    monkeypatch.setattr(torch.distributed, "is_available", lambda: True)
+    monkeypatch.setattr(torch.distributed, "is_initialized", lambda: True)
+    monkeypatch.setattr(torch.distributed, "get_world_size", lambda: 2)
+
+    assert trainer_module._declared_checkpoint_world_size() == 2
+
+
 def test_checkpoint_resume_rejects_changed_dataset_fingerprint(monkeypatch, tmp_path):
     install_registry(monkeypatch, make_registration())
     config = make_config(max_train_steps=1, output_dir=str(tmp_path))

@@ -72,6 +72,30 @@ _DEVICE_TYPE_RNG_STATE_FIELDS = {device_type: field_name for field_name, device_
 _OPTIONAL_RNG_STATE_FIELDS = frozenset({*_DEVICE_RNG_STATE_FIELDS, "xm_seed"})
 
 
+def _declared_checkpoint_world_size() -> int:
+    world_sizes = [1]
+    if torch.distributed.is_available() and torch.distributed.is_initialized():
+        try:
+            distributed_world_size = torch.distributed.get_world_size()
+        except RuntimeError as error:
+            raise TrainingCheckpointError("Could not inspect the initialized torch.distributed world size") from error
+        if (
+            not isinstance(distributed_world_size, int)
+            or isinstance(distributed_world_size, bool)
+            or distributed_world_size <= 0
+        ):
+            raise TrainingCheckpointError("Initialized torch.distributed world size must be a positive integer")
+        world_sizes.append(distributed_world_size)
+
+    declared_world_size = os.environ.get("WORLD_SIZE")
+    if declared_world_size is not None:
+        normalized_world_size = declared_world_size.strip()
+        if not normalized_world_size.isdecimal() or int(normalized_world_size) <= 0:
+            raise TrainingCheckpointError("Launcher WORLD_SIZE must be a positive integer")
+        world_sizes.append(int(normalized_world_size))
+    return max(world_sizes)
+
+
 def _require_single_process_checkpoint(num_processes: int, operation: str) -> None:
     if num_processes != 1:
         raise TrainingCheckpointError(
@@ -1005,6 +1029,7 @@ class Object3DTrainer:
         )
 
     def save_checkpoint(self, checkpoint_directory: str | Path | None = None) -> Path:
+        _require_single_process_checkpoint(_declared_checkpoint_world_size(), "saving")
         if self.config.dataloader_num_workers != 0:
             raise TrainingCheckpointError("Exact checkpoint continuation requires dataloader_num_workers=0")
         if self.config.dataset_fingerprint is None:
@@ -1040,6 +1065,7 @@ class Object3DTrainer:
         return loaded
 
     def load_checkpoint(self, checkpoint_directory: str | Path) -> None:
+        _require_single_process_checkpoint(_declared_checkpoint_world_size(), "loading")
         if self.config.dataloader_num_workers != 0:
             raise TrainingCheckpointError("Exact checkpoint continuation requires dataloader_num_workers=0")
         if not self._prepared:
