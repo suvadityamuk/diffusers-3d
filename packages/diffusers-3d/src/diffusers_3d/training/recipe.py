@@ -97,4 +97,5 @@ class TrainingRecipe3D(ABC, Generic[TargetT, ExampleT, BatchT]):
             else:
                 raise TrainingCheckpointError(f"unsupported fine-tuning strategy {type(strategy).__name__}")
 
+
 __all__ = ["TRAINING_ADAPTER_NAME", "TrainingRecipe3D"]

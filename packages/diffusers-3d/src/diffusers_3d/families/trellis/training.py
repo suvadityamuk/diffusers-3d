@@ -232,6 +232,7 @@ class TrellisSparseStructureFlowRecipe(
             },
         )
 
+
 @dataclass(frozen=True, slots=True)
 class TrellisSLatExample(TensorDataMixin):
     condition: ImageCondition

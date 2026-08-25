@@ -68,7 +68,9 @@ _DEVICE_RNG_STATE_FIELDS = {
     "torch_sdaa_manual_seed": "sdaa",
     "torch_xpu_manual_seed": "xpu",
 }
-_DEVICE_TYPE_RNG_STATE_FIELDS = {device_type: field_name for field_name, device_type in _DEVICE_RNG_STATE_FIELDS.items()}
+_DEVICE_TYPE_RNG_STATE_FIELDS = {
+    device_type: field_name for field_name, device_type in _DEVICE_RNG_STATE_FIELDS.items()
+}
 _OPTIONAL_RNG_STATE_FIELDS = frozenset({*_DEVICE_RNG_STATE_FIELDS, "xm_seed"})
 
 

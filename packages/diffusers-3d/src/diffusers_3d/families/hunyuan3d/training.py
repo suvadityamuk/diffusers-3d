@@ -246,6 +246,7 @@ class Hunyuan3DShapeFlowMatchingRecipe(
             },
         )
 
+
 __all__ = [
     "HUNYUAN3D_DENOISER_POLICY",
     "HUNYUAN3D_FROZEN_COMPONENT_POLICIES",
