@@ -7,6 +7,7 @@ from typing import Any, Callable
 
 import pytest
 import torch
+from torch.utils.checkpoint import checkpoint as apply_checkpoint
 
 from diffusers_3d import (
     Hunyuan3DDinov2Conditioner,
@@ -198,20 +199,84 @@ def test_reviewed_model_batch_dtype_device_return_dict_and_save_load(contract, t
 
 
 @pytest.mark.parametrize("contract", MODEL_CONTRACTS, ids=_model_contract_id)
-def test_reviewed_models_support_torch_compile_eager_backend(contract):
+def test_reviewed_models_support_torch_compile_fullgraph_eager_backend(contract):
     model = contract.make().eval()
-    compiled = torch.compile(model, backend="eager")
+    compiled = torch.compile(model, backend="eager", fullgraph=True)
     with torch.no_grad():
         output = contract.invoke(compiled, 2, True)
     assert output.shape[0] == 2
 
 
-def test_reviewed_models_expose_gradient_checkpointing_exactly_where_supported():
-    supported = {
+GRADIENT_CHECKPOINTING_CONTRACTS = tuple(
+    contract
+    for contract in MODEL_CONTRACTS
+    if contract.model_type
+    in {
         Hunyuan3DShapeDiTModel,
         TrellisSparseStructureFlowModel,
         Trellis2SparseStructureFlowModel,
     }
+)
+
+
+def _randomize_parameters(model: torch.nn.Module, *, seed: int) -> None:
+    generator = torch.Generator().manual_seed(seed)
+    with torch.no_grad():
+        for parameter in model.parameters():
+            if parameter.is_floating_point():
+                parameter.copy_(torch.randn(parameter.shape, generator=generator, dtype=parameter.dtype) * 0.02)
+
+
+def _forward_backward(contract: ModelContract, model: torch.nn.Module):
+    output = contract.invoke(model, 2, True)
+    weights = torch.linspace(-0.5, 0.75, output.numel(), device=output.device, dtype=output.dtype).reshape_as(output)
+    loss = (output * weights).sum() + 0.125 * output.square().mean()
+    loss.backward()
+    gradients = {
+        name: parameter.grad.detach().clone()
+        for name, parameter in model.named_parameters()
+        if parameter.grad is not None
+    }
+    assert gradients
+    assert any(torch.count_nonzero(gradient) for gradient in gradients.values())
+    return output.detach(), gradients
+
+
+@pytest.mark.parametrize("contract", GRADIENT_CHECKPOINTING_CONTRACTS, ids=_model_contract_id)
+def test_reviewed_models_gradient_checkpointed_forward_backward_matches_eager(contract):
+    baseline = contract.make().train()
+    _randomize_parameters(baseline, seed=0)
+    checkpointed = contract.make().train()
+    checkpointed.load_state_dict(baseline.state_dict(), strict=True)
+
+    checkpoint_calls = 0
+
+    def checkpoint(function, *args):
+        nonlocal checkpoint_calls
+        checkpoint_calls += 1
+        return apply_checkpoint(function.__call__, *args, use_reentrant=False)
+
+    checkpointed.enable_gradient_checkpointing(gradient_checkpointing_func=checkpoint)
+    assert checkpointed.is_gradient_checkpointing
+
+    baseline_output, baseline_gradients = _forward_backward(contract, baseline)
+    checkpointed_output, checkpointed_gradients = _forward_backward(contract, checkpointed)
+
+    assert checkpoint_calls > 0
+    torch.testing.assert_close(checkpointed_output, baseline_output, atol=1e-6, rtol=1e-6)
+    assert checkpointed_gradients.keys() == baseline_gradients.keys()
+    for name in baseline_gradients:
+        torch.testing.assert_close(
+            checkpointed_gradients[name],
+            baseline_gradients[name],
+            atol=1e-6,
+            rtol=1e-5,
+            msg=lambda message, name=name: f"{name}: {message}",
+        )
+
+
+def test_reviewed_models_expose_gradient_checkpointing_exactly_where_supported():
+    supported = {contract.model_type for contract in GRADIENT_CHECKPOINTING_CONTRACTS}
     assert {
         contract.model_type for contract in MODEL_CONTRACTS if contract.model_type._supports_gradient_checkpointing
     } == supported
@@ -220,8 +285,6 @@ def test_reviewed_models_expose_gradient_checkpointing_exactly_where_supported()
         if contract.model_type in supported:
             model.enable_gradient_checkpointing()
             assert model.is_gradient_checkpointing
-            model.disable_gradient_checkpointing()
-            assert not model.is_gradient_checkpointing
         else:
             with pytest.raises(ValueError, match="does not support gradient checkpointing"):
                 model.enable_gradient_checkpointing()

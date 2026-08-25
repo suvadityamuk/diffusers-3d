@@ -17,6 +17,7 @@ from diffusers import ModelMixin  # noqa: F401 - required by external-component 
 from diffusers.configuration_utils import register_to_config
 from diffusers.models.attention import AttentionModuleMixin
 from diffusers.models.attention_dispatch import dispatch_attention_fn
+from diffusers.models.modeling_utils import get_parameter_dtype
 from diffusers.utils import BaseOutput
 from torch import nn
 
@@ -65,7 +66,7 @@ class Trellis2TimestepEmbedder(nn.Module):
         embedding = torch.cat([torch.cos(arguments), torch.sin(arguments)], dim=-1)
         if self.frequency_embedding_size % 2:
             embedding = torch.cat([embedding, torch.zeros_like(embedding[:, :1])], dim=-1)
-        return self.mlp(embedding.to(dtype=self.mlp[0].weight.dtype))
+        return self.mlp(embedding.to(dtype=get_parameter_dtype(self.mlp)))
 
 
 class Trellis2AbsolutePositionEmbedder(nn.Module):
@@ -550,7 +551,7 @@ class Trellis2SparseStructureFlowModel(_Trellis2FlowInitialization, Object3DMode
         modulation = self.t_embedder(timestep)
         if self.share_mod:
             modulation = self.adaLN_modulation(modulation)
-        inner_dtype = self.blocks[0].self_attn.to_qkv.weight.dtype
+        inner_dtype = get_parameter_dtype(self.blocks)
         hidden_states = hidden_states.to(dtype=inner_dtype)
         modulation = modulation.to(dtype=inner_dtype)
         encoder_hidden_states = encoder_hidden_states.to(dtype=inner_dtype)
@@ -770,7 +771,7 @@ class Trellis2SLatFlowModel(_Trellis2FlowInitialization, Object3DModel):
         output = torch.zeros_like(features)
         for batch_index in range(batch_size):
             positions = torch.nonzero(hidden_states.coordinates[:, 0] == batch_index, as_tuple=False).reshape(-1)
-            inner_dtype = self.blocks[0].self_attn.to_qkv.weight.dtype
+            inner_dtype = get_parameter_dtype(self.blocks)
             batch_features = features[positions].unsqueeze(0).to(dtype=inner_dtype)
             batch_modulation = modulation[batch_index : batch_index + 1].to(dtype=inner_dtype)
             batch_context = encoder_hidden_states[batch_index : batch_index + 1].to(dtype=inner_dtype)

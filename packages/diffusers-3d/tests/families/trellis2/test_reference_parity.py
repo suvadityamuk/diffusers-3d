@@ -14,7 +14,7 @@ from diffusers_3d import (
     Trellis2SparseStructureDecoder,
     Trellis2SparseStructureFlowModel,
 )
-from diffusers_3d._reference import ReferenceCheckoutError, validate_reference_checkout
+from diffusers_3d._reference import ReferenceCheckoutError, reference_unavailable, validate_reference_checkout
 
 pytestmark = pytest.mark.reference_parity
 
@@ -33,10 +33,12 @@ REFERENCE_PACKAGE = "_diffusers_3d_trellis2_reference"
 _REFERENCE_TYPES: tuple[type[torch.nn.Module], type[torch.nn.Module]] | None = None
 
 
-def _reference_unavailable(message: str) -> None:
-    if os.environ.get("DIFFUSERS_3D_REQUIRE_REFERENCE") == "1":
-        pytest.fail(message, pytrace=False)
-    pytest.skip(message)
+def _reference_unavailable(error: ReferenceCheckoutError) -> None:
+    try:
+        reason = reference_unavailable(error)
+    except ReferenceCheckoutError as required_error:
+        pytest.fail(str(required_error), pytrace=False)
+    pytest.skip(reason)
 
 
 def _validate_reference() -> None:
@@ -48,7 +50,7 @@ def _validate_reference() -> None:
             expected_paths=REFERENCE_PATHS,
         )
     except ReferenceCheckoutError as error:
-        _reference_unavailable(str(error))
+        _reference_unavailable(error)
 
 
 def _load_module(name: str, path: Path, *, package: bool = False):
@@ -115,7 +117,7 @@ def _load_pinned_reference():
             source_root / "models" / "sparse_structure_vae.py",
         )
     except (ImportError, RuntimeError) as error:
-        _reference_unavailable(f"optional pinned reference dependency unavailable: {error}")
+        _reference_unavailable(ReferenceCheckoutError(f"optional pinned reference dependency unavailable: {error}"))
     _REFERENCE_TYPES = flow_module.SparseStructureFlowModel, decoder_module.SparseStructureDecoder
     return _REFERENCE_TYPES
 

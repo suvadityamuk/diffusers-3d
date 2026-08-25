@@ -18,7 +18,12 @@ from diffusers_3d import (
     HunyuanImageProcessor,
     ImageCondition,
 )
-from diffusers_3d._reference import ReferenceCheckoutError, validate_reference_checkout
+from diffusers_3d._reference import (
+    ReferenceCheckoutError,
+    import_reference_dependency,
+    reference_unavailable,
+    validate_reference_checkout,
+)
 from diffusers_3d.families.hunyuan3d import HUNYUAN3D_REFERENCE_REVISION
 
 pytestmark = pytest.mark.reference_parity
@@ -40,10 +45,12 @@ REFERENCE_PATHS = (
 )
 
 
-def _reference_unavailable(message: str) -> None:
-    if os.environ.get("DIFFUSERS_3D_REQUIRE_REFERENCE") == "1":
-        pytest.fail(message, pytrace=False)
-    pytest.skip(message)
+def _reference_unavailable(error: ReferenceCheckoutError) -> None:
+    try:
+        reason = reference_unavailable(error)
+    except ReferenceCheckoutError as required_error:
+        pytest.fail(str(required_error), pytrace=False)
+    pytest.skip(reason)
 
 
 def _validate_reference() -> None:
@@ -55,7 +62,7 @@ def _validate_reference() -> None:
             expected_paths=REFERENCE_PATHS,
         )
     except ReferenceCheckoutError as error:
-        _reference_unavailable(str(error))
+        _reference_unavailable(error)
 
 
 def _load_pinned_reference():
@@ -81,7 +88,7 @@ def _load_pinned_reference():
             sys.modules[module_name] = module
             spec.loader.exec_module(module)
     except ImportError as error:
-        _reference_unavailable(f"optional reference dependency unavailable: {error}")
+        _reference_unavailable(ReferenceCheckoutError(f"optional reference dependency unavailable: {error}"))
     return sys.modules[f"{package}.models.denoisers.hunyuandit"].HunYuanDiTPlain
 
 
@@ -123,7 +130,7 @@ def _load_pinned_vae_reference():
             sys.modules[module_name] = module
             spec.loader.exec_module(module)
     except ImportError as error:
-        _reference_unavailable(f"optional VAE reference dependency unavailable: {error}")
+        _reference_unavailable(ReferenceCheckoutError(f"optional VAE reference dependency unavailable: {error}"))
     return sys.modules[f"{package}.models.autoencoders.model"].ShapeVAE
 
 
@@ -135,7 +142,7 @@ def _load_standalone_reference(relative_path: str, module_name: str, class_name:
     try:
         spec.loader.exec_module(module)
     except (ImportError, RuntimeError) as error:
-        _reference_unavailable(f"optional reference dependency unavailable: {error}")
+        _reference_unavailable(ReferenceCheckoutError(f"optional reference dependency unavailable: {error}"))
     return getattr(module, class_name)
 
 
@@ -293,7 +300,10 @@ def test_tiny_vae_decoder_matches_pinned_reference():
 
 @pytest.mark.portable
 def test_hunyuan_surface_vertices_topology_and_winding_match_pinned_reference():
-    pytest.importorskip("skimage")
+    try:
+        import_reference_dependency("skimage")
+    except ReferenceCheckoutError as error:
+        _reference_unavailable(error)
     _load_pinned_vae_reference()
     reference_type = sys.modules[
         "_hunyuan3d_vae_test_reference.models.autoencoders.surface_extractors"

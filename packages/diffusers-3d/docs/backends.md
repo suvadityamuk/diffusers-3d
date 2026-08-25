@@ -59,6 +59,14 @@ run has not been performed and is not claimed.
 `utils3d` means the EasternJournalist repository used by TRELLIS, not the unrelated PyPI distribution. It must be
 installed from an audited pinned revision.
 
+Research discovery also requires exact PEP 610 direct-URL provenance for
+nvdiffrast `253ac4fcea7de5f396371124af597e6cc957bfae`,
+diffoctreerast `b09c20b84ec3aace4729e6e18a613112320eca3a`,
+mip-splatting `dda02ab5ecf45d6edb8c540d9bb65c7e451345a9`, and
+nvdiffrec `a3e73909a01887c8a135235ff860dd23a045cc1b`. The
+corresponding records are in `requirements/backends/`. A matching module and
+distribution version without the pinned source record remain unavailable.
+
 CUDA-specific spconv distributions cannot be selected with standard Python environment markers. Users must install
 the wheel matching their CUDA environment before selecting the adapter.
 

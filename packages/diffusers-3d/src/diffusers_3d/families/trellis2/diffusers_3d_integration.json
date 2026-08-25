@@ -40,12 +40,15 @@
         "mesh-rasterization"
       ],
       "distribution": "nvdiffrast",
-      "install_hint": "Research-only status gate for O-Voxel PBR postprocess; explicit license acknowledgement is required and no ordinary package path imports it.",
+      "install_hint": "After license review, build nvdiffrast from pinned revision 253ac4fcea7de5f396371124af597e6cc957bfae for the O-Voxel PBR postprocess.",
       "license_class": "restricted",
       "license_identifier": "NVIDIA-Source-Code-License-NC",
       "name": "nvdiffrast",
       "required": false,
-      "source": null,
+      "source": {
+        "repository": "https://github.com/NVlabs/nvdiffrast.git",
+        "revision": "253ac4fcea7de5f396371124af597e6cc957bfae"
+      },
       "support_level": "research_only",
       "version": "0.4.0"
     },

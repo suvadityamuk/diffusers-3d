@@ -6,6 +6,10 @@ from .types import BackendCapability, BackendLicenseClass, BackendSpec, BackendS
 _UTILS3D_REVISION = "9a4eb15e4021b67b12c460c7057d642626897ec8"
 _FLEX_GEMM_REVISION = "6dd94a859c26ee8246888502eada3dd8ad85532e"
 _CUMESH_REVISION = "12289e1062f0603f2f0d0771b02e1395d247f26f"
+_NVDIFFRAST_REVISION = "253ac4fcea7de5f396371124af597e6cc957bfae"
+_NVDIFFREC_REVISION = "a3e73909a01887c8a135235ff860dd23a045cc1b"
+_DIFFOCTREERAST_REVISION = "b09c20b84ec3aace4729e6e18a613112320eca3a"
+_MIP_SPLATTING_REVISION = "dda02ab5ecf45d6edb8c540d9bb65c7e451345a9"
 
 
 DEFAULT_BACKEND_SPECS = (
@@ -212,12 +216,14 @@ DEFAULT_BACKEND_SPECS = (
         dtypes=frozenset({"float32"}),
         differentiable=True,
         install_hint=(
-            "After license review, build NVlabs/nvdiffrast v0.4.0 from source against the active PyTorch and CUDA"
+            f"After license review, build NVlabs/nvdiffrast revision {_NVDIFFRAST_REVISION} "
+            "from source against the active PyTorch and CUDA"
         ),
         tested_version="0.4.0",
         tested_build="CUDA source build; non-commercial research/evaluation use",
         source_url="https://github.com/NVlabs/nvdiffrast.git",
-        source_revision="v0.4.0",
+        source_revision=_NVDIFFRAST_REVISION,
+        requires_source_provenance=True,
     ),
     BackendSpec(
         name="nvdiffrec_render",
@@ -236,10 +242,13 @@ DEFAULT_BACKEND_SPECS = (
         dtypes=frozenset({"float32"}),
         differentiable=True,
         install_hint=(
-            "After license review, build the JeffreyXiang/nvdiffrec renderutils fork from an audited pinned commit"
+            f"After license review, package the JeffreyXiang/nvdiffrec renderutils fork at {_NVDIFFREC_REVISION} "
+            "with direct-URL provenance"
         ),
         tested_build="CUDA source build; non-commercial research/evaluation use",
         source_url="https://github.com/JeffreyXiang/nvdiffrec.git",
+        source_revision=_NVDIFFREC_REVISION,
+        requires_source_provenance=True,
     ),
     BackendSpec(
         name="diffoctreerast",
@@ -256,11 +265,11 @@ DEFAULT_BACKEND_SPECS = (
         devices=frozenset({"cuda"}),
         dtypes=frozenset({"float32"}),
         differentiable=True,
-        install_hint=(
-            "After license review, build JeffreyXiang/diffoctreerast from an audited pinned source revision"
-        ),
+        install_hint=(f"After license review, build JeffreyXiang/diffoctreerast revision {_DIFFOCTREERAST_REVISION}"),
         tested_build="CUDA source build; non-commercial research/evaluation use",
         source_url="https://github.com/JeffreyXiang/diffoctreerast.git",
+        source_revision=_DIFFOCTREERAST_REVISION,
+        requires_source_provenance=True,
     ),
     BackendSpec(
         name="mip_gaussian",
@@ -273,11 +282,13 @@ DEFAULT_BACKEND_SPECS = (
         dtypes=frozenset({"float32"}),
         differentiable=True,
         install_hint=(
-            "After license review, build the mip-splatting diff-gaussian-rasterization submodule from an audited "
-            "pinned revision"
+            "After license review, build the mip-splatting diff-gaussian-rasterization submodule at revision "
+            f"{_MIP_SPLATTING_REVISION}"
         ),
         tested_build="CUDA source build; non-commercial research/evaluation use",
-        source_url="https://github.com/autonomousvision/mip-splatting",
+        source_url="https://github.com/autonomousvision/mip-splatting.git",
+        source_revision=_MIP_SPLATTING_REVISION,
+        requires_source_provenance=True,
     ),
 )
 

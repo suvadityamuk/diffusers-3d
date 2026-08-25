@@ -1,13 +1,33 @@
 from __future__ import annotations
 
+import importlib
+import os
 import subprocess
 from functools import lru_cache
 from pathlib import Path
+from types import ModuleType
 from urllib.parse import urlsplit
 
 
 class ReferenceCheckoutError(RuntimeError):
     """Raised when a parity checkout is not the exact trusted source tree."""
+
+
+def import_reference_dependency(module_name: str) -> ModuleType:
+    """Import a parity-only dependency through the required-reference policy."""
+
+    try:
+        return importlib.import_module(module_name)
+    except (ImportError, OSError, RuntimeError) as error:
+        raise ReferenceCheckoutError(f"reference dependency {module_name!r} is unavailable: {error}") from error
+
+
+def reference_unavailable(error: ReferenceCheckoutError) -> str:
+    """Return an optional-skip reason or fail required-reference execution."""
+
+    if os.environ.get("DIFFUSERS_3D_REQUIRE_REFERENCE") == "1":
+        raise error
+    return str(error)
 
 
 def _git(root: Path, *arguments: str) -> str:
@@ -80,4 +100,9 @@ def validate_reference_checkout(
         _git(root, "cat-file", "-e", f"{expected_revision}:{relative_path}")
 
 
-__all__ = ["ReferenceCheckoutError", "validate_reference_checkout"]
+__all__ = [
+    "ReferenceCheckoutError",
+    "import_reference_dependency",
+    "reference_unavailable",
+    "validate_reference_checkout",
+]

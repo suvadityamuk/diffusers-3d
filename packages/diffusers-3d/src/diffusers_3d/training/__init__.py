@@ -23,6 +23,7 @@ from .recipe import TRAINING_ADAPTER_NAME, TrainingRecipe3D
 from .registry import TrainingRecipeRegistration, TrainingRecipeRegistry, create_training_recipe_registry
 from .trainer import (
     ACCELERATOR_STATE_DIRECTORY,
+    FROZEN_COMPONENT_STATE_DIRECTORY,
     TRAINER_STATE_NAME,
     TRAINER_STATE_SCHEMA_VERSION,
     Object3DTrainer,
@@ -42,6 +43,7 @@ from .types import (
 
 __all__ = [
     "ACCELERATOR_STATE_DIRECTORY",
+    "FROZEN_COMPONENT_STATE_DIRECTORY",
     "TRAINING_ADAPTER_NAME",
     "TRAINING_MANIFEST_NAME",
     "TRAINING_MANIFEST_SCHEMA",

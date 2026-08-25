@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import sys
 import types
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 import pytest
@@ -15,6 +15,7 @@ from torch import nn
 import diffusers_3d.training.trainer as trainer_module
 from diffusers_3d import (
     ACCELERATOR_STATE_DIRECTORY,
+    FROZEN_COMPONENT_STATE_DIRECTORY,
     TRAINER_STATE_NAME,
     ComponentPolicy,
     ContributionStatus,
@@ -30,8 +31,10 @@ from diffusers_3d import (
     ReviewStatus,
     TextCondition,
     TrainableParameterError,
+    TrainingCheckpointError,
     TrainingConfig3D,
     TrainingConfigurationError,
+    TrainingManifestMismatchError,
     TrainingPolicyError,
     TrainingRecipe3D,
     TrainingRecipeRegistration,
@@ -228,6 +231,7 @@ def install_registry(monkeypatch, *registrations):
 
 
 def make_config(**kwargs) -> TrainingConfig3D:
+    kwargs.setdefault("dataset_fingerprint", "tests/tiny-dataset-v1")
     return TrainingConfig3D(base_model="tests/tiny-object-3d", cpu=True, shuffle=False, **kwargs)
 
 
@@ -655,6 +659,7 @@ def test_checkpoint_restores_full_state_counters_and_next_data_position(monkeypa
 
     resumed_dataset = CountingDataset((1.0, 2.0, 3.0))
     resumed_target = TinyTarget()
+    resumed_target.conditioner.scale.data.fill_(7.0)
     resumed = Object3DTrainer(
         TinyRecipe(resumed_target),
         resumed_dataset,
@@ -665,6 +670,9 @@ def test_checkpoint_restores_full_state_counters_and_next_data_position(monkeypa
 
     assert resumed.micro_steps == 1
     assert resumed.optimizer_steps == 1
+    assert resumed_target.conditioner.scale.item() == 1.0
+    frozen_state_directory = tmp_path / ACCELERATOR_STATE_DIRECTORY / FROZEN_COMPONENT_STATE_DIRECTORY
+    assert tuple(frozen_state_directory.glob("*.safetensors"))
     assert resumed_dataset.getitem_calls == 0
     assert (tmp_path / ACCELERATOR_STATE_DIRECTORY / TRAINER_STATE_NAME).stat().st_mode & 0o044 == 0o044
 
@@ -674,6 +682,97 @@ def test_checkpoint_restores_full_state_counters_and_next_data_position(monkeypa
     assert resumed_summary.final_loss == pytest.approx(expected_summary.final_loss, abs=0.0)
     torch.testing.assert_close(resumed_target.block.weight, expected_weight, atol=0.0, rtol=0.0)
     assert resumed.optimizer.state_dict() == expected_optimizer_state
+
+
+def test_checkpoint_requires_accumulation_boundary_and_resumes_after_one(monkeypatch, tmp_path):
+    install_registry(monkeypatch, make_registration())
+    config = make_config(
+        max_train_steps=2,
+        gradient_accumulation_steps=2,
+        learning_rate=1e-2,
+        max_grad_norm=100.0,
+        output_dir=str(tmp_path),
+    )
+    values = (1.0, 2.0, 3.0, 4.0)
+
+    uninterrupted_target = TinyTarget()
+    uninterrupted = Object3DTrainer(
+        TinyRecipe(uninterrupted_target),
+        CountingDataset(values),
+        FullFineTune(("denoiser",)),
+        config,
+    )
+    uninterrupted.train(max_optimizer_steps=1)
+    expected_summary = uninterrupted.train(max_optimizer_steps=1)
+    expected_weight = uninterrupted_target.block.weight.detach().clone()
+    expected_optimizer_state = uninterrupted.optimizer.state_dict()
+
+    interrupted_target = TinyTarget()
+    interrupted = Object3DTrainer(
+        TinyRecipe(interrupted_target),
+        CountingDataset(values),
+        FullFineTune(("denoiser",)),
+        config,
+    ).prepare()
+    interrupted.train_step(interrupted._next_batch())
+    with pytest.raises(TrainingCheckpointError, match="synchronized optimizer-step boundary"):
+        interrupted.save_checkpoint()
+    interrupted.train_step(interrupted._next_batch())
+    assert interrupted.optimizer_steps == 1
+    interrupted.save_checkpoint()
+
+    resumed_target = TinyTarget()
+    resumed_target.conditioner.scale.data.fill_(7.0)
+    resumed = Object3DTrainer(
+        TinyRecipe(resumed_target),
+        CountingDataset(values),
+        FullFineTune(("denoiser",)),
+        config,
+    )
+    resumed.load_checkpoint(tmp_path)
+    assert resumed_target.conditioner.scale.item() == 1.0
+
+    resumed_summary = resumed.train(max_optimizer_steps=1)
+
+    assert resumed_summary.final_loss == pytest.approx(expected_summary.final_loss, abs=0.0)
+    torch.testing.assert_close(resumed_target.block.weight, expected_weight, atol=0.0, rtol=0.0)
+    assert resumed.optimizer.state_dict() == expected_optimizer_state
+
+
+def test_checkpoint_resume_rejects_changed_dataset_fingerprint(monkeypatch, tmp_path):
+    install_registry(monkeypatch, make_registration())
+    config = make_config(max_train_steps=1, output_dir=str(tmp_path))
+    trainer = Object3DTrainer(
+        TinyRecipe(TinyTarget()),
+        CountingDataset(),
+        FullFineTune(("denoiser",)),
+        config,
+    )
+    trainer.train()
+    trainer.save_checkpoint()
+
+    changed = Object3DTrainer(
+        TinyRecipe(TinyTarget()),
+        CountingDataset(),
+        FullFineTune(("denoiser",)),
+        replace(config, dataset_fingerprint="tests/different-dataset"),
+    )
+    with pytest.raises(TrainingManifestMismatchError, match="training_config"):
+        changed.load_checkpoint(tmp_path)
+
+
+def test_checkpoint_requires_a_dataset_fingerprint(monkeypatch, tmp_path):
+    install_registry(monkeypatch, make_registration())
+    trainer = Object3DTrainer(
+        TinyRecipe(TinyTarget()),
+        CountingDataset(),
+        FullFineTune(("denoiser",)),
+        make_config(dataset_fingerprint=None, output_dir=str(tmp_path)),
+    )
+    trainer.train()
+
+    with pytest.raises(TrainingCheckpointError, match="dataset_fingerprint"):
+        trainer.save_checkpoint()
 
 
 class FakeAdapterWeights(nn.Module):

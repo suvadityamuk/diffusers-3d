@@ -1,0 +1,5 @@
+# Package/import: diffoctreerast
+# License: Gaussian Splatting research license
+# Build from source against the selected PyTorch and CUDA stack with --no-build-isolation.
+# No externally hosted wheel is approved by this record.
+diffoctreerast @ git+https://github.com/JeffreyXiang/diffoctreerast.git@b09c20b84ec3aace4729e6e18a613112320eca3a

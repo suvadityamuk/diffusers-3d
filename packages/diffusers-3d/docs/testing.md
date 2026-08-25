@@ -25,7 +25,7 @@ being simulated.
 python -m pip install -e .
 python -m pip install -e "packages/diffusers-3d[test,training]" --no-deps
 python -m pip install \
-  accelerate build peft pytest pytest-cov PyYAML ruff safetensors \
+  accelerate build opencv-python-headless peft pytest pytest-cov PyYAML ruff safetensors \
   "transformers>=5.5.0"
 ```
 
@@ -134,8 +134,9 @@ tests that claim a completed production GPU quality run.
 
 Shared reviewed-model contracts exercise CPU batching, dtype/device movement,
 tuple output equivalence, component save/load, attention processor/backend
-hooks, gradient checkpointing where implemented, and `torch.compile` with the
-eager backend. Shared reviewed-pipeline contracts additionally exercise
+hooks, deterministic gradient-checkpointed forward/backward equivalence where
+implemented, and `torch.compile` with the eager backend and `fullgraph=True`.
+Shared reviewed-pipeline contracts additionally exercise
 batching, tuple output equivalence, and Hunyuan's supported step callback.
 Sequential CPU offload, model CPU offload, and group offload are meaningful
 only with an accelerator execution device for these pipelines; they remain

@@ -73,10 +73,14 @@ Training is a separate qualification for a reviewed package or upstream integrat
 Review also checks typed examples and batches, exact trainable and frozen component policies, gradient ownership,
 public checkpoint APIs, and deterministic resume identity. Training manifest schema version `3` records canonical
 objective settings and optimizer/scheduler/batch/precision/seed settings. Checkpoints retain family inference
-artifacts and an `accelerator_state` continuation directory containing model, optimizer, scheduler, scaler, RNG,
-trainer counters, and data position. Exact continuation requires `dataloader_num_workers=0`; asynchronous dataset
-worker state is intentionally not claimed. `Object3DTrainer.train()` returns one CPU-only `TrainingSummary3D`
-instead of retaining every device output. Missing or failed evidence keeps the integration inference-only.
+artifacts and an `accelerator_state` continuation directory containing trainable and frozen model state, optimizer,
+scheduler, scaler, RNG, trainer counters, and data position. Exact continuation requires
+`dataloader_num_workers=0`, a synchronized optimizer-step boundary, and a non-empty caller-supplied
+`dataset_fingerprint`. The fingerprint must identify the exact dataset contents, ordering, preprocessing, and
+sampling contract; changing it is a resume-manifest mismatch. The trainer does not infer this identity from an
+arbitrary dataset object, and asynchronous dataset worker state is intentionally not claimed.
+`Object3DTrainer.train()` returns one CPU-only `TrainingSummary3D` instead of retaining every device output. Missing
+or failed evidence keeps the integration inference-only.
 
 ## Backend and license review
 

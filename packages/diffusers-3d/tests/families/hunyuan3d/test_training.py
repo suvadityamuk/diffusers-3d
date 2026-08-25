@@ -141,6 +141,7 @@ def test_object3d_trainer_full_step_and_checkpoint_roundtrip(
         TrainingConfig3D(
             base_model="tests/tiny-hunyuan3d",
             revision="tiny-reference",
+            dataset_fingerprint="tests/tiny-hunyuan-latents-v1",
             output_dir=tmp_path,
             train_batch_size=2,
             max_train_steps=1,
@@ -173,7 +174,13 @@ def test_object3d_trainer_full_step_and_checkpoint_roundtrip(
     assert loaded_manifest == trainer.manifest
 
     saved_weight = pipeline.denoiser.x_embedder.weight.detach().clone()
+    saved_conditioner_weight = next(pipeline.conditioner.parameters()).detach().clone()
+    saved_vae_weight = next(pipeline.vae.parameters()).detach().clone()
     with torch.no_grad():
         pipeline.denoiser.x_embedder.weight.add_(10.0)
+        next(pipeline.conditioner.parameters()).add_(10.0)
+        next(pipeline.vae.parameters()).add_(10.0)
     trainer.load_checkpoint(tmp_path)
     torch.testing.assert_close(pipeline.denoiser.x_embedder.weight, saved_weight, atol=0.0, rtol=0.0)
+    torch.testing.assert_close(next(pipeline.conditioner.parameters()), saved_conditioner_weight, atol=0.0, rtol=0.0)
+    torch.testing.assert_close(next(pipeline.vae.parameters()), saved_vae_weight, atol=0.0, rtol=0.0)

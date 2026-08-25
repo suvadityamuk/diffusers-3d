@@ -56,6 +56,7 @@ def test_trellis_manifest_is_valid_and_separates_research_backend_warnings():
         assert backends[name].license_class is BackendLicenseClass.RESTRICTED
         assert backends[name].support_level is BackendSupportLevel.RESEARCH_ONLY
         assert not backends[name].required
+        assert backends[name].source is not None
 
     pipeline = next(component for component in manifest.components if component.role == "pipeline")
     assert pipeline.parity[0].passed

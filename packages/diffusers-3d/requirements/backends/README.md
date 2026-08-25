@@ -31,3 +31,17 @@ These records establish source identity only. They do not claim a completed
 GPU compatibility run; record the Python, PyTorch, accelerator runtime,
 compiler, operating system, GPU architecture, and package report in the
 manual accelerated lane before treating a build as supported.
+
+Restricted research backends are pinned separately and require explicit
+license review before installation:
+
+```bash
+python -m pip install --no-build-isolation \
+  -r packages/diffusers-3d/requirements/backends/nvdiffrast.txt \
+  -r packages/diffusers-3d/requirements/backends/diffoctreerast.txt \
+  -r packages/diffusers-3d/requirements/backends/mip-splatting.txt
+```
+
+The pinned nvdiffrec tree has no Python build metadata. Its source-only record
+is `requirements/backends/nvdiffrec.txt`; the registry rejects it unless an
+audited package exposes matching PEP 610 direct-URL provenance.

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib
+import json
 import sys
 import types
 from importlib.machinery import ModuleSpec
@@ -284,3 +285,53 @@ def test_research_facades_never_import_and_require_explicit_acknowledgement(monk
             facade.require(capability, device="cpu")
         assert facade.require(capability, device="cpu", accept_research_license=True).name == facade.name
     assert imported == []
+
+
+@pytest.mark.parametrize(
+    ("name", "capability", "facade_type"),
+    [
+        ("nvdiffrast", BackendCapability.MESH_RASTERIZATION, NvdiffrastBackendFacade),
+        ("diffoctreerast", BackendCapability.FIELD_RENDERING, DiffoctreerastBackendFacade),
+        ("mip_gaussian", BackendCapability.GAUSSIAN_RASTERIZATION, MipGaussianBackendFacade),
+    ],
+)
+def test_research_facades_reject_wrong_source_provenance(name, capability, facade_type):
+    expected_url = f"https://github.com/expected/{name}.git"
+    expected_revision = "0123456789abcdef"
+    spec = BackendSpec(
+        name=name,
+        import_names=(name,),
+        distribution_names=(name,),
+        capabilities=frozenset({capability}),
+        support_level=BackendSupportLevel.RESEARCH_ONLY,
+        license_class=BackendLicenseClass.RESTRICTED,
+        devices=frozenset({"cpu"}),
+        dtypes=frozenset({"float32"}),
+        differentiable=True,
+        install_hint=f"Build {name} from the pinned source",
+        source_url=expected_url,
+        source_revision=expected_revision,
+        requires_source_provenance=True,
+    )
+
+    class WrongDistribution:
+        def read_text(self, filename):
+            assert filename == "direct_url.json"
+            return json.dumps(
+                {
+                    "url": f"https://github.com/untrusted/{name}.git",
+                    "vcs_info": {"vcs": "git", "commit_id": expected_revision},
+                }
+            )
+
+    registry = BackendRegistry(
+        (spec,),
+        module_finder=lambda candidate: ModuleSpec(candidate, loader=None),
+        version_getter=lambda _: "1.0",
+        distribution_getter=lambda _: WrongDistribution(),
+    )
+    facade = facade_type(registry=registry)
+
+    assert not facade.status().available
+    with pytest.raises(BackendUnavailableError, match="does not match required source"):
+        facade.require(capability, device="cpu", accept_research_license=True)

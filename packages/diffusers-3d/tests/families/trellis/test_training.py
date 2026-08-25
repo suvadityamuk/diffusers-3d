@@ -116,6 +116,7 @@ def test_sparse_structure_recipe_registration_collation_and_full_trainer_checkpo
         TrainingConfig3D(
             base_model="tests/tiny-trellis",
             revision="tiny-reference",
+            dataset_fingerprint="tests/tiny-trellis-latents-v1",
             output_dir=tmp_path,
             train_batch_size=2,
             max_train_steps=1,
@@ -144,12 +145,28 @@ def test_sparse_structure_recipe_registration_collation_and_full_trainer_checkpo
     assert checkpoint.is_file()
     assert TrainingManifest3D.load(tmp_path) == trainer.manifest
     saved_weight = tiny_trellis_pipeline.sparse_structure_flow_model.out_layer.weight.detach().clone()
+    saved_conditioner_weight = next(tiny_trellis_pipeline.conditioner.parameters()).detach().clone()
+    saved_decoder_weight = next(tiny_trellis_pipeline.sparse_structure_decoder.parameters()).detach().clone()
     with torch.no_grad():
         tiny_trellis_pipeline.sparse_structure_flow_model.out_layer.weight.add_(10.0)
+        next(tiny_trellis_pipeline.conditioner.parameters()).add_(10.0)
+        next(tiny_trellis_pipeline.sparse_structure_decoder.parameters()).add_(10.0)
     trainer.load_checkpoint(tmp_path)
     torch.testing.assert_close(
         tiny_trellis_pipeline.sparse_structure_flow_model.out_layer.weight,
         saved_weight,
+        atol=0.0,
+        rtol=0.0,
+    )
+    torch.testing.assert_close(
+        next(tiny_trellis_pipeline.conditioner.parameters()),
+        saved_conditioner_weight,
+        atol=0.0,
+        rtol=0.0,
+    )
+    torch.testing.assert_close(
+        next(tiny_trellis_pipeline.sparse_structure_decoder.parameters()),
+        saved_decoder_weight,
         atol=0.0,
         rtol=0.0,
     )

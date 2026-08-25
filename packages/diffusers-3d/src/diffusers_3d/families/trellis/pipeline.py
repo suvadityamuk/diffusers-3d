@@ -253,7 +253,7 @@ class TrellisImageTo3DPipeline(Object3DPipeline):
         if latents is not None:
             if not torch.equal(latents.coordinates, coordinates) or latents.channels != expected_channels:
                 raise ValueError("SLAT latents must match extracted coordinates and model input channels")
-            return latents.to(device=self._execution_device, dtype=next(self.slat_flow_model.parameters()).dtype)
+            return latents.to(device=self._execution_device, dtype=self.slat_flow_model.dtype)
         if isinstance(generator, list):
             if len(generator) != len(sparse_structures):
                 raise ValueError("a generator list must contain one generator per sparse structure")
@@ -265,7 +265,7 @@ class TrellisImageTo3DPipeline(Object3DPipeline):
                         (count, expected_channels),
                         generator=item_generator,
                         device=self._execution_device,
-                        dtype=next(self.slat_flow_model.parameters()).dtype,
+                        dtype=self.slat_flow_model.dtype,
                     )
                 )
             features = torch.cat(feature_parts)
@@ -274,7 +274,7 @@ class TrellisImageTo3DPipeline(Object3DPipeline):
                 (coordinates.shape[0], expected_channels),
                 generator=generator,
                 device=self._execution_device,
-                dtype=next(self.slat_flow_model.parameters()).dtype,
+                dtype=self.slat_flow_model.dtype,
             )
         return TrellisSparseTensor(coordinates.to(device=features.device), features)
 

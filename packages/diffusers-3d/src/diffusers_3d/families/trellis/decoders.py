@@ -15,6 +15,7 @@ import torch
 import torch.nn.functional as F
 from diffusers import ModelMixin  # noqa: F401 - required by external-component loading
 from diffusers.configuration_utils import register_to_config
+from diffusers.models.modeling_utils import get_parameter_dtype
 from diffusers.utils import BaseOutput
 from torch import nn
 
@@ -204,7 +205,7 @@ class TrellisSparseStructureDecoder(Object3DModel):
             raise ValueError(f"hidden_states must have shape (batch, {self.latent_channels}, depth, height, width)")
         output_dtype = hidden_states.dtype
         hidden_states = self.input_layer(hidden_states)
-        inner_dtype = next(self.middle_block.parameters()).dtype
+        inner_dtype = get_parameter_dtype(self.middle_block)
         hidden_states = hidden_states.to(dtype=inner_dtype)
         hidden_states = self.middle_block(hidden_states)
         for block in self.blocks:
@@ -555,7 +556,7 @@ class TrellisSLatGaussianDecoder(Object3DModel):
         features = self.input_layer(hidden_states.features)
         if self.pe_mode == "ape":
             features = features + self.pos_embedder(hidden_states.coordinates[:, 1:]).to(features)
-        inner_dtype = next(self.blocks.parameters()).dtype
+        inner_dtype = get_parameter_dtype(self.blocks)
         features = features.to(dtype=inner_dtype)
         batch_indices = hidden_states.coordinates[:, 0]
         coordinates = hidden_states.coordinates[:, 1:]

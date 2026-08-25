@@ -15,6 +15,8 @@ from accelerate import Accelerator
 from accelerate.utils import set_seed
 from diffusers.loaders import PeftAdapterMixin
 from diffusers.optimization import get_scheduler
+from safetensors.torch import load_model as load_safetensors_model
+from safetensors.torch import save_model as save_safetensors_model
 from torch import nn
 from torch.optim import AdamW, Optimizer
 from torch.utils.data import DataLoader, DistributedSampler
@@ -42,6 +44,7 @@ from .types import (
 )
 
 ACCELERATOR_STATE_DIRECTORY = "accelerator_state"
+FROZEN_COMPONENT_STATE_DIRECTORY = "frozen_components"
 TRAINER_STATE_NAME = "diffusers_3d_trainer_state.json"
 TRAINER_STATE_SCHEMA_VERSION = 1
 
@@ -483,6 +486,50 @@ class Object3DTrainer:
                 component.requires_grad_(False)
                 component.eval()
 
+            ordered_frozen_components = tuple(
+                (policy, frozen_components[policy.component_path]) for policy in registration.frozen_component_policies
+            )
+
+            def save_frozen_component_state(
+                models: list[nn.Module],
+                weights: list[dict[str, torch.Tensor]],
+                output_directory: str,
+            ) -> None:
+                del models, weights
+                if not accelerator.is_main_process:
+                    return
+                frozen_directory = Path(output_directory) / FROZEN_COMPONENT_STATE_DIRECTORY
+                frozen_directory.mkdir(parents=True, exist_ok=True)
+                for index, (policy, component) in enumerate(ordered_frozen_components):
+                    if type(component) not in policy.expected_types:
+                        raise TrainingCheckpointError(
+                            f"Frozen checkpoint component at {policy.component_path!r} has the wrong exact type"
+                        )
+                    save_safetensors_model(
+                        component,
+                        str(frozen_directory / f"frozen_component_{index}.safetensors"),
+                        metadata={"component_path": policy.component_path},
+                    )
+
+            def load_frozen_component_state(models: list[nn.Module], input_directory: str) -> None:
+                del models
+                frozen_directory = Path(input_directory) / FROZEN_COMPONENT_STATE_DIRECTORY
+                for index, (policy, component) in enumerate(ordered_frozen_components):
+                    if type(component) not in policy.expected_types:
+                        raise TrainingCheckpointError(
+                            f"Frozen checkpoint component at {policy.component_path!r} has the wrong exact type"
+                        )
+                    state_path = frozen_directory / f"frozen_component_{index}.safetensors"
+                    if not state_path.is_file():
+                        raise TrainingCheckpointError(f"Frozen component state {state_path} does not exist")
+                    load_safetensors_model(component, state_path, strict=True, device="cpu")
+                    component.to(accelerator.device)
+                    component.requires_grad_(False)
+                    component.eval()
+
+            accelerator.register_save_state_pre_hook(save_frozen_component_state)
+            accelerator.register_load_state_pre_hook(load_frozen_component_state)
+
             unique_components: list[nn.Module] = []
             component_indices: dict[str, int] = {}
             component_id_to_index: dict[int, int] = {}
@@ -793,10 +840,17 @@ class Object3DTrainer:
         )
 
     def save_checkpoint(self, checkpoint_directory: str | Path | None = None) -> Path:
-        if not self._prepared:
-            self.prepare()
         if self.config.dataloader_num_workers != 0:
             raise TrainingCheckpointError("Exact checkpoint continuation requires dataloader_num_workers=0")
+        if self.config.dataset_fingerprint is None:
+            raise TrainingCheckpointError("Exact checkpoint continuation requires dataset_fingerprint")
+        if not self._prepared:
+            self.prepare()
+        if not self.accelerator.sync_gradients:
+            raise TrainingCheckpointError(
+                "Checkpoint saving requires a synchronized optimizer-step boundary; "
+                "finish gradient accumulation before saving"
+            )
         directory = Path(checkpoint_directory) if checkpoint_directory is not None else self.config.output_dir
         if directory is None:
             raise TrainingCheckpointError("checkpoint_directory or config.output_dir is required")
@@ -813,6 +867,8 @@ class Object3DTrainer:
         return directory / "diffusers_3d_training.json"
 
     def validate_resume(self, checkpoint_directory: str | Path) -> TrainingManifest3D:
+        if self.config.dataset_fingerprint is None:
+            raise TrainingCheckpointError("Exact checkpoint continuation requires dataset_fingerprint")
         if not self._prepared:
             self.prepare()
         loaded = TrainingManifest3D.load(checkpoint_directory)
@@ -835,6 +891,7 @@ class Object3DTrainer:
 
 __all__ = [
     "ACCELERATOR_STATE_DIRECTORY",
+    "FROZEN_COMPONENT_STATE_DIRECTORY",
     "TRAINER_STATE_NAME",
     "TRAINER_STATE_SCHEMA_VERSION",
     "Object3DTrainer",

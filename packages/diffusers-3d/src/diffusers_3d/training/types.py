@@ -200,6 +200,7 @@ class TrainingConfig3D:
 
     base_model: str
     revision: str | None = None
+    dataset_fingerprint: str | None = None
     output_dir: Path | None = None
     train_batch_size: int = 1
     max_train_steps: int = 1
@@ -223,6 +224,10 @@ class TrainingConfig3D:
             raise TrainingConfigurationError("base_model must be a non-empty model identifier")
         if self.revision is not None and (not isinstance(self.revision, str) or not self.revision):
             raise TrainingConfigurationError("revision must be a non-empty string or None")
+        if self.dataset_fingerprint is not None and (
+            not isinstance(self.dataset_fingerprint, str) or not self.dataset_fingerprint.strip()
+        ):
+            raise TrainingConfigurationError("dataset_fingerprint must be a non-empty string or None")
         if self.output_dir is not None:
             try:
                 output_dir = Path(self.output_dir)
@@ -282,7 +287,7 @@ class TrainingConfig3D:
         if not isinstance(self.shuffle, bool) or not isinstance(self.cpu, bool):
             raise TrainingConfigurationError("shuffle and cpu must be booleans")
 
-    def resume_config(self) -> dict[str, bool | float | int | str]:
+    def resume_config(self) -> dict[str, bool | float | int | str | None]:
         """Return the canonical training settings that must match on resume."""
 
         return {
@@ -291,6 +296,7 @@ class TrainingConfig3D:
             "adam_epsilon": float(self.adam_epsilon),
             "cpu": self.cpu,
             "dataloader_num_workers": self.dataloader_num_workers,
+            "dataset_fingerprint": self.dataset_fingerprint,
             "gradient_accumulation_steps": self.gradient_accumulation_steps,
             "learning_rate": float(self.learning_rate),
             "lr_scheduler": self.lr_scheduler,

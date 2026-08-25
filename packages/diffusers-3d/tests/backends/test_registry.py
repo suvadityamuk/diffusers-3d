@@ -212,6 +212,15 @@ def test_planned_default_specs_keep_import_distribution_and_policy_metadata_sepa
     assert specs["flex_gemm"].source_revision == "6dd94a859c26ee8246888502eada3dd8ad85532e"
     assert specs["flex_gemm"].requires_source_provenance
     assert specs["o_voxel"].source_url is not None
+    research_revisions = {
+        "nvdiffrast": "253ac4fcea7de5f396371124af597e6cc957bfae",
+        "nvdiffrec_render": "a3e73909a01887c8a135235ff860dd23a045cc1b",
+        "diffoctreerast": "b09c20b84ec3aace4729e6e18a613112320eca3a",
+        "mip_gaussian": "dda02ab5ecf45d6edb8c540d9bb65c7e451345a9",
+    }
+    for name, revision in research_revisions.items():
+        assert specs[name].source_revision == revision
+        assert specs[name].requires_source_provenance
     for name in ("utils3d", "nvdiffrast", "nvdiffrec_render", "diffoctreerast", "mip_gaussian"):
         assert specs[name].support_level is BackendSupportLevel.RESEARCH_ONLY
 

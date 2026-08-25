@@ -378,8 +378,6 @@ class Hunyuan3DMoEBlock(nn.Module):
         for expert_index, expert in enumerate(self.experts):
             route_mask = flat_expert_indices == expert_index
             selected_tokens = token_indices[route_mask]
-            if selected_tokens.numel() == 0:
-                continue
             expert_output = expert(flattened_states[selected_tokens])
             routed_states.index_add_(
                 0,
