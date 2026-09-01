@@ -14,7 +14,7 @@ from dataclasses import dataclass
 import torch
 import torch.nn.functional as F
 
-from ...data import ImageCondition, preprocess_image_condition, validate_image_condition_pixels
+from ...data import ImageCondition, preprocess_training_image_condition, validate_image_condition_pixels
 from ...objects import SparseVoxelAsset
 from ...objects._validation import TensorShapeError, validate_shared_device, validate_tensor
 from ...objects.base import TensorDataMixin
@@ -50,7 +50,7 @@ def _preprocess_trellis2_conditions(
 ) -> torch.Tensor:
     try:
         images = [
-            preprocess_image_condition(
+            preprocess_training_image_condition(
                 condition,
                 image_size=image_size,
                 foreground_scale=1.0,

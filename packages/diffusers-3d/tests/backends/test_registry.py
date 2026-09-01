@@ -211,7 +211,9 @@ def test_planned_default_specs_keep_import_distribution_and_policy_metadata_sepa
     assert specs["cumesh"].requires_source_provenance
     assert specs["flex_gemm"].source_revision == "6dd94a859c26ee8246888502eada3dd8ad85532e"
     assert specs["flex_gemm"].requires_source_provenance
+    assert specs["flex_gemm"].devices == frozenset({"cuda"})
     assert specs["o_voxel"].source_url is not None
+    assert "--no-deps --no-build-isolation" in specs["o_voxel"].install_hint
     research_revisions = {
         "nvdiffrast": "253ac4fcea7de5f396371124af597e6cc957bfae",
         "nvdiffrec_render": "a3e73909a01887c8a135235ff860dd23a045cc1b",

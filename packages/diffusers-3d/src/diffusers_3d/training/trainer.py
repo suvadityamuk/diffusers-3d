@@ -16,8 +16,8 @@ from typing import Any, ClassVar
 import numpy as np
 import torch
 from accelerate import Accelerator
+from accelerate.utils import DistributedType, set_seed
 from accelerate.utils import load as load_accelerator_file
-from accelerate.utils import set_seed
 from diffusers.loaders import PeftAdapterMixin
 from diffusers.optimization import get_scheduler
 from packaging.version import InvalidVersion, Version
@@ -127,6 +127,25 @@ def _require_single_process_checkpoint(num_processes: int, operation: str) -> No
         raise TrainingCheckpointError(
             f"Exact checkpoint {operation} currently requires accelerator.num_processes == 1; "
             "distributed training remains supported without checkpoint persistence"
+        )
+
+
+def _require_checkpoint_accelerator_safety(accelerator: Accelerator, operation: str) -> None:
+    _require_single_process_checkpoint(accelerator.num_processes, operation)
+    if accelerator.distributed_type is not DistributedType.NO:
+        raise TrainingCheckpointError(
+            f"Exact checkpoint {operation} requires accelerator.distributed_type == DistributedType.NO; "
+            f"found {accelerator.distributed_type!s}"
+        )
+    custom_objects = getattr(accelerator, "_custom_objects", None)
+    if not isinstance(custom_objects, list):
+        raise TrainingCheckpointError(
+            f"Exact checkpoint {operation} could not verify Accelerator custom checkpoint object state"
+        )
+    if custom_objects:
+        raise TrainingCheckpointError(
+            f"Exact checkpoint {operation} does not permit registered custom checkpoint objects because "
+            "Accelerate loads them with weights_only=False"
         )
 
 
@@ -1018,6 +1037,7 @@ class Object3DTrainer:
             raise TrainingCheckpointError(f"Could not atomically save trainer state to {destination}") from error
 
     def _save_accelerator_state(self, directory: Path) -> None:
+        _require_checkpoint_accelerator_safety(self.accelerator, "saving")
         destination = directory / ACCELERATOR_STATE_DIRECTORY
         temporary = directory / f".{ACCELERATOR_STATE_DIRECTORY}.tmp"
         backup = directory / f".{ACCELERATOR_STATE_DIRECTORY}.backup"
@@ -1091,7 +1111,7 @@ class Object3DTrainer:
             raise TrainingCheckpointError("Exact checkpoint continuation requires dataset_fingerprint")
         if not self._prepared:
             self.prepare()
-        _require_single_process_checkpoint(self.accelerator.num_processes, "saving")
+        _require_checkpoint_accelerator_safety(self.accelerator, "saving")
         if not self.accelerator.sync_gradients:
             raise TrainingCheckpointError(
                 "Checkpoint saving requires a synchronized optimizer-step boundary; "
@@ -1126,7 +1146,7 @@ class Object3DTrainer:
         _require_safe_accelerate()
         if not self._prepared:
             self.prepare()
-        _require_single_process_checkpoint(self.accelerator.num_processes, "loading")
+        _require_checkpoint_accelerator_safety(self.accelerator, "loading")
         self.validate_resume(checkpoint_directory)
         state_directory = Path(checkpoint_directory) / ACCELERATOR_STATE_DIRECTORY
         if not state_directory.is_dir():

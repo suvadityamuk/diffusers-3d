@@ -25,13 +25,16 @@ being simulated.
 python -m pip install -e .
 python -m pip install -e "packages/diffusers-3d[test,training]" --no-deps
 python -m pip install \
-  "accelerate>=1.1.0" build peft pytest pytest-cov ruff safetensors \
+  "accelerate>=1.1.0" build huggingface-hub numpy peft Pillow pytest pytest-cov ruff safetensors \
   "transformers>=5.5.0"
 ```
 
 The minimum-stack CI lane installs `accelerate==1.1.0` and
-`transformers==5.5.0` explicitly before running the core CPU and training
-tests. The latest-resolved lanes must not substitute for this floor check.
+`transformers==5.5.0` explicitly, installs the package's training and test
+dependencies, checks both versions and `pip check`, then runs execution,
+image preprocessing, both conditioners, both family training suites, and all
+trainer/checkpoint tests. The latest-resolved lanes must not substitute for
+this floor check.
 
 Core CPU, including deterministic equations and tiny integration tests:
 

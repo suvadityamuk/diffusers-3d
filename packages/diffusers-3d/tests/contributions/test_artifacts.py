@@ -42,18 +42,26 @@ def test_distribution_does_not_require_opencv():
 def test_distribution_requires_checkpoint_safe_accelerate_floor():
     pyproject = (PACKAGE_ROOT / "pyproject.toml").read_text(encoding="utf-8")
     assert '"accelerate>=1.1.0"' in pyproject
+    workflow = (PACKAGE_ROOT.parents[1] / ".github" / "workflows" / "diffusers_3d.yml").read_text(encoding="utf-8")
+    assert '"accelerate==1.1.0"' in workflow
+    assert "packages/diffusers-3d/tests/training" in workflow
 
 
 @pytest.mark.release
 def test_source_backend_requirement_records_are_immutable():
     requirements_root = PACKAGE_ROOT / "requirements" / "backends"
     for filename, expected in PINNED_SOURCE_REQUIREMENTS.items():
+        requirement_text = (requirements_root / filename).read_text(encoding="utf-8")
         requirement_lines = [
             line
-            for line in (requirements_root / filename).read_text(encoding="utf-8").splitlines()
+            for line in requirement_text.splitlines()
             if line and not line.startswith("#")
         ]
         assert requirement_lines == [expected]
+        if filename == "o-voxel.txt":
+            assert "--no-deps --no-build-isolation" in requirement_text
+    backend_instructions = (requirements_root / "README.md").read_text(encoding="utf-8")
+    assert "pip install --no-deps --no-build-isolation" in backend_instructions
     nvdiffrec_record = (requirements_root / "nvdiffrec.txt").read_text(encoding="utf-8")
     assert "git+https://github.com/JeffreyXiang/nvdiffrec.git@a3e73909a01887c8a135235ff860dd23a045cc1b" in (
         nvdiffrec_record

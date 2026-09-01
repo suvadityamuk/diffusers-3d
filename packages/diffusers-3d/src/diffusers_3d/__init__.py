@@ -100,6 +100,7 @@ from .data import (
     PackedMeshBatch,
     TextCondition,
     preprocess_image_condition,
+    preprocess_training_image_condition,
     validate_image_condition_pixels,
 )
 from .execution import (
@@ -392,6 +393,7 @@ __all__ = [
     "ovoxel_asset_from_official",
     "ovoxel_grid_transform",
     "preprocess_image_condition",
+    "preprocess_training_image_condition",
     "read_ovoxel_npz",
     "scan_forbidden_marker",
     "trainable_parameter_hash",

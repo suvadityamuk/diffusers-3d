@@ -29,9 +29,10 @@ and PBR/GLB postprocess remain explicitly experimental or capability-gated.
   target mapping is preserved: `512`, `1024_cascade`, and `1536_cascade` pool
   decoded occupancy to resolution 32, while `1024` uses 64. Portable tiny
   pipelines use their decoder's native output resolution.
-- Typed RGBA alpha and separate masks use the pinned `>0.8` foreground crop,
-  1.0 recenter scale, Pillow LANCZOS resize to the conditioner size, and
-  alpha-premultiplication on black. Unmasked RGB is treated as an already
+- Typed RGBA alpha and separate masks are quantized to uint8 before the pinned
+  `>0.8 * 255` foreground crop. The cropped RGBA image is premultiplied on
+  black before Pillow LANCZOS resizes RGB to the conditioner size, matching
+  the released ordering. Unmasked RGB is treated as an already
   background-removed full frame; the pipeline never invokes a background
   remover silently.
 
@@ -46,9 +47,13 @@ The package-owned O-Voxel adapter has independent capability surfaces:
 
 - schema conversion and mixed official packing are pure PyTorch: unit-domain
   channels use uint8 while unbounded split weights retain float16/float32;
-- `.npz` read/write is pure NumPy/Python and uses deterministic 30-bit Morton
-  ordering plus explicit grid and dtype/layout metadata by default;
-- `.vxz` read/write delegates to `o_voxel.io.read_vxz`/`write_vxz`;
+- `.npz` read/write is pure NumPy/Python and defaults to deterministic
+  lexicographic ordering across the uint16 coordinate domain, with exact
+  ordering, grid, dtype, and layout metadata. Explicit 30-bit Morton ordering
+  remains available when every coordinate is at most 1023;
+- `.vxz` read/write delegates unsorted global coordinates to
+  `o_voxel.io.read_vxz`/`write_vxz`, whose official runtime performs
+  chunk-local ordering;
 - dual-grid mesh extraction delegates to
   `o_voxel.convert.flexible_dual_grid_to_mesh`;
 - voxel rendering delegates to `o_voxel.rasterize.VoxelRenderer`.
@@ -123,9 +128,11 @@ dropout probability `0.1`.
 
 Tiny shape and texture SLAT recipes use uniform timesteps and precomputed
 normalized coordinate-aligned sparse latents, but remain experimental and
-unregistered. All recipe collators apply the same 1.0-scale image
-preprocessing as inference exactly once, preserving typed RGBA alpha and
-separate masks. No LoRA or SC-VAE recipe is claimed.
+unregistered. All recipe collators separately follow the pinned dataset
+transform exactly once: the bbox includes every nonzero alpha pixel, uses the
+unscaled floating half-size before integer truncation, resizes RGBA with
+LANCZOS, and multiplies the resized RGB and alpha tensors. Separate masks
+participate in alpha. No LoRA or SC-VAE recipe is claimed.
 
 ## Explicit limitations
 

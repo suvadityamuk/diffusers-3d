@@ -121,7 +121,9 @@ DEFAULT_BACKEND_SPECS = (
         capabilities=frozenset({BackendCapability.SPARSE_COMPUTE}),
         support_level=BackendSupportLevel.ACCELERATED,
         license_class=BackendLicenseClass.PERMISSIVE,
-        devices=frozenset({"cuda", "rocm"}),
+        # PyTorch exposes HIP devices through the "cuda" device type. A
+        # separate "rocm" torch.device string is invalid and is not selectable.
+        devices=frozenset({"cuda"}),
         dtypes=frozenset({"float16", "bfloat16", "float32"}),
         differentiable=True,
         install_hint=(
@@ -197,8 +199,8 @@ DEFAULT_BACKEND_SPECS = (
         dtypes=frozenset({"float16", "float32"}),
         differentiable=False,
         install_hint=(
-            "Build the o-voxel source package from an audited pinned microsoft/TRELLIS.2 revision with "
-            "`--no-build-isolation`"
+            "Install the pinned FlexGEMM and CuMesh records first, then build the audited o-voxel source package "
+            "with `--no-deps --no-build-isolation`"
         ),
         tested_build="Source build coupled to pinned CuMesh and FlexGEMM builds",
         source_url="https://github.com/microsoft/TRELLIS.2.git",

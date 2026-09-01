@@ -27,7 +27,9 @@ floor is the first intentionally supported floor for this package stack.
 Accelerate 1.1.0 is the minimum checkpoint-safety baseline. Runtime checks reject older releases before checkpoint
 deserialization. Direct utility loads explicitly request `weights_only=True`; `Accelerator.load_state` receives the
 same explicit load option when that release exposes `load_kwargs`, while Accelerate 1.1's internal utility already
-uses weights-only loading by default.
+uses weights-only loading by default. Exact save/load additionally rejects more than one process, every
+`distributed_type` except `DistributedType.NO`, and registered custom checkpoint objects before persistence or
+deserialization, so Accelerate's custom `weights_only=False` pickle path is unreachable.
 
 ## Backend matrix
 
@@ -42,7 +44,7 @@ shape, dtype, policy, and error behavior; it is not compiled-backend or numerica
 | utils3d | research-only / permissive | Registry, provenance, and selection policy only | Not run | N/A |
 | gsplat | accelerated / permissive | CPU API adapter test | Not run | None |
 | spconv | accelerated / permissive | CPU API sparse-tensor test | Not run | None |
-| FlexGEMM | accelerated / permissive | CPU API plus PEP 610 source verification | Not run | None |
+| FlexGEMM | accelerated / permissive | CPU API plus PEP 610 source verification; CUDA device type only (including PyTorch HIP builds) | Not run | None |
 | CuMesh | accelerated / permissive | CPU API geometry/BVH operations plus PEP 610 source verification | Not run | None |
 | Kaolin | accelerated / permissive subset only | CPU API FlexiCubes test; non-commercial module rejected | Not run | None |
 | O-Voxel | accelerated / permissive | Real mixed uint8/float NPZ codec; native API fake | Not run | None |

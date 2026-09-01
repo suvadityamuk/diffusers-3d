@@ -9,6 +9,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 import torch
+from accelerate.utils import DistributedType
 from diffusers import DiffusionPipeline, ModelMixin
 from diffusers.configuration_utils import register_to_config
 from diffusers.loaders import PeftAdapterMixin
@@ -696,6 +697,7 @@ def test_checkpoint_restores_full_state_counters_and_next_data_position(monkeypa
     assert resumed_target.conditioner.scale.item() == 1.0
     frozen_state_directory = tmp_path / ACCELERATOR_STATE_DIRECTORY / FROZEN_COMPONENT_STATE_DIRECTORY
     assert tuple(frozen_state_directory.glob("*.safetensors"))
+    assert not tuple((tmp_path / ACCELERATOR_STATE_DIRECTORY).glob("custom_checkpoint_*.pkl"))
     assert resumed_dataset.getitem_calls == 0
     assert (tmp_path / ACCELERATOR_STATE_DIRECTORY / TRAINER_STATE_NAME).stat().st_mode & 0o044 == 0o044
 
@@ -875,6 +877,86 @@ def test_accelerator_state_load_uses_explicit_weights_only_where_supported(monke
     monkeypatch.setattr(resumed.accelerator, "load_state", load_state)
     resumed.load_checkpoint(tmp_path)
     assert captured["load_kwargs"] == ({"weights_only": True} if supports_load_kwargs else None)
+
+
+@pytest.mark.parametrize("distributed_type", [DistributedType.FSDP, DistributedType.DEEPSPEED])
+def test_checkpoint_rejects_distributed_accelerator_before_load_state(
+    monkeypatch,
+    tmp_path,
+    distributed_type,
+):
+    config = _save_stochastic_checkpoint(monkeypatch, tmp_path)
+    resumed = Object3DTrainer(
+        StochasticTinyRecipe(TinyTarget()),
+        CountingDataset(),
+        FullFineTune(("denoiser",)),
+        config,
+    ).prepare()
+    monkeypatch.setattr(
+        type(resumed.accelerator),
+        "distributed_type",
+        property(lambda _accelerator: distributed_type),
+    )
+    monkeypatch.setattr(
+        resumed.accelerator,
+        "load_state",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("Accelerator.load_state was called")),
+    )
+
+    with pytest.raises(TrainingCheckpointError, match=r"distributed_type == DistributedType\.NO"):
+        resumed.load_checkpoint(tmp_path)
+
+
+def test_checkpoint_rejects_distributed_accelerator_before_save_state(monkeypatch, tmp_path):
+    install_registry(monkeypatch, make_registration())
+    checkpoint_directory = tmp_path / "not-created"
+    trainer = Object3DTrainer(
+        TinyRecipe(TinyTarget()),
+        CountingDataset(),
+        FullFineTune(("denoiser",)),
+        make_config(max_train_steps=1, output_dir=str(checkpoint_directory)),
+    ).prepare()
+    monkeypatch.setattr(
+        type(trainer.accelerator),
+        "distributed_type",
+        property(lambda _accelerator: DistributedType.FSDP),
+    )
+    monkeypatch.setattr(
+        trainer.accelerator,
+        "save_state",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("Accelerator.save_state was called")),
+    )
+
+    with pytest.raises(TrainingCheckpointError, match=r"distributed_type == DistributedType\.NO"):
+        trainer.save_checkpoint()
+    assert not checkpoint_directory.exists()
+
+
+class CustomCheckpointObject:
+    def state_dict(self):
+        return {}
+
+    def load_state_dict(self, state):
+        raise AssertionError(f"custom checkpoint object was loaded: {state}")
+
+
+def test_checkpoint_rejects_registered_custom_object_before_load_state(monkeypatch, tmp_path):
+    config = _save_stochastic_checkpoint(monkeypatch, tmp_path)
+    resumed = Object3DTrainer(
+        StochasticTinyRecipe(TinyTarget()),
+        CountingDataset(),
+        FullFineTune(("denoiser",)),
+        config,
+    ).prepare()
+    resumed.accelerator.register_for_checkpointing(CustomCheckpointObject())
+    monkeypatch.setattr(
+        resumed.accelerator,
+        "load_state",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("Accelerator.load_state was called")),
+    )
+
+    with pytest.raises(TrainingCheckpointError, match="does not permit registered custom checkpoint objects"):
+        resumed.load_checkpoint(tmp_path)
 
 
 def test_checkpoint_rejects_deleted_rng_state(monkeypatch, tmp_path):

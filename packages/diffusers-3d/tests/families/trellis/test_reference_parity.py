@@ -1,18 +1,23 @@
 from __future__ import annotations
 
+import ast
 import importlib.util
 import os
 import sys
 import types
 from pathlib import Path
 
+import numpy as np
 import pytest
 import torch
+from PIL import Image
 
 from diffusers_3d import (
     TRELLIS_REFERENCE_REVISION,
+    ImageCondition,
     TrellisSparseStructureDecoder,
     TrellisSparseStructureFlowModel,
+    preprocess_image_condition,
 )
 from diffusers_3d._reference import ReferenceCheckoutError, reference_unavailable, validate_reference_checkout
 
@@ -21,6 +26,7 @@ pytestmark = pytest.mark.reference_parity
 REFERENCE_ROOT = Path(os.environ.get("DIFFUSERS_3D_TRELLIS_REFERENCE_ROOT", "/tmp/TRELLIS"))
 REFERENCE_REPOSITORY = "https://github.com/microsoft/TRELLIS.git"
 REFERENCE_PATHS = (
+    "trellis/pipelines/trellis_image_to_3d.py",
     "trellis/models/sparse_structure_flow.py",
     "trellis/models/sparse_structure_vae.py",
     "trellis/modules/attention/__init__.py",
@@ -126,8 +132,35 @@ def _randomize_state(module: torch.nn.Module, *, seed: int) -> None:
                 value.copy_(torch.randn(value.shape, generator=generator, dtype=value.dtype) * 0.02)
 
 
+def _assert_soft_alpha_preprocessing_parity() -> None:
+    path = REFERENCE_ROOT / "trellis" / "pipelines" / "trellis_image_to_3d.py"
+    tree = ast.parse(path.read_text(encoding="utf-8"))
+    class_node = next(node for node in tree.body if isinstance(node, ast.ClassDef) and node.name == "TrellisImageTo3DPipeline")
+    function_node = next(
+        node for node in class_node.body if isinstance(node, ast.FunctionDef) and node.name == "preprocess_image"
+    )
+    function_node.decorator_list = []
+    module = ast.fix_missing_locations(ast.Module(body=[function_node], type_ignores=[]))
+    namespace = {"Image": Image, "np": np}
+    exec(compile(module, str(path), "exec"), namespace)
+
+    rgba = np.zeros((9, 11, 4), dtype=np.uint8)
+    rgba[:, :, 0] = np.arange(11, dtype=np.uint8) * 23
+    rgba[:, :, 1] = np.arange(9, dtype=np.uint8)[:, None] * 29
+    rgba[:, :, 2] = 191
+    rgba[1:8, 2:10, 3] = np.linspace(1, 255, 56, dtype=np.uint8).reshape(7, 8)
+    rgba[0, 0, 3] = 204
+    rgba[8, 10, 3] = 205
+    reference = namespace["preprocess_image"](object(), Image.fromarray(rgba))
+    expected = torch.from_numpy(np.array(reference, copy=True)).permute(2, 0, 1).float().div(255)
+    condition = ImageCondition(torch.from_numpy(rgba.copy()).permute(2, 0, 1).float().div(255))
+    actual = preprocess_image_condition(condition, image_size=518, foreground_scale=1.2).image
+    torch.testing.assert_close(actual, expected, atol=0.0, rtol=0.0)
+
+
 def test_tiny_sparse_structure_components_match_pinned_reference():
     reference_flow_type, reference_decoder_type = _load_pinned_reference()
+    _assert_soft_alpha_preprocessing_parity()
 
     flow_config = TrellisSparseStructureFlowModel.tiny_config()
     torch.manual_seed(0)

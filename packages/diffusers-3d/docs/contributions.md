@@ -89,8 +89,9 @@ scheduler, scaler, RNG, trainer counters, and data position. Exact continuation 
 `dataset_fingerprint`. The fingerprint must identify the exact dataset contents, ordering, preprocessing, and
 sampling contract; changing it is a resume-manifest mismatch. The trainer does not infer this identity from an
 arbitrary dataset object, and asynchronous dataset worker state is intentionally not claimed. Distributed training
-is supported, but exact checkpoint save/load currently requires `accelerator.num_processes == 1`; multi-process
-persistence is rejected before filesystem or collective operations. Resume strictly validates this process's
+is supported, but exact checkpoint save/load currently requires `accelerator.num_processes == 1`,
+`accelerator.distributed_type == DistributedType.NO`, and no registered custom checkpoint objects. Unsupported
+distributed loaders and custom pickle state are rejected before persistence or deserialization. Resume strictly validates this process's
 Accelerator RNG payload and explicitly restores Python, NumPy, CPU torch, and recorded available device RNG states.
 Accelerator state is the authoritative continuation format. Recipe `save_weights()` artifacts remain inference
 artifacts and are not a second resume path.

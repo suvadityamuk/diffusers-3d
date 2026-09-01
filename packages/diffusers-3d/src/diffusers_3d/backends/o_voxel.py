@@ -25,7 +25,8 @@ from .types import BackendCapability
 
 OVOXEL_REFERENCE_REVISION = "75fbf0183001ed9876c8dbb35de6b68552ee08bd"
 OVOXEL_METADATA_PREFIX = "__diffusers_3d_ovoxel_"
-_OVOXEL_NPZ_SCHEMA_VERSION = 1
+_OVOXEL_NPZ_SCHEMA_VERSION = 2
+_COORDINATE_ORDERS = frozenset({"input", "lexicographic_xyz", "morton_30bit"})
 _ATTRIBUTE_LAYOUTS = {
     "alpha": "voxel_scalar",
     "base_color": "voxel_rgb",
@@ -118,6 +119,26 @@ def morton_decode_3d(code: torch.Tensor) -> torch.Tensor:
         coordinates[:, 1] |= ((values >> (3 * bit + 1)) & 1) << bit
         coordinates[:, 2] |= ((values >> (3 * bit + 2)) & 1) << bit
     return coordinates
+
+
+def _lexicographic_coordinate_order(coordinates: torch.Tensor) -> torch.Tensor:
+    order = torch.arange(coordinates.shape[0], device=coordinates.device)
+    for axis in (2, 1, 0):
+        order = order[torch.argsort(coordinates[order, axis], stable=True)]
+    return order
+
+
+def _validate_recorded_coordinate_order(coordinates: torch.Tensor, coordinate_order: str) -> None:
+    if coordinate_order == "input":
+        return
+    if coordinate_order == "morton_30bit":
+        keys = morton_encode_3d(coordinates)
+        ordered = bool((keys[1:] >= keys[:-1]).all())
+    else:
+        order = _lexicographic_coordinate_order(coordinates)
+        ordered = torch.equal(order, torch.arange(coordinates.shape[0], device=coordinates.device))
+    if not ordered:
+        raise ValueError(f"O-Voxel NPZ coordinates do not match recorded {coordinate_order!r} ordering")
 
 
 def _scalar_channel(value: torch.Tensor, count: int, name: str) -> torch.Tensor:
@@ -402,16 +423,30 @@ def write_ovoxel_npz(
     *,
     compressed: bool = True,
     packed: bool = True,
-    morton_order: bool = True,
+    morton_order: bool | None = None,
 ) -> None:
-    """Write an official-compatible NPZ plus reserved lossless grid metadata."""
+    """Write an official-compatible NPZ plus reserved lossless grid metadata.
+
+    The default deterministic lexicographic order supports the full uint16
+    coordinate domain. Passing ``morton_order=True`` explicitly requests the
+    official 30-bit order and therefore limits every coordinate to 1023.
+    """
 
     resolution = _serialization_resolution(asset, format_name="official O-Voxel NPZ")
+    if morton_order is not None and not isinstance(morton_order, bool):
+        raise TypeError("morton_order must be a bool or None")
     coordinates, attributes = official_tensors_from_ovoxel_asset(
         asset,
         packed=packed,
-        morton_order=morton_order,
+        morton_order=bool(morton_order),
     )
+    if morton_order is None:
+        order = _lexicographic_coordinate_order(coordinates)
+        coordinates = coordinates[order]
+        attributes = {name: value[order] for name, value in attributes.items()}
+        coordinate_order = "lexicographic_xyz"
+    else:
+        coordinate_order = "morton_30bit" if morton_order else "input"
     if "split_weight" in attributes and attributes["split_weight"].dtype not in (torch.float16, torch.float32):
         raise ValueError("O-Voxel NPZ split_weight must use torch.float16 or torch.float32")
     aabb = asset.metadata.get("aabb", [[-0.5, -0.5, -0.5], [0.5, 0.5, 0.5]])
@@ -446,7 +481,8 @@ def write_ovoxel_npz(
         },
         "coordinate_dtype": "uint16",
         "coordinate_layout": "voxel_xyz",
-        "morton_order": morton_order,
+        "coordinate_order": coordinate_order,
+        "morton_order": coordinate_order == "morton_30bit",
         "schema_version": _OVOXEL_NPZ_SCHEMA_VERSION,
     }
     arrays[f"{OVOXEL_METADATA_PREFIX}resolution"] = np.asarray(resolution, dtype=np.uint32)
@@ -467,6 +503,7 @@ def read_ovoxel_npz(
 ) -> OVoxelAsset:
     """Read O-Voxel NPZ data without importing the compiled runtime."""
 
+    coordinate_order = None
     with np.load(file, allow_pickle=False) as data:
         if "coord" not in data:
             raise ValueError("O-Voxel NPZ is missing coord")
@@ -492,11 +529,16 @@ def read_ovoxel_npz(
                 layout_metadata.get("schema_version") != _OVOXEL_NPZ_SCHEMA_VERSION
                 or layout_metadata.get("coordinate_dtype") != "uint16"
                 or layout_metadata.get("coordinate_layout") != "voxel_xyz"
+                or layout_metadata.get("coordinate_order") not in _COORDINATE_ORDERS
+                or layout_metadata.get("morton_order")
+                is not (layout_metadata.get("coordinate_order") == "morton_30bit")
                 or coordinate_array.dtype != np.uint16
                 or not isinstance(expected_attributes, dict)
                 or set(expected_attributes) != set(attributes)
             ):
                 raise ValueError("O-Voxel NPZ dtype/layout metadata does not match its arrays")
+            coordinate_order = layout_metadata["coordinate_order"]
+            _validate_recorded_coordinate_order(coordinates, coordinate_order)
             for name, value in attributes.items():
                 description = expected_attributes[name]
                 expected_encoding = (
@@ -520,13 +562,16 @@ def read_ovoxel_npz(
             resolution = tuple(int(item) for item in stored_resolution.tolist())
         if aabb is None and stored_aabb is not None:
             aabb = stored_aabb.tolist()
-    return ovoxel_asset_from_official(
+    asset = ovoxel_asset_from_official(
         coordinates,
         attributes,
         resolution=resolution,
         aabb=((-0.5, -0.5, -0.5), (0.5, 0.5, 0.5)) if aabb is None else aabb,
         packed=packed,
     )
+    if coordinate_order is not None:
+        asset.metadata["coordinate_order"] = coordinate_order
+    return asset
 
 
 class OVoxelBackend:
@@ -709,7 +754,9 @@ class OVoxelBackend:
                 "The pinned VXZ v0 runtime accepts only uint8 attributes and has no verified lossless "
                 "split_weights encoding; use write_npz() instead"
             )
-        coordinates, attributes = self.to_official(asset, packed=True, morton_order=True)
+        # The official runtime performs chunk-local ordering internally. Global
+        # Morton sorting here would reject valid uint16-resolution assets.
+        coordinates, attributes = self.to_official(asset, packed=True, morton_order=False)
         runtime.io.write_vxz(
             self._native_file(file),
             coordinates.to(dtype=torch.int32),

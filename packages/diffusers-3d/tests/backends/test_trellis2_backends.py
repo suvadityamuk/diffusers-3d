@@ -12,6 +12,7 @@ import numpy as np
 import pytest
 import torch
 
+import diffusers_3d.backends._optional as optional_backends
 from diffusers_3d import (
     CUMESH_SOURCE_REVISION,
     CUMESH_SOURCE_URL,
@@ -37,6 +38,7 @@ from diffusers_3d import (
     morton_encode_3d,
     official_tensors_from_ovoxel_asset,
     ovoxel_asset_from_official,
+    ovoxel_grid_transform,
     read_ovoxel_npz,
     write_ovoxel_npz,
 )
@@ -112,7 +114,7 @@ def test_ovoxel_official_mixed_roundtrip_preserves_all_channels_and_grid_metadat
         assert torch.equal(restored_attributes[name], value), name
 
 
-def test_ovoxel_npz_uses_morton_order_and_roundtrips_without_compiled_runtime():
+def test_ovoxel_npz_uses_default_lexicographic_order_and_roundtrips_without_compiled_runtime():
     coordinates, attributes = _packed_official()
     asset = ovoxel_asset_from_official(coordinates, attributes, resolution=8, packed=True)
     buffer = io.BytesIO()
@@ -130,22 +132,28 @@ def test_ovoxel_npz_uses_morton_order_and_roundtrips_without_compiled_runtime():
             "layout": "voxel_scalar_nonnegative",
             "shape": [1],
         }
+        assert layout["coordinate_order"] == "lexicographic_xyz"
+        assert not layout["morton_order"]
         stored_coordinates = torch.from_numpy(data["coord"].astype(np.int64))
-        codes = morton_encode_3d(stored_coordinates)
-        assert bool((codes[1:] >= codes[:-1]).all())
+        expected_order = torch.from_numpy(
+            np.lexsort(
+                (
+                    coordinates[:, 2].numpy(),
+                    coordinates[:, 1].numpy(),
+                    coordinates[:, 0].numpy(),
+                )
+            ).copy()
+        )
+        assert torch.equal(stored_coordinates, coordinates[expected_order])
 
     buffer.seek(0)
     restored = read_ovoxel_npz(buffer)
-    restored_coordinates, restored_attributes = official_tensors_from_ovoxel_asset(
-        restored,
-        packed=True,
-        morton_order=True,
-    )
-    expected_order = torch.argsort(morton_encode_3d(coordinates), stable=True)
+    restored_coordinates, restored_attributes = official_tensors_from_ovoxel_asset(restored, packed=True)
     assert torch.equal(restored_coordinates, coordinates[expected_order])
     for name, value in attributes.items():
         assert torch.equal(restored_attributes[name], value[expected_order]), name
     assert restored.metadata["resolution"] == [8, 8, 8]
+    assert restored.metadata["coordinate_order"] == "lexicographic_xyz"
     assert not restored.metadata["resolution_inferred"]
 
 
@@ -161,7 +169,15 @@ def test_ovoxel_npz_preserves_unbounded_split_weight_dtype_and_values(dtype):
     restored = read_ovoxel_npz(buffer)
 
     assert restored.split_weights.dtype is dtype
-    expected_order = torch.argsort(morton_encode_3d(coordinates), stable=True)
+    expected_order = torch.from_numpy(
+        np.lexsort(
+            (
+                coordinates[:, 2].numpy(),
+                coordinates[:, 1].numpy(),
+                coordinates[:, 0].numpy(),
+            )
+        ).copy()
+    )
     expected_split_weights = attributes["split_weight"][expected_order]
     torch.testing.assert_close(restored.split_weights, expected_split_weights, atol=0.0, rtol=0.0)
     _, restored_attributes = official_tensors_from_ovoxel_asset(restored, packed=True)
@@ -177,7 +193,7 @@ def test_ovoxel_npz_preserves_unbounded_split_weight_dtype_and_values(dtype):
         (torch.tensor([[65536, 0, 0]], dtype=torch.int64), 65537, "fit in uint16"),
     ],
 )
-@pytest.mark.parametrize("morton_order", [False, True])
+@pytest.mark.parametrize("morton_order", [None, False, True])
 def test_ovoxel_npz_rejects_invalid_coordinates_before_serialization(
     coordinates,
     resolution,
@@ -191,6 +207,32 @@ def test_ovoxel_npz_rejects_invalid_coordinates_before_serialization(
 
     with pytest.raises(ValueError, match=message):
         write_ovoxel_npz(io.BytesIO(), asset, morton_order=morton_order)
+
+
+def test_ovoxel_npz_uint16_boundaries_use_default_lexicographic_fallback():
+    _, attributes = _packed_official()
+    coordinates = torch.tensor(
+        [[1535, 2, 0], [1024, 1, 0], [1023, 3, 0], [0, 0, 0]],
+        dtype=torch.int32,
+    )
+    asset = ovoxel_asset_from_official(coordinates, attributes, resolution=1536, packed=True)
+    buffer = io.BytesIO()
+
+    write_ovoxel_npz(buffer, asset, compressed=False)
+    buffer.seek(0)
+    with np.load(buffer, allow_pickle=False) as data:
+        layout = json.loads(str(data["__diffusers_3d_ovoxel_layout"].item()))
+        assert layout["coordinate_order"] == "lexicographic_xyz"
+        assert data["coord"].dtype == np.uint16
+        assert data["coord"][:, 0].tolist() == [0, 1023, 1024, 1535]
+        assert data["__diffusers_3d_ovoxel_resolution"].tolist() == [1536, 1536, 1536]
+
+    buffer.seek(0)
+    restored = read_ovoxel_npz(buffer)
+    assert restored.active_coordinates[:, 0].tolist() == [0, 1023, 1024, 1535]
+    assert restored.metadata["resolution"] == [1536, 1536, 1536]
+    with pytest.raises(ValueError, match=r"\[0, 1023\]"):
+        write_ovoxel_npz(io.BytesIO(), asset, morton_order=True)
 
 
 def test_ovoxel_unpacked_mapping_and_morton_codec_are_exact():
@@ -357,12 +399,11 @@ def test_ovoxel_native_facade_delegates_to_pinned_io_dual_grid_and_renderer_api(
     backend.write_vxz("restored.vxz", asset, compression="zstd")
     output_file, output_coordinates, output_attributes, output_kwargs = calls["write_vxz"]
     assert output_file == "restored.vxz"
-    expected_order = torch.argsort(morton_encode_3d(coordinates), stable=True)
-    assert torch.equal(output_coordinates, coordinates[expected_order])
+    assert torch.equal(output_coordinates, coordinates)
     for name, value in attributes.items():
         if name == "split_weight":
             continue
-        assert torch.equal(output_attributes[name], value[expected_order])
+        assert torch.equal(output_attributes[name], value)
     assert output_kwargs == {"compression": "zstd"}
 
     mesh = backend.to_mesh(asset, train=True)
@@ -388,6 +429,17 @@ def test_ovoxel_native_facade_delegates_to_pinned_io_dual_grid_and_renderer_api(
         calls["render"]["position"],
         asset.active_coordinates.to(dtype=torch.float32) / 8 - 0.5,
     )
+
+    high_coordinates = torch.tensor(
+        [[1535, 2, 0], [1024, 1, 0], [1023, 3, 0], [0, 0, 0]],
+        dtype=torch.int32,
+    )
+    asset.active_coordinates = high_coordinates
+    asset.metadata["resolution"] = [1536, 1536, 1536]
+    asset.grid_transform = ovoxel_grid_transform(1536)
+    backend.write_vxz("high-resolution.vxz", asset)
+    assert calls["write_vxz"][0] == "high-resolution.vxz"
+    assert torch.equal(calls["write_vxz"][1], high_coordinates)
 
 
 def test_top_level_import_does_not_import_optional_trellis2_backends():
@@ -465,6 +517,20 @@ def test_flex_gemm_realistic_cpu_fake_adapts_sparse_operations_without_custom_at
     sampled = backend.grid_sample_3d(voxels, torch.zeros(1, 2, 3), mode="trilinear")
     torch.testing.assert_close(sampled, torch.tensor([[3.0], [7.0]]))
     assert captured["mode"] == "trilinear"
+
+
+def test_flex_gemm_rejects_incompatible_runtime_before_extension_import(monkeypatch):
+    imported = []
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: False)
+    monkeypatch.setattr(
+        optional_backends.importlib,
+        "import_module",
+        lambda name: imported.append(name),
+    )
+
+    with pytest.raises(RuntimeError, match="available CUDA/ROCm"):
+        FlexGemmBackend(device="cuda")
+    assert imported == []
 
 
 def test_cumesh_cpu_fake_covers_repair_simplify_remesh_uv_and_bvh(

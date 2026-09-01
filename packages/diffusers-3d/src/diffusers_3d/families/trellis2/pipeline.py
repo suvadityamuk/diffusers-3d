@@ -356,6 +356,7 @@ class Trellis2ImageTo3DPipeline(Object3DPipeline):
                 condition,
                 image_size=self.conditioner.image_size,
                 foreground_scale=1.0,
+                premultiply_before_resize=True,
             ).image
             for condition in conditions
         ]

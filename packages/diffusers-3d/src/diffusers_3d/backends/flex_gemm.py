@@ -33,20 +33,20 @@ class FlexGemmBackend:
         self.source_revision = FLEX_GEMM_SOURCE_REVISION
         self.device = torch.device(device)
         self.dtype = dtype
-        self._module = load_explicit_backend(
-            "flex_gemm",
-            "flex_gemm",
-            (BackendCapability.SPARSE_COMPUTE,),
-            device=device,
-            dtype=dtype,
-            differentiable=True,
-            registry=registry,
-        )
         validate_accelerated_runtime(
             "FlexGEMM",
             device=self.device,
             dtype=self.dtype,
             require_triton=self.device.type == "cuda",
+        )
+        self._module = load_explicit_backend(
+            "flex_gemm",
+            "flex_gemm",
+            (BackendCapability.SPARSE_COMPUTE,),
+            device=self.device.type,
+            dtype=dtype,
+            differentiable=True,
+            registry=registry,
         )
         spconv = getattr(getattr(self._module, "ops", None), "spconv", None)
         grid_sample = getattr(getattr(self._module, "ops", None), "grid_sample", None)

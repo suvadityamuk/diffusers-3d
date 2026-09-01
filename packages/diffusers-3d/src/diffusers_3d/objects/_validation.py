@@ -117,8 +117,8 @@ def validate_transform(name: str, transform: torch.Tensor, *, batched: bool = Fa
     expected_bottom_row = transform.new_tensor([0.0, 0.0, 0.0, 1.0]).expand_as(transform[..., 3, :])
     if not torch.allclose(transform[..., 3, :], expected_bottom_row, atol=1e-5, rtol=0.0):
         raise Object3DValidationError(f"{name} must contain affine homogeneous transforms")
-    determinants = torch.linalg.det(transform[..., :3, :3].float())
-    if bool((determinants.abs() <= 1e-8).any()):
+    linear = transform[..., :3, :3].float()
+    if bool((torch.linalg.matrix_rank(linear) < 3).any()):
         raise Object3DValidationError(f"{name} must contain invertible transforms")
 
 

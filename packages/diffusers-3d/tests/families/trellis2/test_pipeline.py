@@ -31,7 +31,15 @@ def test_batch_conditioning_uses_pinned_trellis2_preprocessing(tiny_trellis2_pip
 
     images = tiny_trellis2_pipeline.preprocess(conditions)
     expected = torch.stack(
-        [preprocess_image_condition(condition, image_size=8, foreground_scale=1.0).image for condition in conditions]
+        [
+            preprocess_image_condition(
+                condition,
+                image_size=8,
+                foreground_scale=1.0,
+                premultiply_before_resize=True,
+            ).image
+            for condition in conditions
+        ]
     )
     conditional, negative = tiny_trellis2_pipeline.encode_conditioning(images)
 

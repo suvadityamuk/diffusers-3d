@@ -59,6 +59,7 @@ def test_trellis2_schema_v2_manifest_records_exact_source_license_and_capability
         assert backends[name].support_level is BackendSupportLevel.ACCELERATED
         assert not backends[name].required
     assert backends["o_voxel"].source.revision == TRELLIS2_REFERENCE_REVISION
+    assert "--no-deps --no-build-isolation" in backends["o_voxel"].install_hint
     assert backends["nvdiffrast"].license_class is BackendLicenseClass.RESTRICTED
     assert backends["nvdiffrast"].support_level is BackendSupportLevel.RESEARCH_ONLY
     assert backends["nvdiffrast"].source.revision == "253ac4fcea7de5f396371124af597e6cc957bfae"

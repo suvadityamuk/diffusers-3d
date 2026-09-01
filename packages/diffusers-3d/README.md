@@ -39,7 +39,8 @@ expression does not relicense any family code or model artifact.
 - The reviewed contract ends at CPU-capable sparse-structure output. Tiny SLAT and O-Voxel stages are experimental.
 - No full 4B checkpoint, 1024 cascade, production GPU quality, compiled O-Voxel mesh/render, or PBR GLB run has been
   performed.
-- O-Voxel schema/mixed lossless packing and deterministic Morton-ordered NPZ are pure package code. Unit-domain PBR
+- O-Voxel schema/mixed lossless packing and deterministic lexicographic NPZ across the uint16 coordinate domain are
+  pure package code. Explicit 30-bit Morton ordering remains available through coordinate 1023. Unit-domain PBR
   channels use uint8 while unbounded split weights retain float16/float32. `.vxz`, native dual-grid conversion, and
   voxel rendering require a separately compiled, pinned O-Voxel runtime; the pinned VXZ v0 codec cannot losslessly
   store split weights and rejects such writes.
@@ -65,7 +66,8 @@ Install the package from this repository:
 pip install -e packages/diffusers-3d
 ```
 
-The core training/checkpoint stack requires `accelerate>=1.1.0`. Checkpoint loads reject older versions before
+The core training/checkpoint stack requires `accelerate>=1.1.0`. Exact checkpoint persistence requires one process,
+`DistributedType.NO`, and no registered custom checkpoint objects. Loads reject older versions before
 deserialization and keep Accelerate/PyTorch loading in weights-only mode.
 `LoRAFineTune(..., adapter_seed=None)` inherits `TrainingConfig3D.seed`; adapter injection runs in an isolated Torch
 RNG context and schema-4 checkpoints record the effective seed as resume identity.

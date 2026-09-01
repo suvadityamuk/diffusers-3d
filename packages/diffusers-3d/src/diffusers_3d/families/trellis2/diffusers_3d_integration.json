@@ -59,7 +59,7 @@
         "serialization"
       ],
       "distribution": "o_voxel",
-      "install_hint": "Build the O-Voxel extension from the pinned TRELLIS.2 source with matching CuMesh, FlexGEMM, PyTorch, and CUDA; pure schema and NPZ support do not require it.",
+      "install_hint": "Install the pinned FlexGEMM and CuMesh records first, then build O-Voxel from the pinned TRELLIS.2 source with --no-deps --no-build-isolation so mutable transitive Git dependencies cannot replace the pins; pure schema and NPZ support do not require it.",
       "license_class": "permissive",
       "license_identifier": "MIT",
       "name": "o_voxel",

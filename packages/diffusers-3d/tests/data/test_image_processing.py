@@ -10,6 +10,7 @@ from diffusers_3d import (
     ImageCondition,
     Object3DValidationError,
     preprocess_image_condition,
+    preprocess_training_image_condition,
 )
 
 
@@ -27,6 +28,7 @@ def _pinned_reference(
     *,
     image_size: int,
     foreground_scale: float,
+    premultiply_before_resize: bool,
 ) -> torch.Tensor:
     pixels = condition.image
     rgb = pixels[:3] if pixels.shape[0] != 1 else pixels.expand(3, -1, -1)
@@ -48,16 +50,61 @@ def _pinned_reference(
         center[1] + crop_size // 2,
     )
     output = Image.fromarray(rgba).crop(box)
-    output = output.resize((image_size, image_size), Image.Resampling.LANCZOS)
-    output_array = np.asarray(output).astype(np.float32) / 255
-    output_array = output_array[:, :, :3] * output_array[:, :, 3:4]
-    output_array = (output_array * 255).astype(np.uint8)
+    if premultiply_before_resize:
+        output_array = np.asarray(output).astype(np.float32) / 255
+        output_array = output_array[:, :, :3] * output_array[:, :, 3:4]
+        output = Image.fromarray((output_array * 255).astype(np.uint8))
+        output_array = np.asarray(output.resize((image_size, image_size), Image.Resampling.LANCZOS))
+    else:
+        output = output.resize((image_size, image_size), Image.Resampling.LANCZOS)
+        output_array = np.asarray(output).astype(np.float32) / 255
+        output_array = output_array[:, :, :3] * output_array[:, :, 3:4]
+        output_array = (output_array * 255).astype(np.uint8)
     return torch.from_numpy(output_array.copy()).permute(2, 0, 1).float().div(255)
 
 
-@pytest.mark.parametrize("foreground_scale", (1.2, 1.0), ids=("trellis", "trellis2"))
+def _pinned_training_reference(
+    condition: ImageCondition,
+    *,
+    image_size: int,
+    foreground_scale: float,
+) -> torch.Tensor:
+    pixels = condition.image
+    rgb = pixels[:3] if pixels.shape[0] != 1 else pixels.expand(3, -1, -1)
+    alpha = pixels[3:4] if pixels.shape[0] == 4 else pixels.new_ones((1, *pixels.shape[-2:]))
+    if condition.mask is not None:
+        alpha = alpha * condition.mask
+    rgba = torch.cat((rgb, alpha)).permute(1, 2, 0).mul(255).to(torch.uint8).numpy()
+
+    foreground = np.array(rgba[:, :, 3]).nonzero()
+    bbox = [foreground[1].min(), foreground[0].min(), foreground[1].max(), foreground[0].max()]
+    center = [(bbox[0] + bbox[2]) / 2, (bbox[1] + bbox[3]) / 2]
+    half_size = max(bbox[2] - bbox[0], bbox[3] - bbox[1]) / 2
+    augmented_half_size = half_size * foreground_scale
+    box = [
+        int(center[0] - augmented_half_size),
+        int(center[1] - augmented_half_size),
+        int(center[0] + augmented_half_size),
+        int(center[1] + augmented_half_size),
+    ]
+    output = Image.fromarray(rgba).crop(box)
+    output = output.resize((image_size, image_size), Image.Resampling.LANCZOS)
+    output_alpha = torch.tensor(np.array(output.getchannel(3))).float() / 255
+    output_rgb = torch.tensor(np.array(output.convert("RGB"))).permute(2, 0, 1).float() / 255
+    return output_rgb * output_alpha.unsqueeze(0)
+
+
+@pytest.mark.parametrize(
+    ("foreground_scale", "premultiply_before_resize"),
+    ((1.2, False), (1.0, True)),
+    ids=("trellis", "trellis2"),
+)
 @pytest.mark.parametrize("mask_kind", ("rgba", "separate", "combined"))
-def test_trellis_foreground_preprocessing_matches_pinned_reference(foreground_scale, mask_kind):
+def test_trellis_foreground_preprocessing_matches_pinned_reference(
+    foreground_scale,
+    premultiply_before_resize,
+    mask_kind,
+):
     rgba = _rgba_tensor()
     if mask_kind == "rgba":
         condition = ImageCondition(rgba)
@@ -68,11 +115,80 @@ def test_trellis_foreground_preprocessing_matches_pinned_reference(foreground_sc
         mask[:, 3:7, 1:4] = 1
         condition = ImageCondition(rgba, mask=mask)
 
-    actual = preprocess_image_condition(condition, image_size=8, foreground_scale=foreground_scale)
-    expected = _pinned_reference(condition, image_size=8, foreground_scale=foreground_scale)
+    actual = preprocess_image_condition(
+        condition,
+        image_size=8,
+        foreground_scale=foreground_scale,
+        premultiply_before_resize=premultiply_before_resize,
+    )
+    expected = _pinned_reference(
+        condition,
+        image_size=8,
+        foreground_scale=foreground_scale,
+        premultiply_before_resize=premultiply_before_resize,
+    )
 
     assert actual.mask is None
     assert actual.camera is None
+    torch.testing.assert_close(actual.image, expected, atol=0.0, rtol=0.0)
+
+
+@pytest.mark.parametrize(
+    ("foreground_scale", "premultiply_before_resize"),
+    ((1.2, False), (1.0, True)),
+    ids=("trellis", "trellis2"),
+)
+def test_soft_alpha_inference_matches_pinned_quantization_and_operation_order(
+    foreground_scale,
+    premultiply_before_resize,
+):
+    rgba = torch.zeros(4, 7, 9)
+    rgba[0] = torch.linspace(0, 1, 9).repeat(7, 1)
+    rgba[1] = torch.linspace(1, 0, 7).reshape(7, 1).repeat(1, 9)
+    rgba[2] = 0.75
+    rgba[3, 1:6, 2:7] = torch.linspace(0.05, 1.0, 25).reshape(5, 5)
+    rgba[3, 0, 0] = 204.9 / 255
+    rgba[3, 6, 8] = 205 / 255
+    condition = ImageCondition(rgba)
+
+    actual = preprocess_image_condition(
+        condition,
+        image_size=8,
+        foreground_scale=foreground_scale,
+        premultiply_before_resize=premultiply_before_resize,
+    )
+    expected = _pinned_reference(
+        condition,
+        image_size=8,
+        foreground_scale=foreground_scale,
+        premultiply_before_resize=premultiply_before_resize,
+    )
+
+    torch.testing.assert_close(actual.image, expected, atol=0.0, rtol=0.0)
+
+
+@pytest.mark.parametrize("foreground_scale", (1.2, 1.0), ids=("trellis", "trellis2"))
+def test_training_preprocessing_matches_pinned_dataset_components(foreground_scale):
+    rgba = torch.zeros(4, 9, 11)
+    rgba[0] = torch.linspace(0, 1, 11).repeat(9, 1)
+    rgba[1] = 0.5
+    rgba[2] = torch.linspace(1, 0, 9).reshape(9, 1)
+    rgba[3, 2:8, 3:9] = torch.linspace(1 / 255, 1.0, 36).reshape(6, 6)
+    rgba[3, 0, 1] = 1 / 255
+    condition = ImageCondition(rgba)
+
+    actual = preprocess_training_image_condition(
+        condition,
+        image_size=8,
+        foreground_scale=foreground_scale,
+    )
+    expected = _pinned_training_reference(
+        condition,
+        image_size=8,
+        foreground_scale=foreground_scale,
+    )
+
+    assert actual.mask is None
     torch.testing.assert_close(actual.image, expected, atol=0.0, rtol=0.0)
 
 

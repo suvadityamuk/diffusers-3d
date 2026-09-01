@@ -43,14 +43,18 @@ The TRELLIS.2 adapters intentionally expose only reviewed narrow API surfaces:
   attributes; an upstream version/build string is retained only as diagnostic metadata when present. Installable
   direct source records are in `requirements/backends/flex-gemm.txt` and `requirements/backends/cumesh.txt`.
 - `OVoxelBackend` provides pure tensor schema conversion, unit-domain uint8 packing, lossless float16/float32 split
-  weights, explicit NPZ dtype/layout metadata, and deterministic Morton ordering without loading an extension.
+  weights, explicit NPZ dtype/layout/coordinate-order metadata, and deterministic lexicographic ordering across the
+  full uint16 coordinate domain without loading an extension. Explicit 30-bit Morton ordering remains available for
+  coordinates at most 1023.
   `.vxz`, flexible-dual-grid mesh extraction, and voxel rendering are separate
   native capabilities delegated to the O-Voxel API from pinned TRELLIS.2 revision
   `75fbf0183001ed9876c8dbb35de6b68552ee08bd`. `.vxz` does not contain grid resolution metadata, so callers must
-  supply it when reading. VXZ v0 accepts only uint8 attributes, so assets containing unbounded split weights are
+  supply it when reading. VXZ writes pass unsorted global coordinates to the official runtime, which performs its
+  own chunk-local ordering. VXZ v0 accepts only uint8 attributes, so assets containing unbounded split weights are
   rejected rather than omitted or quantized; use NPZ for lossless serialization. Every serializer rejects negative,
   uint16-overflowing, or out-of-resolution coordinates before writing. The pinned `o-voxel` subdirectory requirement is recorded in
-  `requirements/backends/o-voxel.txt`; install it together with the two direct dependency records.
+  `requirements/backends/o-voxel.txt`; first install the pinned FlexGEMM and CuMesh records, then install O-Voxel with
+  `--no-deps --no-build-isolation` so its mutable transitive Git dependencies cannot replace those pins.
 - The pinned `o_voxel` top-level package eagerly imports its nvdiffrast-dependent postprocess module. Native O-Voxel
   loading therefore requires explicit nvdiffrast license acknowledgement even for codec/conversion members. Pure
   schema and NPZ paths remain CPU-safe and never perform that import.

@@ -18,7 +18,7 @@ from diffusers_3d import (
     TrellisSparseStructureExample,
     TrellisSparseStructureFlowRecipe,
     TrellisSparseTensor,
-    preprocess_image_condition,
+    preprocess_training_image_condition,
 )
 from diffusers_3d.training.registry import _TRAINING_RECIPE_REGISTRY
 
@@ -68,7 +68,10 @@ def test_recipe_collators_preprocess_rgba_and_separate_masks(tiny_trellis_full_p
         tuple(TrellisSLatExample(condition=condition, normalized_slat=normalized_slat) for condition in conditions)
     )
     expected = torch.stack(
-        [preprocess_image_condition(condition, image_size=8, foreground_scale=1.2).image for condition in conditions]
+        [
+            preprocess_training_image_condition(condition, image_size=8, foreground_scale=1.2).image
+            for condition in conditions
+        ]
     )
 
     torch.testing.assert_close(sparse_batch.images, expected, atol=0.0, rtol=0.0)

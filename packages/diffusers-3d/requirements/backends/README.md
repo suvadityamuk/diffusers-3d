@@ -20,14 +20,15 @@ Do not add mutable branches or unverified third-party wheels.
 
 The three TRELLIS.2 native records are intentionally separate because the
 `o_voxel` source metadata names FlexGEMM and CuMesh without immutable
-revisions. Install all three records together so the top-level direct
-requirements constrain those transitive source dependencies:
+revisions. Install the two pinned dependencies first, then install O-Voxel
+with dependency resolution disabled so its mutable transitive Git
+requirements cannot replace those pins:
 
 ```bash
 python -m pip install \
   -r packages/diffusers-3d/requirements/backends/flex-gemm.txt \
   -r packages/diffusers-3d/requirements/backends/cumesh.txt
-python -m pip install --no-build-isolation \
+python -m pip install --no-deps --no-build-isolation \
   -r packages/diffusers-3d/requirements/backends/o-voxel.txt
 ```
 
