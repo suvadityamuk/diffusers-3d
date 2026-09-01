@@ -62,13 +62,22 @@ def test_trellis2_schema_v2_manifest_records_exact_source_license_and_capability
     assert backends["nvdiffrast"].license_class is BackendLicenseClass.RESTRICTED
     assert backends["nvdiffrast"].support_level is BackendSupportLevel.RESEARCH_ONLY
     assert backends["nvdiffrast"].source.revision == "253ac4fcea7de5f396371124af597e6cc957bfae"
+    assert backends["pillow"].license_class is BackendLicenseClass.PERMISSIVE
+    assert backends["pillow"].support_level is BackendSupportLevel.PORTABLE
+    assert backends["pillow"].required
 
     pipeline = next(component for component in manifest.components if component.role == "pipeline")
-    assert pipeline.parity[0].passed
+    execution_evidence = next(evidence for evidence in pipeline.parity if "test_pipeline.py" in evidence.test)
+    preprocessing_evidence = next(
+        evidence for evidence in pipeline.parity if "test_image_processing.py" in evidence.test
+    )
+    assert execution_evidence.passed
     assert (
         "production SLAT cascade, O-Voxel conversion, rendering, and quality are excluded"
-        in pipeline.parity[0].reference
+        in execution_evidence.reference
     )
+    assert preprocessing_evidence.passed
+    assert "1.0-scale square recenter crop" in preprocessing_evidence.reference
     for name in ("LICENSE-MIT", "NOTICE", "README.md"):
         assert (FAMILY_ROOT / name).is_file()
 

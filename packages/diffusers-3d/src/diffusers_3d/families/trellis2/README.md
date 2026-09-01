@@ -29,6 +29,11 @@ and PBR/GLB postprocess remain explicitly experimental or capability-gated.
   target mapping is preserved: `512`, `1024_cascade`, and `1536_cascade` pool
   decoded occupancy to resolution 32, while `1024` uses 64. Portable tiny
   pipelines use their decoder's native output resolution.
+- Typed RGBA alpha and separate masks use the pinned `>0.8` foreground crop,
+  1.0 recenter scale, Pillow LANCZOS resize to the conditioner size, and
+  alpha-premultiplication on black. Unmasked RGB is treated as an already
+  background-removed full frame; the pipeline never invokes a background
+  remover silently.
 
 ## O-Voxel object and codecs
 
@@ -118,7 +123,9 @@ dropout probability `0.1`.
 
 Tiny shape and texture SLAT recipes use uniform timesteps and precomputed
 normalized coordinate-aligned sparse latents, but remain experimental and
-unregistered. No LoRA or SC-VAE recipe is claimed.
+unregistered. All recipe collators apply the same 1.0-scale image
+preprocessing as inference exactly once, preserving typed RGBA alpha and
+separate masks. No LoRA or SC-VAE recipe is claimed.
 
 ## Explicit limitations
 

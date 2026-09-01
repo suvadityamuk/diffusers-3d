@@ -5,19 +5,74 @@ import torch
 
 from diffusers_3d import (
     FullFineTune,
+    ImageCondition,
     Object3DTrainer,
+    SparseVoxelAsset,
     TrainingConfig3D,
     TrainingManifest3D,
+    TrainingTargetError,
     TrellisSLatBatch,
+    TrellisSLatExample,
     TrellisSLatFlowRecipe,
     TrellisSparseStructureBatch,
     TrellisSparseStructureExample,
     TrellisSparseStructureFlowRecipe,
     TrellisSparseTensor,
+    preprocess_image_condition,
 )
 from diffusers_3d.training.registry import _TRAINING_RECIPE_REGISTRY
 
 pytestmark = pytest.mark.integration
+
+
+def test_exact_training_examples_reject_out_of_range_condition_pixels():
+    condition = ImageCondition(torch.full((3, 8, 8), 1.01))
+    normalized_slat = SparseVoxelAsset(
+        coordinates=torch.tensor([[0, 0, 0]], dtype=torch.int64),
+        features=torch.zeros(1, 4),
+        voxel_size=1.0,
+    )
+
+    with pytest.raises(TrainingTargetError, match=r"\[0, 1\]"):
+        TrellisSparseStructureExample(
+            condition=condition,
+            sparse_structure_latents=torch.zeros(2, 4, 4, 4),
+        )
+    with pytest.raises(TrainingTargetError, match=r"\[0, 1\]"):
+        TrellisSLatExample(condition=condition, normalized_slat=normalized_slat)
+
+
+def test_recipe_collators_preprocess_rgba_and_separate_masks(tiny_trellis_full_pipeline):
+    rgba = torch.zeros(4, 10, 12)
+    rgba[0] = 1
+    rgba[3, 2:8, :5] = 1
+    conditions = (
+        ImageCondition(rgba),
+        ImageCondition(rgba[:3], mask=rgba[3:4]),
+    )
+    examples = tuple(
+        TrellisSparseStructureExample(
+            condition=condition,
+            sparse_structure_latents=torch.zeros(2, 4, 4, 4),
+        )
+        for condition in conditions
+    )
+
+    sparse_batch = TrellisSparseStructureFlowRecipe(tiny_trellis_full_pipeline).collate(examples)
+    normalized_slat = SparseVoxelAsset(
+        coordinates=torch.tensor([[0, 0, 0]], dtype=torch.int64),
+        features=torch.zeros(1, 4),
+        voxel_size=1.0,
+    )
+    slat_batch = TrellisSLatFlowRecipe(tiny_trellis_full_pipeline).collate(
+        tuple(TrellisSLatExample(condition=condition, normalized_slat=normalized_slat) for condition in conditions)
+    )
+    expected = torch.stack(
+        [preprocess_image_condition(condition, image_size=8, foreground_scale=1.2).image for condition in conditions]
+    )
+
+    torch.testing.assert_close(sparse_batch.images, expected, atol=0.0, rtol=0.0)
+    torch.testing.assert_close(slat_batch.images, expected, atol=0.0, rtol=0.0)
 
 
 def _pipeline_parameter_flags(pipeline):

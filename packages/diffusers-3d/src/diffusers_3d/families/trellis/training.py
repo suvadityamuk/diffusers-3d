@@ -14,7 +14,7 @@ from dataclasses import dataclass
 import torch
 import torch.nn.functional as F
 
-from ...data import ImageCondition
+from ...data import ImageCondition, preprocess_image_condition, validate_image_condition_pixels
 from ...objects import SparseVoxelAsset
 from ...objects._validation import TensorShapeError, validate_shared_device, validate_tensor
 from ...objects.base import TensorDataMixin
@@ -34,6 +34,41 @@ from .scheduler import TrellisFlowEulerScheduler
 from .sparse import TrellisSparseTensor
 
 
+def _validate_trellis_condition(condition: ImageCondition) -> None:
+    if type(condition) is not ImageCondition:
+        raise TrainingTargetError("condition must be an exact ImageCondition")
+    try:
+        validate_image_condition_pixels(condition)
+    except (TypeError, ValueError) as error:
+        raise TrainingTargetError("condition must contain finite image values in [0, 1]") from error
+
+
+def _preprocess_trellis_conditions(
+    conditions: Sequence[ImageCondition],
+    *,
+    image_size: int,
+) -> torch.Tensor:
+    try:
+        images = [
+            preprocess_image_condition(
+                condition,
+                image_size=image_size,
+                foreground_scale=1.2,
+            ).image
+            for condition in conditions
+        ]
+        return torch.stack(images)
+    except (TypeError, ValueError, RuntimeError) as error:
+        raise TrainingTargetError(
+            "TRELLIS conditions could not be preprocessed into a matching image batch"
+        ) from error
+
+
+def _validate_preprocessed_images(images: torch.Tensor) -> None:
+    if bool(((images < 0) | (images > 1)).any()):
+        raise TrainingTargetError("images must contain finite values in [0, 1]")
+
+
 @dataclass(frozen=True, slots=True)
 class TrellisSparseStructureExample(TensorDataMixin):
     condition: ImageCondition
@@ -44,8 +79,7 @@ class TrellisSparseStructureExample(TensorDataMixin):
         self.validate()
 
     def validate(self) -> None:
-        if type(self.condition) is not ImageCondition or self.condition.image.shape[0] != 3:
-            raise TrainingTargetError("condition must be an exact three-channel ImageCondition")
+        _validate_trellis_condition(self.condition)
         validate_tensor("sparse_structure_latents", self.sparse_structure_latents, rank=4, floating=True)
         if min(self.sparse_structure_latents.shape) <= 0:
             raise TensorShapeError("sparse_structure_latents dimensions must be non-zero")
@@ -67,6 +101,7 @@ class TrellisSparseStructureBatch(TensorDataMixin):
 
     def validate(self) -> None:
         validate_tensor("images", self.images, rank=4, floating=True)
+        _validate_preprocessed_images(self.images)
         validate_tensor("sparse_structure_latents", self.sparse_structure_latents, rank=5, floating=True)
         batch_size = self.images.shape[0]
         if batch_size == 0 or self.images.shape[1] != 3 or self.sparse_structure_latents.shape[0] != batch_size:
@@ -163,11 +198,14 @@ class TrellisSparseStructureFlowRecipe(
             raise TrainingTargetError("examples must contain exact TrellisSparseStructureExample values")
         for example in examples:
             example.validate()
+        images = _preprocess_trellis_conditions(
+            [example.condition for example in examples],
+            image_size=self.target.conditioner.image_size,
+        )
         try:
-            images = torch.stack([example.condition.image for example in examples])
             latents = torch.stack([example.sparse_structure_latents for example in examples])
         except RuntimeError as error:
-            raise TrainingTargetError("TRELLIS examples must have matching image and latent shapes") from error
+            raise TrainingTargetError("TRELLIS examples must have matching latent shapes") from error
         return TrellisSparseStructureBatch(images=images, sparse_structure_latents=latents)
 
     def validate_target(self) -> None:
@@ -243,8 +281,7 @@ class TrellisSLatExample(TensorDataMixin):
         self.validate()
 
     def validate(self) -> None:
-        if type(self.condition) is not ImageCondition or self.condition.image.shape[0] != 3:
-            raise TrainingTargetError("condition must be an exact three-channel ImageCondition")
+        _validate_trellis_condition(self.condition)
         if type(self.normalized_slat) is not SparseVoxelAsset:
             raise TrainingTargetError("normalized_slat must be an exact SparseVoxelAsset")
         self.normalized_slat.validate(expensive=True)
@@ -266,6 +303,7 @@ class TrellisSLatBatch(TensorDataMixin):
 
     def validate(self) -> None:
         validate_tensor("images", self.images, rank=4, floating=True)
+        _validate_preprocessed_images(self.images)
         if not isinstance(self.normalized_slat, TrellisSparseTensor):
             raise TrainingTargetError("normalized_slat must be a TrellisSparseTensor")
         if self.images.shape[0] == 0 or self.images.shape[1] != 3:
@@ -353,10 +391,10 @@ class TrellisSLatFlowRecipe(TrainingRecipe3D[TrellisImageTo3DPipeline, TrellisSL
             raise TrainingTargetError("examples must contain exact TrellisSLatExample values")
         for example in examples:
             example.validate()
-        try:
-            images = torch.stack([example.condition.image for example in examples])
-        except RuntimeError as error:
-            raise TrainingTargetError("TRELLIS SLAT images must have matching shapes") from error
+        images = _preprocess_trellis_conditions(
+            [example.condition for example in examples],
+            image_size=self.target.conditioner.image_size,
+        )
         sparse = TrellisSparseTensor.from_sparse_voxel_assets([example.normalized_slat for example in examples])
         return TrellisSLatBatch(images=images, normalized_slat=sparse)
 

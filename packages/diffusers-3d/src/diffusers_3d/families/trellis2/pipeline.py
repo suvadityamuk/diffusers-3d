@@ -11,11 +11,10 @@ from collections.abc import Mapping, Sequence
 from typing import Any
 
 import torch
-import torch.nn.functional as F
 from diffusers.utils.torch_utils import randn_tensor
 
 from ...backends import OVoxelBackend, Trellis2PBRPostprocessFacade
-from ...data import ImageCondition
+from ...data import ImageCondition, preprocess_image_condition
 from ...execution.metadata import (
     ContributionStatus,
     Object3DComponentSpec,
@@ -352,26 +351,14 @@ class Trellis2ImageTo3DPipeline(Object3DPipeline):
                 raise TypeError("image sequences must contain exact ImageCondition values")
         else:
             raise TypeError("image must be an ImageCondition, sequence of ImageCondition values, or tensor")
-        processed = []
-        for condition in conditions:
-            pixels = condition.image
-            if pixels.shape[0] == 1:
-                pixels = pixels.expand(3, -1, -1)
-            elif pixels.shape[0] == 4:
-                pixels = pixels[:3] * pixels[3:4]
-            if condition.mask is not None:
-                pixels = pixels * condition.mask
-            if not bool(torch.isfinite(pixels).all()) or bool(((pixels < 0) | (pixels > 1)).any()):
-                raise ValueError("TRELLIS.2 input images must contain finite values in [0, 1]")
-            processed.append(
-                F.interpolate(
-                    pixels.unsqueeze(0),
-                    size=(self.conditioner.image_size, self.conditioner.image_size),
-                    mode="bilinear",
-                    align_corners=False,
-                    antialias=True,
-                ).squeeze(0)
-            )
+        processed = [
+            preprocess_image_condition(
+                condition,
+                image_size=self.conditioner.image_size,
+                foreground_scale=1.0,
+            ).image
+            for condition in conditions
+        ]
         parameter = next(self.conditioner.parameters())
         return torch.stack(processed).to(device=self._execution_device, dtype=parameter.dtype)
 

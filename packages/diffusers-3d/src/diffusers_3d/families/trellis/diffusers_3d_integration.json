@@ -82,6 +82,20 @@
     },
     {
       "capabilities": [
+        "image-preprocessing"
+      ],
+      "distribution": "Pillow",
+      "install_hint": "Pillow is a core diffusers-3d dependency used for pinned foreground crop and LANCZOS resize behavior.",
+      "license_class": "permissive",
+      "license_identifier": "HPND",
+      "name": "pillow",
+      "required": true,
+      "source": null,
+      "support_level": "portable",
+      "version": null
+    },
+    {
+      "capabilities": [
         "sparse-compute"
       ],
       "distribution": "spconv",
@@ -160,6 +174,14 @@
           "reference": "Deterministic tiny CPU composition of conditioning, the released two-step Flow Euler equations, and sparse-structure occupancy extraction; SLAT and rendering quality are excluded.",
           "rtol": 0.0,
           "test": "tests/families/trellis/test_pipeline.py::test_portable_sparse_structure_pipeline_is_deterministic"
+        },
+        {
+          "atol": 0.0,
+          "kind": "inference",
+          "passed": true,
+          "reference": "Pinned TRELLIS alpha>0.8 foreground bbox, 1.2-scale square recenter crop with Pillow outside padding, LANCZOS resize, and alpha-premultiplication equations for typed RGBA and separate-mask inputs.",
+          "rtol": 0.0,
+          "test": "tests/data/test_image_processing.py::test_trellis_foreground_preprocessing_matches_pinned_reference"
         }
       ],
       "role": "pipeline"

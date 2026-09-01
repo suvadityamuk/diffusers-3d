@@ -57,10 +57,19 @@ def test_trellis_manifest_is_valid_and_separates_research_backend_warnings():
         assert backends[name].support_level is BackendSupportLevel.RESEARCH_ONLY
         assert not backends[name].required
         assert backends[name].source is not None
+    assert backends["pillow"].license_class is BackendLicenseClass.PERMISSIVE
+    assert backends["pillow"].support_level is BackendSupportLevel.PORTABLE
+    assert backends["pillow"].required
 
     pipeline = next(component for component in manifest.components if component.role == "pipeline")
-    assert pipeline.parity[0].passed
-    assert "SLAT and rendering quality are excluded" in pipeline.parity[0].reference
+    execution_evidence = next(evidence for evidence in pipeline.parity if "test_pipeline.py" in evidence.test)
+    preprocessing_evidence = next(
+        evidence for evidence in pipeline.parity if "test_image_processing.py" in evidence.test
+    )
+    assert execution_evidence.passed
+    assert "SLAT and rendering quality are excluded" in execution_evidence.reference
+    assert preprocessing_evidence.passed
+    assert "1.2-scale square recenter crop" in preprocessing_evidence.reference
     assert (FAMILY_ROOT / "LICENSE-MIT").is_file()
     assert (FAMILY_ROOT / "NOTICE").is_file()
     assert (FAMILY_ROOT / "README.md").is_file()

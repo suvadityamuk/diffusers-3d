@@ -6,12 +6,33 @@ import torch
 from diffusers_3d import (
     AutoPipelineForImageTo3D,
     GaussianSplatAsset,
+    ImageCondition,
     Object3DPipelineOutput,
     SparseVoxelAsset,
     TrellisImageTo3DPipeline,
+    preprocess_image_condition,
 )
 
 pytestmark = pytest.mark.integration
+
+
+def test_batch_conditioning_uses_pinned_trellis_preprocessing(tiny_trellis_pipeline):
+    rgba = torch.zeros(4, 10, 12)
+    rgba[:3] = 1
+    rgba[3, 2:8, :5] = 1
+    conditions = (
+        ImageCondition(rgba),
+        ImageCondition(rgba[:3], mask=rgba[3:4]),
+    )
+
+    images = tiny_trellis_pipeline.preprocess(conditions)
+    expected = torch.stack(
+        [preprocess_image_condition(condition, image_size=8, foreground_scale=1.2).image for condition in conditions]
+    )
+    conditional, unconditional = tiny_trellis_pipeline.encode_conditioning(images)
+
+    torch.testing.assert_close(images, expected, atol=0.0, rtol=0.0)
+    assert conditional.shape[0] == unconditional.shape[0] == 2
 
 
 def test_portable_sparse_structure_pipeline_is_deterministic(tiny_trellis_pipeline):

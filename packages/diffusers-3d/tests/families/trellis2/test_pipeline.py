@@ -6,16 +6,37 @@ import torch.nn.functional as F
 
 from diffusers_3d import (
     AutoPipelineForImageTo3D,
+    ImageCondition,
     MeshAsset,
     Object3DPipelineOutput,
     OVoxelAsset,
     SparseVoxelAsset,
     Trellis2ImageTo3DPipeline,
+    preprocess_image_condition,
 )
 from diffusers_3d.families.trellis.decoders import TrellisSparseStructureDecoderOutput
 from diffusers_3d.families.trellis.sparse import trellis_grid_transform
 
 pytestmark = pytest.mark.integration
+
+
+def test_batch_conditioning_uses_pinned_trellis2_preprocessing(tiny_trellis2_pipeline):
+    rgba = torch.zeros(4, 10, 12)
+    rgba[:3] = 1
+    rgba[3, 2:8, :5] = 1
+    conditions = (
+        ImageCondition(rgba),
+        ImageCondition(rgba[:3], mask=rgba[3:4]),
+    )
+
+    images = tiny_trellis2_pipeline.preprocess(conditions)
+    expected = torch.stack(
+        [preprocess_image_condition(condition, image_size=8, foreground_scale=1.0).image for condition in conditions]
+    )
+    conditional, negative = tiny_trellis2_pipeline.encode_conditioning(images)
+
+    torch.testing.assert_close(images, expected, atol=0.0, rtol=0.0)
+    assert conditional.shape[0] == negative.shape[0] == 2
 
 
 def test_reviewed_sparse_structure_pipeline_is_deterministic_and_uses_released_defaults(

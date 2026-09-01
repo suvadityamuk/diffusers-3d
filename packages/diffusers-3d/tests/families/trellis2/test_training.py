@@ -5,21 +5,95 @@ import torch
 
 from diffusers_3d import (
     FullFineTune,
+    ImageCondition,
     Object3DTrainer,
+    SparseVoxelAsset,
     TrainingConfig3D,
     TrainingManifest3D,
+    TrainingTargetError,
     Trellis2ShapeSLatFlowRecipe,
     Trellis2SLatBatch,
+    Trellis2SLatExample,
     Trellis2SparseStructureBatch,
     Trellis2SparseStructureExample,
     Trellis2SparseStructureFlowRecipe,
     Trellis2TextureSLatBatch,
+    Trellis2TextureSLatExample,
     Trellis2TextureSLatFlowRecipe,
     TrellisSparseTensor,
+    preprocess_image_condition,
 )
 from diffusers_3d.training.registry import _TRAINING_RECIPE_REGISTRY
 
 pytestmark = pytest.mark.integration
+
+
+def test_exact_training_examples_reject_out_of_range_condition_pixels():
+    condition = ImageCondition(torch.full((3, 8, 8), -0.01))
+    normalized_slat = SparseVoxelAsset(
+        coordinates=torch.tensor([[0, 0, 0]], dtype=torch.int64),
+        features=torch.zeros(1, 4),
+        voxel_size=1.0,
+    )
+
+    with pytest.raises(TrainingTargetError, match=r"\[0, 1\]"):
+        Trellis2SparseStructureExample(
+            condition=condition,
+            sparse_structure_latents=torch.zeros(2, 2, 2, 2),
+        )
+    with pytest.raises(TrainingTargetError, match=r"\[0, 1\]"):
+        Trellis2SLatExample(condition=condition, normalized_slat=normalized_slat)
+    with pytest.raises(TrainingTargetError, match=r"\[0, 1\]"):
+        Trellis2TextureSLatExample(
+            condition=condition,
+            normalized_texture_slat=normalized_slat,
+            normalized_shape_slat=normalized_slat,
+        )
+
+
+def test_recipe_collators_preprocess_rgba_and_separate_masks(tiny_trellis2_full_pipeline):
+    rgba = torch.zeros(4, 10, 12)
+    rgba[0] = 1
+    rgba[3, 2:8, :5] = 1
+    conditions = (
+        ImageCondition(rgba),
+        ImageCondition(rgba[:3], mask=rgba[3:4]),
+    )
+    examples = tuple(
+        Trellis2SparseStructureExample(
+            condition=condition,
+            sparse_structure_latents=torch.zeros(2, 2, 2, 2),
+        )
+        for condition in conditions
+    )
+
+    sparse_batch = Trellis2SparseStructureFlowRecipe(tiny_trellis2_full_pipeline).collate(examples)
+    normalized_slat = SparseVoxelAsset(
+        coordinates=torch.tensor([[0, 0, 0]], dtype=torch.int64),
+        features=torch.zeros(1, 4),
+        voxel_size=1.0,
+    )
+    slat_examples = tuple(
+        Trellis2SLatExample(condition=condition, normalized_slat=normalized_slat) for condition in conditions
+    )
+    shape_batch = Trellis2ShapeSLatFlowRecipe(tiny_trellis2_full_pipeline).collate(slat_examples)
+    texture_batch = Trellis2TextureSLatFlowRecipe(tiny_trellis2_full_pipeline).collate(
+        tuple(
+            Trellis2TextureSLatExample(
+                condition=condition,
+                normalized_texture_slat=normalized_slat,
+                normalized_shape_slat=normalized_slat,
+            )
+            for condition in conditions
+        )
+    )
+    expected = torch.stack(
+        [preprocess_image_condition(condition, image_size=8, foreground_scale=1.0).image for condition in conditions]
+    )
+
+    torch.testing.assert_close(sparse_batch.images, expected, atol=0.0, rtol=0.0)
+    torch.testing.assert_close(shape_batch.images, expected, atol=0.0, rtol=0.0)
+    torch.testing.assert_close(texture_batch.images, expected, atol=0.0, rtol=0.0)
 
 
 def test_released_sparse_structure_logit_normal_objective_backward_and_frozen_components(

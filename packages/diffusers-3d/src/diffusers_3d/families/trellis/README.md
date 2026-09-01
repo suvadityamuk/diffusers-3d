@@ -24,9 +24,13 @@ gated.
   data direction, `sigma_min=1e-5`, rational `rescale_t`, `t*1000` model
   timesteps, guidance intervals, and `(1+w)*cond-w*uncond`.
 - `TrellisImageTo3DPipeline` always supports
-  `formats=("sparse_structure",)` without background removal, CUDA extensions,
-  or renderer dependencies. Defaults are 25 steps per stage, guidance 5,
-  interval 0.5–1, and `rescale_t=3`.
+  `formats=("sparse_structure",)` without CUDA extensions or renderer
+  dependencies. Typed RGBA alpha and separate masks use the pinned `>0.8`
+  foreground crop, 1.2 recenter scale, Pillow LANCZOS resize, and
+  alpha-premultiplication on black. Unmasked RGB is treated as an already
+  background-removed full frame; the pipeline never invokes `rembg` silently.
+  Defaults are 25 steps per stage, guidance 5, interval 0.5–1, and
+  `rescale_t=3`.
 
 The converter consumes local upstream component `.json`/`.safetensors` pairs
 and `pipeline.json`, then writes ordinary Diffusers component folders and
@@ -97,7 +101,9 @@ dropout probability 0.1.
 The conditioner and decoder remain frozen. LoRA is not registered because the
 released project provides no LoRA target evidence. Tests cover the exact
 objective, frozen components, a full optimizer step, and checkpoint
-restoration.
+restoration. Training examples accept unit-range typed image conditions;
+recipe collation applies the same 1.2-scale preprocessing as inference exactly
+once, including RGBA alpha and separate masks.
 
 ## Explicit limitations
 

@@ -99,6 +99,8 @@ from .data import (
     Object3DExample,
     PackedMeshBatch,
     TextCondition,
+    preprocess_image_condition,
+    validate_image_condition_pixels,
 )
 from .execution import (
     IMAGE_TO_3D_TASK,
@@ -389,10 +391,12 @@ __all__ = [
     "official_tensors_from_ovoxel_asset",
     "ovoxel_asset_from_official",
     "ovoxel_grid_transform",
+    "preprocess_image_condition",
     "read_ovoxel_npz",
     "scan_forbidden_marker",
     "trainable_parameter_hash",
     "trellis_grid_transform",
+    "validate_image_condition_pixels",
     "validate_integration_manifest",
     "validate_manifest_file",
     "write_ovoxel_npz",

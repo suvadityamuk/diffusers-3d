@@ -10,10 +10,9 @@ from __future__ import annotations
 from collections.abc import Sequence
 
 import torch
-import torch.nn.functional as F
 from diffusers.utils.torch_utils import randn_tensor
 
-from ...data import ImageCondition
+from ...data import ImageCondition, preprocess_image_condition
 from ...execution.metadata import (
     ContributionStatus,
     Object3DComponentSpec,
@@ -168,7 +167,7 @@ class TrellisImageTo3DPipeline(Object3DPipeline):
         self,
         image: ImageCondition | Sequence[ImageCondition] | torch.Tensor,
     ) -> torch.Tensor:
-        """Validate typed images, apply an explicit mask/alpha, and produce RGB ``[0, 1]`` tensors."""
+        """Apply pinned foreground recentering without implicit background removal."""
 
         if isinstance(image, torch.Tensor):
             if image.ndim == 3:
@@ -186,25 +185,14 @@ class TrellisImageTo3DPipeline(Object3DPipeline):
         else:
             raise TypeError("image must be an ImageCondition, a sequence of ImageCondition values, or a tensor")
 
-        processed = []
-        for condition in conditions:
-            pixels = condition.image
-            if pixels.shape[0] == 1:
-                pixels = pixels.expand(3, -1, -1)
-            elif pixels.shape[0] == 4:
-                pixels = pixels[:3] * pixels[3:4]
-            if condition.mask is not None:
-                pixels = pixels * condition.mask
-            if not bool(torch.isfinite(pixels).all()) or bool(((pixels < 0) | (pixels > 1)).any()):
-                raise ValueError("TRELLIS input images must contain finite values in [0, 1]")
-            pixels = F.interpolate(
-                pixels.unsqueeze(0),
-                size=(self.conditioner.image_size, self.conditioner.image_size),
-                mode="bilinear",
-                align_corners=False,
-                antialias=True,
-            ).squeeze(0)
-            processed.append(pixels)
+        processed = [
+            preprocess_image_condition(
+                condition,
+                image_size=self.conditioner.image_size,
+                foreground_scale=1.2,
+            ).image
+            for condition in conditions
+        ]
         parameter = next(self.conditioner.parameters())
         return torch.stack(processed).to(device=self._execution_device, dtype=parameter.dtype)
 
