@@ -7,7 +7,7 @@ import tempfile
 from collections.abc import Mapping
 from dataclasses import dataclass
 from enum import Enum
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any
 
 from huggingface_hub import hf_hub_download
@@ -16,11 +16,28 @@ from ..objects import Object3DKind
 from .exceptions import Object3DLoadingError, Object3DMetadataError, Object3DSchemaError
 
 OBJECT3D_API_VERSION = "1.0"
-OBJECT3D_SCHEMA_VERSION = 1
+OBJECT3D_SCHEMA_VERSION = 2
 OBJECT3D_MODEL_INDEX_NAME = "object3d_model_index.json"
 
 _IDENTIFIER_PATTERN = re.compile(r"^[a-z][a-z0-9_.-]*$")
+_COMPONENT_NAME_PATTERN = re.compile(r"^[a-z][a-z0-9_]*$")
 _QUALIFIED_CLASS_PATTERN = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)+$")
+
+
+def _reject_duplicate_json_fields(pairs: list[tuple[str, object]]) -> dict[str, object]:
+    value: dict[str, object] = {}
+    for key, item in pairs:
+        if key in value:
+            raise Object3DMetadataError(f"JSON object contains duplicate field {key!r}")
+        value[key] = item
+    return value
+
+
+def _load_strict_json(contents: str, path: Path) -> object:
+    try:
+        return json.loads(contents, object_pairs_hook=_reject_duplicate_json_fields)
+    except json.JSONDecodeError as error:
+        raise Object3DMetadataError(f"Invalid JSON in {path}: {error.msg}") from error
 
 
 class ContributionStatus(str, Enum):
@@ -84,6 +101,28 @@ def _normalize_qualified_class(value: object, field_name: str) -> str:
     return value
 
 
+def _normalize_component_name(value: object, field_name: str) -> str:
+    if not isinstance(value, str) or not _COMPONENT_NAME_PATTERN.fullmatch(value):
+        raise Object3DMetadataError(f"{field_name} must be a lowercase Python identifier")
+    return value
+
+
+def _normalize_component_subfolder(value: object, field_name: str) -> str:
+    if not isinstance(value, str) or not value or "\\" in value:
+        raise Object3DMetadataError(f"{field_name} must be a non-empty canonical relative POSIX path")
+    path = PurePosixPath(value)
+    if (
+        value == "."
+        or path.is_absolute()
+        or value != path.as_posix()
+        or any(part in {"", ".", ".."} for part in path.parts)
+    ):
+        raise Object3DMetadataError(
+            f"{field_name} must be a canonical relative POSIX path that does not contain '.' or '..'"
+        )
+    return value
+
+
 def _normalize_object_kinds(value: object, field_name: str) -> tuple[Object3DKind, ...]:
     if not isinstance(value, (list, tuple)):
         raise Object3DMetadataError(f"{field_name} must be a JSON array or typed tuple of Object3DKind values")
@@ -109,12 +148,22 @@ def _normalize_schema_version(value: object) -> int:
 
 
 def _normalize_subfolder(subfolder: str | os.PathLike[str] | None) -> str | None:
-    if subfolder is None or str(subfolder) == "":
+    if subfolder is None or os.fspath(subfolder) == "":
         return None
-    path = Path(subfolder)
-    if path.is_absolute() or ".." in path.parts:
-        raise Object3DLoadingError("subfolder must be a relative path that does not contain '..'")
-    return str(path)
+    value = os.fspath(subfolder)
+    if not isinstance(value, str) or "\\" in value:
+        raise Object3DLoadingError("subfolder must be a canonical relative POSIX path")
+    path = PurePosixPath(value)
+    if (
+        value == "."
+        or path.is_absolute()
+        or value != path.as_posix()
+        or any(part in {".", ".."} for part in path.parts)
+    ):
+        raise Object3DLoadingError(
+            "subfolder must be a canonical relative POSIX path that does not contain '.' or '..'"
+        )
+    return path.as_posix()
 
 
 def fully_qualified_class_name(class_type: type[Any]) -> str:
@@ -124,6 +173,98 @@ def fully_qualified_class_name(class_type: type[Any]) -> str:
         raise Object3DMetadataError("class declaration must contain Python class types")
     class_name = f"{class_type.__module__}.{class_type.__qualname__}"
     return _normalize_qualified_class(class_name, "class name")
+
+
+@dataclass(frozen=True, slots=True)
+class Object3DComponentSpec:
+    """Exact immutable loading policy for one serialized pipeline component."""
+
+    name: str
+    expected_class: str
+    subfolder: str
+    optional: bool
+    review_status: ReviewStatus
+    loading_eligible: bool
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "name", _normalize_component_name(self.name, "component.name"))
+        object.__setattr__(
+            self,
+            "expected_class",
+            _normalize_qualified_class(self.expected_class, "component.expected_class"),
+        )
+        object.__setattr__(
+            self,
+            "subfolder",
+            _normalize_component_subfolder(self.subfolder, "component.subfolder"),
+        )
+        if type(self.optional) is not bool:
+            raise Object3DMetadataError("component.optional must be a boolean")
+        try:
+            review_status = ReviewStatus(self.review_status)
+        except (TypeError, ValueError) as error:
+            raise Object3DMetadataError("component.review_status must be a valid ReviewStatus") from error
+        object.__setattr__(self, "review_status", review_status)
+        if type(self.loading_eligible) is not bool:
+            raise Object3DMetadataError("component.loading_eligible must be a boolean")
+        if self.loading_eligible and review_status is not ReviewStatus.REVIEWED:
+            raise Object3DMetadataError("Only reviewed components can be eligible for automatic loading")
+        if not self.optional and not self.loading_eligible:
+            raise Object3DMetadataError("Required components must be reviewed and eligible for automatic loading")
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "expected_class": self.expected_class,
+            "loading_eligible": self.loading_eligible,
+            "name": self.name,
+            "optional": self.optional,
+            "review_status": self.review_status.value,
+            "subfolder": self.subfolder,
+        }
+
+    @classmethod
+    def from_dict(cls, data: Mapping[str, object]) -> Object3DComponentSpec:
+        if not isinstance(data, Mapping):
+            raise Object3DMetadataError("Each object-3D component record must be a JSON object")
+        expected_fields = {
+            "expected_class",
+            "loading_eligible",
+            "name",
+            "optional",
+            "review_status",
+            "subfolder",
+        }
+        missing = expected_fields.difference(data)
+        unexpected = set(data).difference(expected_fields)
+        if missing:
+            raise Object3DMetadataError(
+                f"Object-3D component record is missing required fields: {', '.join(sorted(missing))}"
+            )
+        if unexpected:
+            raise Object3DMetadataError(
+                f"Object-3D component record contains unknown fields: {', '.join(sorted(unexpected))}"
+            )
+        return cls(**{name: data[name] for name in expected_fields})  # type: ignore[arg-type]
+
+
+def _normalize_component_specs(value: object) -> tuple[Object3DComponentSpec, ...]:
+    if not isinstance(value, (list, tuple)):
+        raise Object3DMetadataError("components must be a JSON array or typed tuple of exact component records")
+    components = []
+    for item in value:
+        if type(item) is Object3DComponentSpec:
+            components.append(item)
+        elif isinstance(item, Mapping):
+            components.append(Object3DComponentSpec.from_dict(item))
+        else:
+            raise Object3DMetadataError("Each object-3D component record must be a JSON object")
+    names = [component.name for component in components]
+    subfolders = [component.subfolder for component in components]
+    if len(set(names)) != len(names):
+        raise Object3DMetadataError("components must not contain duplicate names")
+    if len(set(subfolders)) != len(subfolders):
+        raise Object3DMetadataError("components must not contain duplicate subfolders")
+    return tuple(sorted(components, key=lambda component: component.name))
 
 
 @dataclass(frozen=True, slots=True)
@@ -194,6 +335,7 @@ class Object3DModelIndex:
     family_id: str
     task_ids: tuple[str, ...]
     pipeline_class: str
+    components: tuple[Object3DComponentSpec, ...]
     output_object_types: tuple[str, ...]
     output_representations: tuple[str, ...]
     object_kinds: tuple[Object3DKind, ...]
@@ -210,6 +352,7 @@ class Object3DModelIndex:
             "pipeline_class",
             _normalize_qualified_class(self.pipeline_class, "pipeline_class"),
         )
+        object.__setattr__(self, "components", _normalize_component_specs(self.components))
         object.__setattr__(
             self,
             "output_object_types",
@@ -243,6 +386,7 @@ class Object3DModelIndex:
 
     def to_dict(self) -> dict[str, object]:
         return {
+            "components": [component.to_dict() for component in self.components],
             "contribution_status": self.contribution_status.value,
             "family_id": self.family_id,
             "object_kinds": [kind.value for kind in self.object_kinds],
@@ -260,6 +404,7 @@ class Object3DModelIndex:
         if not isinstance(data, Mapping):
             raise Object3DMetadataError("Object-3D model index must contain a JSON object")
         expected_fields = {
+            "components",
             "contribution_status",
             "family_id",
             "object_kinds",
@@ -290,11 +435,78 @@ class Object3DModelIndex:
             contents = metadata_path.read_text(encoding="utf-8")
         except OSError as error:
             raise Object3DLoadingError(f"Could not read object-3D metadata from {metadata_path}") from error
-        try:
-            data = json.loads(contents)
-        except json.JSONDecodeError as error:
-            raise Object3DMetadataError(f"Invalid JSON in {metadata_path}: {error.msg}") from error
+        data = _load_strict_json(contents, metadata_path)
         return cls.from_dict(data)
+
+    def validate_diffusers_model_index(
+        self,
+        path: str | os.PathLike[str],
+        *,
+        pipeline_class_name: str,
+        enforce_loading_eligibility: bool = True,
+    ) -> Mapping[str, object]:
+        """Validate exact Diffusers component tuples without importing repository code."""
+
+        model_index_path = Path(path)
+        try:
+            contents = model_index_path.read_text(encoding="utf-8")
+        except OSError as error:
+            raise Object3DLoadingError(f"Could not read Diffusers model index from {model_index_path}") from error
+        data = _load_strict_json(contents, model_index_path)
+        if not isinstance(data, Mapping):
+            raise Object3DMetadataError("Diffusers model_index.json must contain a JSON object")
+        if data.get("_class_name") != pipeline_class_name:
+            raise Object3DLoadingError(
+                f"Diffusers model index pipeline class {data.get('_class_name')!r} does not match "
+                f"reviewed class {pipeline_class_name!r}"
+            )
+
+        component_names = {component.name for component in self.components}
+        for name, value in data.items():
+            if name in component_names or name.startswith("_"):
+                continue
+            if (
+                isinstance(value, list)
+                and len(value) == 2
+                and all(item is None or isinstance(item, str) for item in value)
+            ):
+                raise Object3DLoadingError(f"Diffusers model index contains undeclared component tuple {name!r}")
+
+        for component in self.components:
+            if component.name not in data:
+                if component.optional:
+                    continue
+                raise Object3DLoadingError(f"Diffusers model index is missing required component {component.name!r}")
+            value = data[component.name]
+            if not isinstance(value, list) or len(value) != 2:
+                raise Object3DMetadataError(
+                    f"Diffusers component {component.name!r} must be an exact two-item JSON array"
+                )
+            library, class_name = value
+            if library is None and class_name is None:
+                if component.optional:
+                    continue
+                raise Object3DLoadingError(f"Required component {component.name!r} cannot be None")
+            if not isinstance(library, str) or not isinstance(class_name, str):
+                raise Object3DMetadataError(
+                    f"Diffusers component {component.name!r} must contain two strings or two null values"
+                )
+            if not component.loading_eligible and enforce_loading_eligibility:
+                raise Object3DLoadingError(
+                    f"Experimental component {component.name!r} is not eligible for automatic loading"
+                )
+            component_path = model_index_path.parent / component.subfolder
+            if not component_path.is_dir():
+                raise Object3DLoadingError(
+                    f"Diffusers component {component.name!r} is missing declared subfolder {component.subfolder!r}"
+                )
+            expected_library, _, expected_name = component.expected_class.rpartition(".")
+            if [library, class_name] != [expected_library, expected_name]:
+                raise Object3DLoadingError(
+                    f"Diffusers component {component.name!r} declares {(library, class_name)!r}; "
+                    f"expected exact reviewed tuple {(expected_library, expected_name)!r}"
+                )
+        return data
 
     @classmethod
     def from_pretrained(
@@ -391,6 +603,7 @@ __all__ = [
     "OBJECT3D_MODEL_INDEX_NAME",
     "OBJECT3D_SCHEMA_VERSION",
     "ContributionStatus",
+    "Object3DComponentSpec",
     "Object3DModelIndex",
     "Object3DModelMetadata",
     "ReviewStatus",

@@ -66,6 +66,12 @@ only. They do not establish production image-to-3D quality, full-resolution
 memory behavior, compiled O-Voxel output, PBR GLB quality, or
 published-checkpoint parity.
 
+Reviewed local and Hub auto-loading uses object-3D model-index schema version 2. Hub repository IDs are resolved to
+local immutable snapshots containing only the sidecar, Diffusers model index, and reviewed eligible component
+folders. Diffusers then imports exact classes from the installed `diffusers_3d` package with
+`trust_remote_code=False`. Schema-v1 sidecars and non-None experimental SLAT/decoder components are rejected by the
+auto-loader.
+
 ## Commands
 
 ```bash

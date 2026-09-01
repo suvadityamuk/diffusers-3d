@@ -11,6 +11,7 @@ from .metadata import (
     OBJECT3D_API_VERSION,
     OBJECT3D_SCHEMA_VERSION,
     ContributionStatus,
+    Object3DComponentSpec,
     Object3DModelIndex,
     ReviewStatus,
     fully_qualified_class_name,
@@ -26,6 +27,7 @@ class _Object3DPipelineMetadataMixin:
     output_representations: ClassVar[tuple[str, ...]] = ()
     object_kinds: ClassVar[tuple[Object3DKind, ...]] = ()
     required_backends: ClassVar[tuple[str, ...]] = ()
+    component_specs: ClassVar[tuple[Object3DComponentSpec, ...]] = ()
     contribution_status: ClassVar[ContributionStatus] = ContributionStatus.EXPERIMENTAL_HUB
     review_status: ClassVar[ReviewStatus] = ReviewStatus.UNREVIEWED
 
@@ -38,11 +40,31 @@ class _Object3DPipelineMetadataMixin:
                 f"{fully_qualified_class_name(cls)} declares API version {cls.api_version!r}; "
                 f"expected {OBJECT3D_API_VERSION!r}"
             )
+        expected_components, _ = cls._get_signature_keys(cls)
+        declared_components = {component.name for component in cls.component_specs}
+        if declared_components != set(expected_components):
+            raise Object3DSchemaError(
+                f"{fully_qualified_class_name(cls)} component specs do not match its Diffusers constructor; "
+                f"declared={sorted(declared_components)}, expected={sorted(expected_components)}"
+            )
+        optional_components = set(cls._optional_components)
+        for component in cls.component_specs:
+            if component.optional != (component.name in optional_components):
+                raise Object3DSchemaError(
+                    f"{fully_qualified_class_name(cls)} component {component.name!r} optionality does not match "
+                    "_optional_components"
+                )
+            if component.subfolder != component.name:
+                raise Object3DSchemaError(
+                    f"{fully_qualified_class_name(cls)} component {component.name!r} must use the same Diffusers "
+                    "component subfolder name"
+                )
         return Object3DModelIndex(
             schema_version=cls.schema_version,
             family_id=cls.family_id,  # type: ignore[arg-type]
             task_ids=cls.task_ids,
             pipeline_class=fully_qualified_class_name(cls),
+            components=cls.component_specs,
             output_object_types=tuple(
                 fully_qualified_class_name(output_type) for output_type in cls.output_object_types
             ),
@@ -64,8 +86,9 @@ class _Object3DPipelineMetadataMixin:
     ) -> Any:
         """Save normal Diffusers artifacts plus deterministic object-3D metadata."""
 
-        type(self).object3d_model_index().save_pretrained(save_directory)
-        return super().save_pretrained(  # type: ignore[misc]
+        metadata = type(self).object3d_model_index()
+        metadata.save_pretrained(save_directory)
+        result = super().save_pretrained(  # type: ignore[misc]
             save_directory,
             safe_serialization=safe_serialization,
             variant=variant,
@@ -73,6 +96,12 @@ class _Object3DPipelineMetadataMixin:
             push_to_hub=push_to_hub,
             **kwargs,
         )
+        metadata.validate_diffusers_model_index(
+            os.path.join(save_directory, DiffusionPipeline.config_name),
+            pipeline_class_name=type(self).__name__,
+            enforce_loading_eligibility=False,
+        )
+        return result
 
 
 class Object3DPipeline(_Object3DPipelineMetadataMixin, DiffusionPipeline):

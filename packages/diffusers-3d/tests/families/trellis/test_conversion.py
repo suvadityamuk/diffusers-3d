@@ -7,6 +7,7 @@ from safetensors.torch import save_file
 
 from diffusers_3d import (
     AutoPipelineForImageTo3D,
+    Object3DLoadingError,
     TrellisImageTo3DPipeline,
     TrellisSLatFlowModel,
     TrellisSLatGaussianDecoder,
@@ -78,6 +79,21 @@ def test_synthetic_portable_component_conversion_and_auto_load(
     )
     report = json.loads((output / "trellis_conversion.json").read_text(encoding="utf-8"))
     model_index = json.loads((output / "model_index.json").read_text(encoding="utf-8"))
+    sidecar = json.loads((output / "object3d_model_index.json").read_text(encoding="utf-8"))
+    assert sidecar["schema_version"] == 2
+    assert {component["name"] for component in sidecar["components"]} == {
+        "conditioner",
+        "gaussian_decoder",
+        "slat_flow_model",
+        "slat_scheduler",
+        "sparse_structure_decoder",
+        "sparse_structure_flow_model",
+        "sparse_structure_scheduler",
+    }
+    for component in sidecar["components"]:
+        value = model_index.get(component["name"], [None, None])
+        if value != [None, None]:
+            assert value == component["expected_class"].rsplit(".", 1)
     assert set(report["components"]) == {"sparse_structure_decoder", "sparse_structure_flow_model"}
     assert set(report["skipped_components"]) == {
         "slat_decoder_gs",
@@ -115,6 +131,8 @@ def test_synthetic_experimental_slat_conversion_is_opt_in(tmp_path, tiny_trellis
     loaded = TrellisImageTo3DPipeline.from_pretrained(output, local_files_only=True)
     assert type(loaded.slat_flow_model) is TrellisSLatFlowModel
     assert type(loaded.gaussian_decoder) is TrellisSLatGaussianDecoder
+    with pytest.raises(Object3DLoadingError, match="not eligible for automatic loading"):
+        AutoPipelineForImageTo3D.from_pretrained(output, local_files_only=True)
 
 
 def test_converter_strictly_rejects_pipeline_component_drift(tmp_path):

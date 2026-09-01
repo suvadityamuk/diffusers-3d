@@ -148,7 +148,7 @@
       "checkpoint_conversion": {
         "converter": "diffusers_3d.families.trellis.conversion.convert_trellis_checkpoint",
         "source_format": "upstream-component-json-safetensors",
-        "target_format": "diffusers-pipeline",
+        "target_format": "diffusers-pipeline-object3d-v2",
         "test": "tests/families/trellis/test_conversion.py::test_synthetic_portable_component_conversion_and_auto_load"
       },
       "class_name": "diffusers_3d.families.trellis.pipeline.TrellisImageTo3DPipeline",

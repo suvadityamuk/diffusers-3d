@@ -1,15 +1,125 @@
 from __future__ import annotations
 
+import importlib
 import os
+from collections.abc import Mapping
+from pathlib import Path
 from typing import Any, ClassVar
 
+import huggingface_hub
+from diffusers import DiffusionPipeline
+
 from .exceptions import Object3DLoadingError, Object3DTaskError
-from .metadata import Object3DModelIndex
+from .metadata import (
+    OBJECT3D_MODEL_INDEX_NAME,
+    Object3DComponentSpec,
+    Object3DModelIndex,
+    _normalize_subfolder,
+    fully_qualified_class_name,
+)
 from .pipelines import ModularObject3DPipeline, Object3DPipeline
 from .registry import _PIPELINE_REGISTRY, Object3DPipelineRegistry
 
 IMAGE_TO_3D_TASK = "image-to-3d"
 TEXT_TO_3D_TASK = "text-to-3d"
+
+
+def _is_explicit_local_reference(reference: str | os.PathLike[str]) -> bool:
+    path = Path(reference)
+    return isinstance(reference, os.PathLike) or path.exists() or path.is_absolute() or str(reference).startswith(".")
+
+
+def _pipeline_directory(
+    reference: str | os.PathLike[str],
+    subfolder: str | None,
+) -> Path:
+    path = Path(reference)
+    if path.is_file():
+        raise Object3DLoadingError("AutoPipelineFor3D requires a pipeline directory, not a metadata file")
+    if subfolder is not None:
+        path = path / subfolder
+    if not path.is_dir():
+        raise Object3DLoadingError(f"Object-3D pipeline directory {path} does not exist")
+    return path
+
+
+def _snapshot_allow_patterns(metadata: Object3DModelIndex, subfolder: str | None) -> list[str]:
+    prefix = "" if subfolder is None else f"{subfolder}/"
+    patterns = [
+        f"{prefix}{DiffusionPipeline.config_name}",
+        f"{prefix}{OBJECT3D_MODEL_INDEX_NAME}",
+    ]
+    for component in metadata.components:
+        if component.loading_eligible:
+            folder = f"{prefix}{component.subfolder}"
+            patterns.extend(
+                (
+                    f"{folder}/*.json",
+                    f"{folder}/*.safetensors",
+                    f"{folder}/*.bin",
+                    f"{folder}/*.flashpack",
+                )
+            )
+    return patterns
+
+
+def _expected_component_type(component: Object3DComponentSpec) -> type[Any]:
+    module_name, _, class_name = component.expected_class.rpartition(".")
+    try:
+        module = importlib.import_module(module_name)
+        expected_type = getattr(module, class_name)
+    except (ImportError, AttributeError) as error:
+        raise Object3DLoadingError(
+            f"Reviewed component class {component.expected_class!r} is not available from the installed package"
+        ) from error
+    if not isinstance(expected_type, type) or fully_qualified_class_name(expected_type) != component.expected_class:
+        raise Object3DLoadingError(
+            f"Installed component binding for {component.expected_class!r} does not resolve to that exact class"
+        )
+    return expected_type
+
+
+def _validate_loaded_pipeline(
+    pipeline: Object3DPipeline | ModularObject3DPipeline,
+    pipeline_class: type[Object3DPipeline] | type[ModularObject3DPipeline],
+    metadata: Object3DModelIndex,
+) -> None:
+    if type(pipeline) is not pipeline_class:
+        raise Object3DLoadingError(
+            f"Concrete loader returned {fully_qualified_class_name(type(pipeline))!r}; "
+            f"expected exact reviewed pipeline {metadata.pipeline_class!r}"
+        )
+    for component in metadata.components:
+        value = getattr(pipeline, component.name, None)
+        if value is None:
+            if component.optional:
+                continue
+            raise Object3DLoadingError(f"Loaded pipeline is missing required component {component.name!r}")
+        if not component.loading_eligible:
+            raise Object3DLoadingError(
+                f"Loaded pipeline contains unexpected experimental component {component.name!r}"
+            )
+        expected_type = _expected_component_type(component)
+        actual_class = fully_qualified_class_name(type(value))
+        if type(value) is not expected_type or actual_class != component.expected_class:
+            raise Object3DLoadingError(
+                f"Loaded component {component.name!r} has exact type {actual_class!r}; "
+                f"expected {component.expected_class!r}"
+            )
+
+    try:
+        loaded_components = pipeline.components
+    except Exception as error:
+        raise Object3DLoadingError("Loaded pipeline does not expose a valid Diffusers component mapping") from error
+    if not isinstance(loaded_components, Mapping):
+        raise Object3DLoadingError("Loaded pipeline components must be a mapping")
+
+    declared_names = {component.name for component in metadata.components}
+    unexpected = sorted(
+        name for name, value in loaded_components.items() if name not in declared_names and value is not None
+    )
+    if unexpected:
+        raise Object3DLoadingError(f"Loaded pipeline contains undeclared non-None components: {unexpected}")
 
 
 class AutoPipelineFor3D:
@@ -32,7 +142,7 @@ class AutoPipelineFor3D:
         trust_remote_code: bool = False,
         **kwargs: Any,
     ) -> Object3DPipeline | ModularObject3DPipeline:
-        """Load sidecar metadata, resolve an exact reviewed class, then delegate."""
+        """Load only exact reviewed installed classes from a validated local snapshot."""
 
         if trust_remote_code:
             raise Object3DLoadingError(
@@ -40,10 +150,11 @@ class AutoPipelineFor3D:
                 "the concrete pipeline class must be installed and reviewed"
             )
 
+        normalized_subfolder = _normalize_subfolder(subfolder)
         metadata = Object3DModelIndex.from_pretrained(
             pretrained_model_name_or_path,
             revision=revision,
-            subfolder=subfolder,
+            subfolder=normalized_subfolder,
             cache_dir=cache_dir,
             token=token,
             local_files_only=local_files_only,
@@ -69,27 +180,58 @@ class AutoPipelineFor3D:
             )
 
         pipeline_class = cls._registry.resolve(metadata, selected_task)
+        forbidden_delegate_options = {"custom_pipeline", "custom_revision", "dduf_file", "load_connected_pipeline"}
+        supplied_forbidden_options = sorted(forbidden_delegate_options.intersection(kwargs))
+        if supplied_forbidden_options:
+            raise Object3DLoadingError(
+                f"Object-3D auto pipelines do not accept code-loading options: {supplied_forbidden_options}"
+            )
+
+        if _is_explicit_local_reference(pretrained_model_name_or_path):
+            local_pipeline_directory = _pipeline_directory(
+                pretrained_model_name_or_path,
+                normalized_subfolder,
+            )
+        else:
+            try:
+                snapshot_path = huggingface_hub.snapshot_download(
+                    repo_id=str(pretrained_model_name_or_path),
+                    revision=revision,
+                    cache_dir=cache_dir,
+                    token=token,
+                    local_files_only=local_files_only,
+                    allow_patterns=_snapshot_allow_patterns(metadata, normalized_subfolder),
+                )
+            except Exception as error:
+                raise Object3DLoadingError(
+                    f"Could not download reviewed object-3D snapshot for {str(pretrained_model_name_or_path)!r}"
+                ) from error
+            local_pipeline_directory = _pipeline_directory(snapshot_path, normalized_subfolder)
+            snapshot_metadata = Object3DModelIndex.from_pretrained(local_pipeline_directory)
+            if snapshot_metadata != metadata:
+                raise Object3DLoadingError(
+                    "Object-3D sidecar changed between initial validation and immutable snapshot download"
+                )
+
+        metadata.validate_diffusers_model_index(
+            local_pipeline_directory / DiffusionPipeline.config_name,
+            pipeline_class_name=pipeline_class.__name__,
+        )
         delegate_kwargs = dict(kwargs)
-        delegate_kwargs["local_files_only"] = local_files_only
+        delegate_kwargs["local_files_only"] = True
         delegate_kwargs["trust_remote_code"] = False
-        if revision is not None:
-            delegate_kwargs["revision"] = revision
-        if subfolder is not None:
-            delegate_kwargs["subfolder"] = subfolder
-        if cache_dir is not None:
-            delegate_kwargs["cache_dir"] = cache_dir
-        if token is not None:
-            delegate_kwargs["token"] = token
 
         try:
-            return pipeline_class.from_pretrained(
-                pretrained_model_name_or_path,
+            pipeline = pipeline_class.from_pretrained(
+                local_pipeline_directory,
                 **delegate_kwargs,
             )
         except Exception as error:
             raise Object3DLoadingError(
                 f"Reviewed pipeline {metadata.pipeline_class!r} failed to load for task {selected_task!r}"
             ) from error
+        _validate_loaded_pipeline(pipeline, pipeline_class, metadata)
+        return pipeline
 
 
 class AutoPipelineForImageTo3D(AutoPipelineFor3D):

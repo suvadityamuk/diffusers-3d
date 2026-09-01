@@ -16,7 +16,12 @@ from diffusers.utils.torch_utils import randn_tensor
 
 from ...backends import OVoxelBackend, Trellis2PBRPostprocessFacade
 from ...data import ImageCondition
-from ...execution.metadata import ContributionStatus, ReviewStatus
+from ...execution.metadata import (
+    ContributionStatus,
+    Object3DComponentSpec,
+    ReviewStatus,
+    fully_qualified_class_name,
+)
 from ...execution.pipelines import Object3DPipeline
 from ...objects import (
     Latent3DOutput,
@@ -106,6 +111,88 @@ class Trellis2ImageTo3DPipeline(Object3DPipeline):
     required_backends = ()
     contribution_status = ContributionStatus.REVIEWED_PACKAGE
     review_status = ReviewStatus.REVIEWED
+    component_specs = (
+        Object3DComponentSpec(
+            name="conditioner",
+            expected_class=fully_qualified_class_name(Trellis2Dinov3Conditioner),
+            subfolder="conditioner",
+            optional=False,
+            review_status=ReviewStatus.REVIEWED,
+            loading_eligible=True,
+        ),
+        Object3DComponentSpec(
+            name="sparse_structure_flow_model",
+            expected_class=fully_qualified_class_name(Trellis2SparseStructureFlowModel),
+            subfolder="sparse_structure_flow_model",
+            optional=False,
+            review_status=ReviewStatus.REVIEWED,
+            loading_eligible=True,
+        ),
+        Object3DComponentSpec(
+            name="sparse_structure_decoder",
+            expected_class=fully_qualified_class_name(Trellis2SparseStructureDecoder),
+            subfolder="sparse_structure_decoder",
+            optional=False,
+            review_status=ReviewStatus.REVIEWED,
+            loading_eligible=True,
+        ),
+        Object3DComponentSpec(
+            name="sparse_structure_scheduler",
+            expected_class=fully_qualified_class_name(Trellis2FlowEulerScheduler),
+            subfolder="sparse_structure_scheduler",
+            optional=False,
+            review_status=ReviewStatus.REVIEWED,
+            loading_eligible=True,
+        ),
+        Object3DComponentSpec(
+            name="shape_slat_flow_model",
+            expected_class=fully_qualified_class_name(Trellis2SLatFlowModel),
+            subfolder="shape_slat_flow_model",
+            optional=True,
+            review_status=ReviewStatus.UNREVIEWED,
+            loading_eligible=False,
+        ),
+        Object3DComponentSpec(
+            name="shape_slat_scheduler",
+            expected_class=fully_qualified_class_name(Trellis2FlowEulerScheduler),
+            subfolder="shape_slat_scheduler",
+            optional=True,
+            review_status=ReviewStatus.UNREVIEWED,
+            loading_eligible=False,
+        ),
+        Object3DComponentSpec(
+            name="shape_slat_decoder",
+            expected_class=fully_qualified_class_name(Trellis2ShapeDualGridDecoder),
+            subfolder="shape_slat_decoder",
+            optional=True,
+            review_status=ReviewStatus.UNREVIEWED,
+            loading_eligible=False,
+        ),
+        Object3DComponentSpec(
+            name="texture_slat_flow_model",
+            expected_class=fully_qualified_class_name(Trellis2SLatFlowModel),
+            subfolder="texture_slat_flow_model",
+            optional=True,
+            review_status=ReviewStatus.UNREVIEWED,
+            loading_eligible=False,
+        ),
+        Object3DComponentSpec(
+            name="texture_slat_scheduler",
+            expected_class=fully_qualified_class_name(Trellis2FlowEulerScheduler),
+            subfolder="texture_slat_scheduler",
+            optional=True,
+            review_status=ReviewStatus.UNREVIEWED,
+            loading_eligible=False,
+        ),
+        Object3DComponentSpec(
+            name="pbr_decoder",
+            expected_class=fully_qualified_class_name(Trellis2PBRSparseDecoder),
+            subfolder="pbr_decoder",
+            optional=True,
+            review_status=ReviewStatus.UNREVIEWED,
+            loading_eligible=False,
+        ),
+    )
     model_cpu_offload_seq = (
         "conditioner->sparse_structure_flow_model->sparse_structure_decoder->"
         "shape_slat_flow_model->shape_slat_decoder->texture_slat_flow_model->pbr_decoder"

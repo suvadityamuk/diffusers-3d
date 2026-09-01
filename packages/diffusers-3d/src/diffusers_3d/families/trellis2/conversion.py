@@ -344,7 +344,13 @@ def convert_trellis2_checkpoint(
         json.dumps(model_index, indent=2, sort_keys=True) + "\n",
         encoding="utf-8",
     )
-    Trellis2ImageTo3DPipeline.object3d_model_index().save_pretrained(destination)
+    metadata = Trellis2ImageTo3DPipeline.object3d_model_index()
+    metadata.validate_diffusers_model_index(
+        destination / "model_index.json",
+        pipeline_class_name=Trellis2ImageTo3DPipeline.__name__,
+        enforce_loading_eligibility=False,
+    )
+    metadata.save_pretrained(destination)
     report = {
         "components": component_report,
         "reference_revision": TRELLIS2_REFERENCE_REVISION,

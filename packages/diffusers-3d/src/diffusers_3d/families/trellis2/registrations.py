@@ -7,7 +7,7 @@ def trellis2_execution_registrations(
     model_registration_type: type[Any],
     pipeline_registration_type: type[Any],
 ) -> tuple[tuple[Any, ...], tuple[Any, ...]]:
-    """Register only the reviewed portable TRELLIS.2 sparse-structure path."""
+    """Register the schema-v2 pipeline with only portable components eligible for auto-loading."""
 
     from .conditioner import Trellis2Dinov3Conditioner
     from .decoders import Trellis2SparseStructureDecoder

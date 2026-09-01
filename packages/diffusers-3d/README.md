@@ -10,7 +10,7 @@ model-specific recipe.
 
 ## Status
 
-The package is pre-alpha. Loading metadata uses schema version `1`, training manifests use schema version `3`, and
+The package is pre-alpha. Loading metadata uses schema version `2`, training manifests use schema version `3`, and
 contribution manifests use schema version `2`. Model integrations and optional compiled backends remain
 capability-gated. The reviewed model families are TRELLIS and TRELLIS.2, including TRELLIS.2's optional O-Voxel
 paths.
@@ -71,6 +71,23 @@ pip install -e "packages/diffusers-3d[portable]"
 
 Source-built or CUDA-specific dependencies such as nvdiffrast, spconv, FlexGEMM, CuMesh, and O-Voxel require an
 explicit backend installation. See [docs/backends.md](docs/backends.md).
+
+## Secure reviewed Hub loading
+
+`AutoPipelineFor3D.from_pretrained()` accepts local directories or Hub repository IDs for reviewed package
+integrations. Schema-v2 sidecars contain an exact immutable record for every constructor component: its name,
+installed fully-qualified class, component subfolder, optionality, review status, and auto-loading eligibility.
+
+For Hub IDs, the sidecar is validated before component download. The auto-loader then downloads only
+`model_index.json`, the sidecar, and eligible component folders into a local Hub snapshot, validates every Diffusers
+library/class tuple, and invokes the installed concrete pipeline class on that local path with remote code disabled.
+Experimental optional SLAT and decoder components are not eligible for this path; use the concrete family pipeline
+directly for explicitly experimental local artifacts.
+
+Schema-v1 sidecars are no longer accepted. Re-run the matching converter or save the reviewed pipeline with this
+package version to create a schema-v2 sidecar. `revision`, `cache_dir`, `token`, `local_files_only`, and `subfolder`
+still apply to Hub snapshot resolution; they are consumed by the auto-loader rather than forwarded to the concrete
+local pipeline load. `trust_remote_code=True` remains an error and never changes component eligibility.
 
 ## Contribution levels
 

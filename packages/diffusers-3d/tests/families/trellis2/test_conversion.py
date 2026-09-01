@@ -5,7 +5,7 @@ import json
 import pytest
 from safetensors.torch import save_file
 
-from diffusers_3d import AutoPipelineForImageTo3D, Trellis2ImageTo3DPipeline
+from diffusers_3d import AutoPipelineForImageTo3D, Object3DLoadingError, Trellis2ImageTo3DPipeline
 from diffusers_3d.families.trellis2.conversion import convert_trellis2_checkpoint
 
 pytestmark = pytest.mark.integration
@@ -86,6 +86,25 @@ def test_synthetic_reviewed_conversion_skips_production_experimental_weights_and
         conditioner_path=tmp_path / "conditioner",
     )
     report = json.loads((output / "trellis2_conversion.json").read_text(encoding="utf-8"))
+    model_index = json.loads((output / "model_index.json").read_text(encoding="utf-8"))
+    sidecar = json.loads((output / "object3d_model_index.json").read_text(encoding="utf-8"))
+    assert sidecar["schema_version"] == 2
+    assert {component["name"] for component in sidecar["components"]} == {
+        "conditioner",
+        "pbr_decoder",
+        "shape_slat_decoder",
+        "shape_slat_flow_model",
+        "shape_slat_scheduler",
+        "sparse_structure_decoder",
+        "sparse_structure_flow_model",
+        "sparse_structure_scheduler",
+        "texture_slat_flow_model",
+        "texture_slat_scheduler",
+    }
+    for component in sidecar["components"]:
+        value = model_index.get(component["name"], [None, None])
+        if value != [None, None]:
+            assert value == component["expected_class"].rsplit(".", 1)
     assert set(report["components"]) == {"sparse_structure_decoder", "sparse_structure_flow_model"}
     assert set(report["skipped_components"]) == {
         "shape_slat_decoder",
@@ -157,6 +176,8 @@ def test_synthetic_tiny_experimental_conversion_is_opt_in(tmp_path, tiny_trellis
     assert loaded.shape_slat_flow_model is not None
     assert loaded.texture_slat_flow_model is not None
     assert loaded.pbr_decoder is not None
+    with pytest.raises(Object3DLoadingError, match="not eligible for automatic loading"):
+        AutoPipelineForImageTo3D.from_pretrained(output, local_files_only=True)
 
 
 def test_converter_rejects_component_drift_and_never_misloads_production_sparse_weights(tmp_path):

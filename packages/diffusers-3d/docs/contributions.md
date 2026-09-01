@@ -32,12 +32,20 @@ must declare:
 - every exact model, pipeline, scheduler, processor, or converter class and its unique role;
 - task routing and tensor-native input/output representations;
 - checkpoint conversion and public `save_pretrained`/`from_pretrained` round trips;
+- schema-v2 sidecar records covering every Diffusers constructor component with exact installed classes, subfolders,
+  optionality, review status, and automatic-loading eligibility;
 - component and end-to-end parity tests against the pinned upstream implementation;
 - every runtime backend, support level, install path, version/build constraint, and license classification;
 - upstream model and redistributed artifact licenses.
 
 Registries resolve exact classes. A subclass, structurally similar class, or class from a different revision does not
 inherit review.
+
+Reviewed Hub repositories do not need to copy package Python modules beside converted weights. The object-3D
+auto-loader validates the sidecar and Diffusers component tuples, downloads only the declared eligible component
+folders to a local immutable snapshot, and loads installed classes with remote code disabled. Optional experimental
+components must serialize as absent or `[null, null]` for auto-loading; explicit remote-code trust cannot promote
+them.
 
 ### Conversion and parity checklist
 
