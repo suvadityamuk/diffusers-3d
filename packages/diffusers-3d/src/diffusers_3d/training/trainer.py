@@ -7,6 +7,8 @@ import shutil
 import tempfile
 from collections.abc import Iterator, Mapping, Sequence
 from contextlib import nullcontext
+from importlib.metadata import PackageNotFoundError, version
+from inspect import signature
 from pathlib import Path
 from types import MappingProxyType
 from typing import Any, ClassVar
@@ -18,6 +20,7 @@ from accelerate.utils import load as load_accelerator_file
 from accelerate.utils import set_seed
 from diffusers.loaders import PeftAdapterMixin
 from diffusers.optimization import get_scheduler
+from packaging.version import InvalidVersion, Version
 from safetensors.torch import load_model as load_safetensors_model
 from safetensors.torch import save_model as save_safetensors_model
 from torch import nn
@@ -47,6 +50,7 @@ from .types import (
 )
 
 ACCELERATOR_STATE_DIRECTORY = "accelerator_state"
+MINIMUM_SAFE_ACCELERATE_VERSION = "1.1.0"
 FROZEN_COMPONENT_STATE_DIRECTORY = "frozen_components"
 TRAINER_STATE_NAME = "diffusers_3d_trainer_state.json"
 TRAINER_STATE_SCHEMA_VERSION = 1
@@ -72,6 +76,26 @@ _DEVICE_TYPE_RNG_STATE_FIELDS = {
     device_type: field_name for field_name, device_type in _DEVICE_RNG_STATE_FIELDS.items()
 }
 _OPTIONAL_RNG_STATE_FIELDS = frozenset({*_DEVICE_RNG_STATE_FIELDS, "xm_seed"})
+
+
+def _require_safe_accelerate() -> None:
+    try:
+        installed_version = version("accelerate")
+        supported = Version(installed_version) >= Version(MINIMUM_SAFE_ACCELERATE_VERSION)
+    except PackageNotFoundError as error:
+        raise TrainingDependencyError(
+            f"Safe checkpoint loading requires accelerate>={MINIMUM_SAFE_ACCELERATE_VERSION}, but it is not installed"
+        ) from error
+    except InvalidVersion as error:
+        raise TrainingDependencyError(
+            f"Safe checkpoint loading requires accelerate>={MINIMUM_SAFE_ACCELERATE_VERSION}, "
+            f"but installed version {installed_version!r} is invalid"
+        ) from error
+    if not supported:
+        raise TrainingDependencyError(
+            f"Safe checkpoint loading requires accelerate>={MINIMUM_SAFE_ACCELERATE_VERSION}; "
+            f"found accelerate=={installed_version}"
+        )
 
 
 def _declared_checkpoint_world_size() -> int:
@@ -118,13 +142,24 @@ def _validate_rng_tensor(value: object, field_name: str) -> torch.Tensor:
     return value
 
 
-def _validate_device_rng_states(value: object, field_name: str, device_type: str) -> list[torch.Tensor]:
-    if not isinstance(value, list) or not value:
-        raise TrainingCheckpointError(f"RNG state {field_name} must be a non-empty list of device states")
-    states = [_validate_rng_tensor(state, f"{field_name}[{index}]") for index, state in enumerate(value)]
+def _validate_device_rng_states(
+    value: object,
+    field_name: str,
+    device_type: str,
+    *,
+    required: bool,
+) -> list[torch.Tensor]:
+    if not isinstance(value, list):
+        raise TrainingCheckpointError(f"RNG state {field_name} must be a list of device states")
     backend = getattr(torch, device_type, None)
     setter = getattr(backend, "set_rng_state_all", None)
     is_available = getattr(backend, "is_available", None)
+    available = backend is not None and (not callable(is_available) or is_available())
+    if not value:
+        if required or available:
+            raise TrainingCheckpointError(f"RNG state {field_name} must be a non-empty list of device states")
+        return []
+    states = [_validate_rng_tensor(state, f"{field_name}[{index}]") for index, state in enumerate(value)]
     if backend is None or not callable(setter) or (callable(is_available) and not is_available()):
         raise TrainingCheckpointError(
             f"RNG state {field_name} requires the unavailable torch.{device_type} device backend"
@@ -144,11 +179,12 @@ def _load_validated_rng_state(
     process_index: int,
     device_type: str,
 ) -> dict[str, object]:
+    _require_safe_accelerate()
     path = state_directory / f"random_states_{process_index}.pkl"
     if not path.is_file():
         raise TrainingCheckpointError(f"Required RNG state {path} does not exist")
     try:
-        state = load_accelerator_file(path, map_location="cpu")
+        state = load_accelerator_file(path, map_location="cpu", weights_only=True)
     except Exception as error:
         raise TrainingCheckpointError(f"Could not safely load RNG state from {path}") from error
     if type(state) is not dict:
@@ -205,10 +241,15 @@ def _load_validated_rng_state(
     except RuntimeError as error:
         raise TrainingCheckpointError("RNG state torch_manual_seed is incompatible with torch") from error
 
+    required_device_field = _DEVICE_TYPE_RNG_STATE_FIELDS.get(device_type)
     for field_name, stored_device_type in _DEVICE_RNG_STATE_FIELDS.items():
         if field_name in state:
-            _validate_device_rng_states(state[field_name], field_name, stored_device_type)
-    required_device_field = _DEVICE_TYPE_RNG_STATE_FIELDS.get(device_type)
+            _validate_device_rng_states(
+                state[field_name],
+                field_name,
+                stored_device_type,
+                required=field_name == required_device_field,
+            )
     if required_device_field is not None and required_device_field not in state:
         raise TrainingCheckpointError(
             f"RNG state is missing {required_device_field} for the active {device_type} training device"
@@ -539,18 +580,30 @@ class Object3DTrainer:
                         "LoRA fine-tuning requires the optional 'peft' dependency"
                     ) from error
 
-                for key in self.strategy.components:
-                    component = selected_components[key]
-                    policy = selected_policies[key]
-                    adapter_config = LoraConfig(
-                        r=self.strategy.rank,
-                        lora_alpha=self.strategy.alpha,
-                        lora_dropout=self.strategy.dropout,
-                        bias="none",
-                        target_modules=list(policy.lora_target_modules),
-                    )
-                    component.add_adapter(adapter_config, adapter_name=TRAINING_ADAPTER_NAME)
-                    injected_components.append(component)
+                adapter_seed = self.config.seed if self.strategy.adapter_seed is None else self.strategy.adapter_seed
+                cuda_rng_devices = {
+                    tensor.device.index
+                    for component in selected_components.values()
+                    for tensor in (*component.parameters(), *component.buffers())
+                    if tensor.device.type == "cuda" and tensor.device.index is not None
+                }
+                with torch.random.fork_rng(devices=sorted(cuda_rng_devices)):
+                    torch.random.default_generator.manual_seed(adapter_seed)
+                    for device_index in sorted(cuda_rng_devices):
+                        with torch.cuda.device(device_index):
+                            torch.cuda.manual_seed(adapter_seed)
+                    for key in self.strategy.components:
+                        component = selected_components[key]
+                        policy = selected_policies[key]
+                        adapter_config = LoraConfig(
+                            r=self.strategy.rank,
+                            lora_alpha=self.strategy.alpha,
+                            lora_dropout=self.strategy.dropout,
+                            bias="none",
+                            target_modules=list(policy.lora_target_modules),
+                        )
+                        component.add_adapter(adapter_config, adapter_name=TRAINING_ADAPTER_NAME)
+                        injected_components.append(component)
 
                 after_injection = _reachable_named_parameters(target)
                 expected_parameter_ids = set(after_injection).difference(before_parameters)
@@ -1070,6 +1123,7 @@ class Object3DTrainer:
         _require_single_process_checkpoint(_declared_checkpoint_world_size(), "loading")
         if self.config.dataloader_num_workers != 0:
             raise TrainingCheckpointError("Exact checkpoint continuation requires dataloader_num_workers=0")
+        _require_safe_accelerate()
         if not self._prepared:
             self.prepare()
         _require_single_process_checkpoint(self.accelerator.num_processes, "loading")
@@ -1083,7 +1137,13 @@ class Object3DTrainer:
             device_type=self.accelerator.device.type,
         )
         try:
-            self.accelerator.load_state(state_directory)
+            load_state_parameters = signature(type(self.accelerator).load_state).parameters
+            if "load_kwargs" in load_state_parameters:
+                self.accelerator.load_state(state_directory, load_kwargs={"weights_only": True})
+            else:
+                # accelerate 1.1 through the introduction of load_kwargs uses
+                # accelerate.utils.load, whose safe default is weights_only=True.
+                self.accelerator.load_state(state_directory)
         except TrainingCheckpointError:
             raise
         except Exception as error:

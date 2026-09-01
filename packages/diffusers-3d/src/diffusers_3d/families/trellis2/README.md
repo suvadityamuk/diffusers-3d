@@ -39,9 +39,10 @@ resolution, and AABB.
 
 The package-owned O-Voxel adapter has independent capability surfaces:
 
-- schema conversion and uint8 official packing are pure PyTorch;
+- schema conversion and mixed official packing are pure PyTorch: unit-domain
+  channels use uint8 while unbounded split weights retain float16/float32;
 - `.npz` read/write is pure NumPy/Python and uses deterministic 30-bit Morton
-  ordering by default;
+  ordering plus explicit grid and dtype/layout metadata by default;
 - `.vxz` read/write delegates to `o_voxel.io.read_vxz`/`write_vxz`;
 - dual-grid mesh extraction delegates to
   `o_voxel.convert.flexible_dual_grid_to_mesh`;
@@ -49,6 +50,8 @@ The package-owned O-Voxel adapter has independent capability surfaces:
 
 `.vxz` is never advertised as a pure codec. It does not encode the original
 grid resolution, so `OVoxelBackend.read_vxz` requires the caller to supply it.
+VXZ v0 also accepts only uint8 attributes, so assets containing unbounded split
+weights are rejected on write; NPZ is the lossless serialization path.
 The pinned `o_voxel` package eagerly imports its PBR postprocess module, which
 imports nvdiffrast; consequently native loading requires both a compiled,
 provenance-verified O-Voxel build and explicit
@@ -84,7 +87,8 @@ measured.
   and BVH operations. This package pins FlexGEMM at
   `6dd94a859c26ee8246888502eada3dd8ad85532e` and CuMesh at
   `12289e1062f0603f2f0d0771b02e1395d247f26f`; discovery and runtime loading
-  require matching source provenance, module revision attestations, and build IDs.
+  require matching PEP 610 source provenance followed by runtime API/toolchain
+  checks. Raw upstream modules do not need custom attestation attributes.
 - Compiled O-Voxel source is not vendored. Native conversion, `.vxz`, and voxel
   rendering were not run in the package CPU test matrix.
 - `Trellis2PBRPostprocessFacade` requires O-Voxel, CuMesh, FlexGEMM, and

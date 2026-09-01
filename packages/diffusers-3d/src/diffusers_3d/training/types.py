@@ -52,6 +52,7 @@ class LoRAFineTune:
     rank: int = 4
     alpha: float = 4.0
     dropout: float = 0.0
+    adapter_seed: int | None = None
     kind: FineTuneKind = field(default=FineTuneKind.LORA, init=False)
 
     def __post_init__(self) -> None:
@@ -72,6 +73,10 @@ class LoRAFineTune:
             or not 0 <= self.dropout < 1
         ):
             raise TrainingConfigurationError("dropout must be in [0, 1)")
+        if self.adapter_seed is not None and (
+            not isinstance(self.adapter_seed, int) or isinstance(self.adapter_seed, bool)
+        ):
+            raise TrainingConfigurationError("adapter_seed must be an integer or None")
         object.__setattr__(self, "alpha", float(self.alpha))
         object.__setattr__(self, "dropout", float(self.dropout))
 

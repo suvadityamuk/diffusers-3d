@@ -79,8 +79,10 @@ Training is a separate qualification for a reviewed package or upstream integrat
 - objective parity against the pinned upstream implementation.
 
 Review also checks typed examples and batches, exact trainable and frozen component policies, gradient ownership,
-public checkpoint APIs, and deterministic resume identity. Training manifest schema version `3` records canonical
-objective settings and optimizer/scheduler/batch/precision/seed settings. Checkpoints retain family inference
+public checkpoint APIs, and deterministic resume identity. Training manifest schema version `4` records canonical
+objective settings, optimizer/scheduler/batch/precision/seed settings, and the effective LoRA adapter initialization
+seed. `LoRAFineTune.adapter_seed=None` inherits `TrainingConfig3D.seed`; changing the effective value is a resume
+identity mismatch. Checkpoints retain family inference
 artifacts and an `accelerator_state` continuation directory containing trainable and frozen model state, optimizer,
 scheduler, scaler, RNG, trainer counters, and data position. Exact continuation requires
 `dataloader_num_workers=0`, a synchronized optimizer-step boundary, and a non-empty caller-supplied

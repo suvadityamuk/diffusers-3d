@@ -39,6 +39,12 @@ def test_distribution_does_not_require_opencv():
 
 
 @pytest.mark.release
+def test_distribution_requires_checkpoint_safe_accelerate_floor():
+    pyproject = (PACKAGE_ROOT / "pyproject.toml").read_text(encoding="utf-8")
+    assert '"accelerate>=1.1.0"' in pyproject
+
+
+@pytest.mark.release
 def test_source_backend_requirement_records_are_immutable():
     requirements_root = PACKAGE_ROOT / "requirements" / "backends"
     for filename, expected in PINNED_SOURCE_REQUIREMENTS.items():

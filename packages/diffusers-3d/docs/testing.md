@@ -25,9 +25,13 @@ being simulated.
 python -m pip install -e .
 python -m pip install -e "packages/diffusers-3d[test,training]" --no-deps
 python -m pip install \
-  accelerate build peft pytest pytest-cov ruff safetensors \
+  "accelerate>=1.1.0" build peft pytest pytest-cov ruff safetensors \
   "transformers>=5.5.0"
 ```
+
+The minimum-stack CI lane installs `accelerate==1.1.0` and
+`transformers==5.5.0` explicitly before running the core CPU and training
+tests. The latest-resolved lanes must not substitute for this floor check.
 
 Core CPU, including deterministic equations and tiny integration tests:
 
@@ -99,7 +103,7 @@ python packages/diffusers-3d/tools/verify_sdist.py /tmp/diffusers3d-dist/diffuse
 python -m venv /tmp/diffusers3d-wheel-venv
 /tmp/diffusers3d-wheel-venv/bin/python -m pip install -e .
 /tmp/diffusers3d-wheel-venv/bin/python -m pip install \
-  accelerate safetensors "transformers>=5.5.0"
+  "accelerate>=1.1.0" safetensors "transformers>=5.5.0"
 /tmp/diffusers3d-wheel-venv/bin/python -m pip install --no-deps /tmp/diffusers3d-dist/diffusers_3d-*.whl
 /tmp/diffusers3d-wheel-venv/bin/python -m pip check
 cd /tmp

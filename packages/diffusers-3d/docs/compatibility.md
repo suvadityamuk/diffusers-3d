@@ -9,6 +9,7 @@ versions and side-effect-free `BACKEND_REGISTRY` discovery status of a particula
 |---|---|---|
 | `diffusers-3d` | `0.1.0.dev0` | Source tests plus wheel and sdist verification |
 | Diffusers | `>=0.40.0.dev0,<0.41` | Local repository checkout, current `0.40` development minor |
+| Accelerate | `>=1.1.0` | Exact minimum safety lane plus latest-resolved CPU lanes |
 | Transformers | `>=5.5.0` | Exact 5.5.0 minimum lane plus latest-resolved CPU lanes |
 | Python | `>=3.10` | Core CPU matrix: 3.10, 3.11, 3.12 |
 | PyTorch | `>=2.4` | CPU wheels in CI; no upper bound is claimed |
@@ -23,6 +24,11 @@ Hugging Face Hub `<1.0`, which cannot satisfy Diffusers 0.40's Hub 1.x
 requirement, and it predates relevant security fixes. The declared 5.5.0
 floor is the first intentionally supported floor for this package stack.
 
+Accelerate 1.1.0 is the minimum checkpoint-safety baseline. Runtime checks reject older releases before checkpoint
+deserialization. Direct utility loads explicitly request `weights_only=True`; `Accelerator.load_state` receives the
+same explicit load option when that release exposes `load_kwargs`, while Accelerate 1.1's internal utility already
+uses weights-only loading by default.
+
 ## Backend matrix
 
 “CPU API” means real package tensors plus a fake implementation of the optional backend API. It verifies adaptation,
@@ -36,10 +42,10 @@ shape, dtype, policy, and error behavior; it is not compiled-backend or numerica
 | utils3d | research-only / permissive | Registry, provenance, and selection policy only | Not run | N/A |
 | gsplat | accelerated / permissive | CPU API adapter test | Not run | None |
 | spconv | accelerated / permissive | CPU API sparse-tensor test | Not run | None |
-| FlexGEMM | accelerated / permissive | CPU API plus revision/build attestation | Not run | None |
-| CuMesh | accelerated / permissive | CPU API geometry/BVH operations plus attestation | Not run | None |
+| FlexGEMM | accelerated / permissive | CPU API plus PEP 610 source verification | Not run | None |
+| CuMesh | accelerated / permissive | CPU API geometry/BVH operations plus PEP 610 source verification | Not run | None |
 | Kaolin | accelerated / permissive subset only | CPU API FlexiCubes test; non-commercial module rejected | Not run | None |
-| O-Voxel | accelerated / permissive | Real pure tensor/uint8/NPZ codec; native API fake | Not run | None |
+| O-Voxel | accelerated / permissive | Real mixed uint8/float NPZ codec; native API fake | Not run | None |
 | nvdiffrast | research-only / restricted | License gate/facade only | Not run | None |
 | nvdiffrec render | research-only / restricted | Registry metadata only | Not run | None |
 | diffoctreerast | research-only / restricted | License gate/facade only | Not run | None |

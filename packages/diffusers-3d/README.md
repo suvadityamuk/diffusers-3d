@@ -10,7 +10,7 @@ model-specific recipe.
 
 ## Status
 
-The package is pre-alpha. Loading metadata uses schema version `2`, training manifests use schema version `3`, and
+The package is pre-alpha. Loading metadata uses schema version `2`, training manifests use schema version `4`, and
 contribution manifests use schema version `2`. Model integrations and optional compiled backends remain
 capability-gated. The reviewed model families are TRELLIS and TRELLIS.2, including TRELLIS.2's optional O-Voxel
 paths.
@@ -39,10 +39,12 @@ expression does not relicense any family code or model artifact.
 - The reviewed contract ends at CPU-capable sparse-structure output. Tiny SLAT and O-Voxel stages are experimental.
 - No full 4B checkpoint, 1024 cascade, production GPU quality, compiled O-Voxel mesh/render, or PBR GLB run has been
   performed.
-- O-Voxel schema/uint8 packing and deterministic Morton-ordered NPZ are pure package code. `.vxz`, native dual-grid
-  conversion, and voxel rendering require a separately compiled, pinned O-Voxel runtime.
+- O-Voxel schema/mixed lossless packing and deterministic Morton-ordered NPZ are pure package code. Unit-domain PBR
+  channels use uint8 while unbounded split weights retain float16/float32. `.vxz`, native dual-grid conversion, and
+  voxel rendering require a separately compiled, pinned O-Voxel runtime; the pinned VXZ v0 codec cannot losslessly
+  store split weights and rejects such writes.
 - FlexGEMM and CuMesh are MIT source builds pinned by this package to audited commits with direct-URL provenance and
-  runtime revision/build attestations.
+  runtime API/toolchain checks. Raw upstream modules do not need custom revision or build attributes.
 - Production DINOv3 weights are gated under the separate DINOv3 License. nvdiffrast is a restricted research
   dependency and requires explicit acknowledgement; neither is redistributed or selected silently.
 
@@ -62,6 +64,11 @@ Install the package from this repository:
 ```bash
 pip install -e packages/diffusers-3d
 ```
+
+The core training/checkpoint stack requires `accelerate>=1.1.0`. Checkpoint loads reject older versions before
+deserialization and keep Accelerate/PyTorch loading in weights-only mode.
+`LoRAFineTune(..., adapter_seed=None)` inherits `TrainingConfig3D.seed`; adapter injection runs in an isolated Torch
+RNG context and schema-4 checkpoints record the effective seed as resume identity.
 
 Portable mesh processing is optional:
 

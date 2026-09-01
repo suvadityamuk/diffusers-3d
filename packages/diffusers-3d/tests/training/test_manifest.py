@@ -5,7 +5,9 @@ import pytest
 
 from diffusers_3d import (
     TRAINING_MANIFEST_NAME,
+    TRAINING_MANIFEST_VERSION,
     FullFineTune,
+    LoRAFineTune,
     TrainingManifest3D,
     TrainingManifestError,
     TrainingManifestMismatchError,
@@ -59,6 +61,27 @@ def test_manifest_save_load_is_atomic_deterministic_and_hashed(tmp_path):
     assert json.loads(first_bytes)["components"] == ["decoder", "denoiser"]
     assert json.loads(first_bytes)["example_type"].endswith(".ExactExample")
     assert path.stat().st_mode & 0o044 == 0o044
+
+
+def test_lora_manifest_records_effective_adapter_seed_and_rejects_mismatch():
+    inherited = make_manifest(
+        strategy=LoRAFineTune(("denoiser",), adapter_seed=None),
+        training_config={"seed": 17},
+    )
+    explicit = make_manifest(
+        strategy=LoRAFineTune(("denoiser",), adapter_seed=17),
+        training_config={"seed": 17},
+    )
+    changed = make_manifest(
+        strategy=LoRAFineTune(("denoiser",), adapter_seed=18),
+        training_config={"seed": 17},
+    )
+
+    assert TRAINING_MANIFEST_VERSION == 4
+    assert dict(inherited.strategy_config)["adapter_seed"] == 17
+    assert explicit.strategy_config == inherited.strategy_config
+    with pytest.raises(TrainingManifestMismatchError, match="strategy_config"):
+        inherited.validate_resume(changed)
 
 
 def test_manifest_resume_requires_an_exact_match(tmp_path):

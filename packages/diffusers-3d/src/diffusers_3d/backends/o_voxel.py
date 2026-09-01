@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import importlib
+import json
 from collections.abc import Mapping, Sequence
 from enum import Enum
 from os import PathLike, fspath
@@ -24,6 +25,18 @@ from .types import BackendCapability
 
 OVOXEL_REFERENCE_REVISION = "75fbf0183001ed9876c8dbb35de6b68552ee08bd"
 OVOXEL_METADATA_PREFIX = "__diffusers_3d_ovoxel_"
+_OVOXEL_NPZ_SCHEMA_VERSION = 1
+_ATTRIBUTE_LAYOUTS = {
+    "alpha": "voxel_scalar",
+    "base_color": "voxel_rgb",
+    "dual_vertices": "voxel_xyz_offset",
+    "emissive": "voxel_rgb",
+    "intersected": "voxel_xyz_bitfield",
+    "metallic": "voxel_scalar",
+    "normal": "voxel_xyz_unit_encoded",
+    "roughness": "voxel_scalar",
+    "split_weight": "voxel_scalar_nonnegative",
+}
 
 
 class OVoxelRuntimeUnavailableError(RuntimeError):
@@ -138,6 +151,34 @@ def _resolution_tuple(resolution: int | Sequence[int] | torch.Tensor) -> tuple[i
     return tuple(int(item) for item in values.tolist())
 
 
+def _validate_serializable_coordinates(
+    coordinates: torch.Tensor,
+    resolution: tuple[int, int, int],
+    *,
+    format_name: str,
+) -> None:
+    if bool((coordinates < 0).any()):
+        raise ValueError(f"{format_name} coordinates must be non-negative")
+    if bool((coordinates > torch.iinfo(torch.uint16).max).any()):
+        raise ValueError(f"{format_name} coordinates must fit in uint16")
+    resolution_tensor = coordinates.new_tensor(resolution)
+    if bool((coordinates >= resolution_tensor).any()):
+        raise ValueError(f"{format_name} coordinates must be strictly below the declared resolution")
+
+
+def _serialization_resolution(asset: OVoxelAsset, *, format_name: str) -> tuple[int, int, int]:
+    if bool((asset.active_coordinates < 0).any()):
+        raise ValueError(f"{format_name} coordinates must be non-negative")
+    if bool((asset.active_coordinates > torch.iinfo(torch.uint16).max).any()):
+        raise ValueError(f"{format_name} coordinates must fit in uint16")
+    resolution = asset.metadata.get("resolution")
+    if resolution is None:
+        resolution = (asset.active_coordinates.amax(dim=0) + 1).tolist()
+    resolution_values = _resolution_tuple(resolution)
+    _validate_serializable_coordinates(asset.active_coordinates, resolution_values, format_name=format_name)
+    return resolution_values
+
+
 def _unpack_intersection_flags(value: torch.Tensor, count: int) -> torch.Tensor:
     if value.ndim == 1:
         value = value[:, None]
@@ -228,11 +269,18 @@ def ovoxel_asset_from_official(
         # Official tensors store normals in the same [0, 1] channel domain
         # before and after uint8 packing. OVoxelAsset stores signed normals.
         normals = normals * 2 - 1
-    split_weights = unit("split_weight")
-    if split_weights is None:
-        split_weights = unit("split_weights")
+    split_weights = values.get("split_weight", values.get("split_weights"))
     if split_weights is not None:
         split_weights = _scalar_channel(split_weights, count, "split_weight")
+        if packed and split_weights.dtype is torch.uint8:
+            # Read legacy/native VXZ data according to the only value domain
+            # that uint8 can represent. New lossless writes keep this channel
+            # floating point.
+            split_weights = _unpack_unit(split_weights, "split_weight")
+        elif not split_weights.is_floating_point() or not bool(torch.isfinite(split_weights).all()):
+            raise ValueError("split_weight must be a finite floating-point tensor")
+        if bool((split_weights < 0).any()):
+            raise ValueError("split_weight values must be non-negative")
 
     if resolution is None:
         inferred = coordinates.amax(dim=0).to(dtype=torch.int64) + 1
@@ -324,10 +372,19 @@ def official_tensors_from_ovoxel_asset(
     if asset.split_weights is not None:
         attributes["split_weight"] = asset.split_weights.reshape(-1, 1)
     if packed:
-        attributes = {
-            name: value.to(dtype=torch.uint8) if name == "intersected" else _pack_unit(value, name)
-            for name, value in attributes.items()
-        }
+        packed_attributes = {}
+        for name, value in attributes.items():
+            if name == "intersected":
+                packed_attributes[name] = value.to(dtype=torch.uint8)
+            elif name == "split_weight":
+                if value.dtype not in (torch.float16, torch.float32) or not bool(torch.isfinite(value).all()):
+                    raise ValueError("packed official split_weight must use finite torch.float16 or torch.float32")
+                if bool((value < 0).any()):
+                    raise ValueError("packed official split_weight must be non-negative")
+                packed_attributes[name] = value
+            else:
+                packed_attributes[name] = _pack_unit(value, name)
+        attributes = packed_attributes
     elif any(not value.is_floating_point() for name, value in attributes.items() if name != "intersected"):
         raise ValueError("unpacked official attributes must be floating-point tensors")
 
@@ -349,15 +406,14 @@ def write_ovoxel_npz(
 ) -> None:
     """Write an official-compatible NPZ plus reserved lossless grid metadata."""
 
+    resolution = _serialization_resolution(asset, format_name="official O-Voxel NPZ")
     coordinates, attributes = official_tensors_from_ovoxel_asset(
         asset,
         packed=packed,
         morton_order=morton_order,
     )
-    resolution = asset.metadata.get("resolution")
-    if resolution is None:
-        resolution = (asset.active_coordinates.amax(dim=0) + 1).tolist()
-    resolution = _resolution_tuple(resolution)
+    if "split_weight" in attributes and attributes["split_weight"].dtype not in (torch.float16, torch.float32):
+        raise ValueError("O-Voxel NPZ split_weight must use torch.float16 or torch.float32")
     aabb = asset.metadata.get("aabb", [[-0.5, -0.5, -0.5], [0.5, 0.5, 0.5]])
     expected_grid_transform = ovoxel_grid_transform(
         resolution,
@@ -367,13 +423,38 @@ def write_ovoxel_npz(
     )
     if not torch.allclose(asset.grid_transform, expected_grid_transform):
         raise ValueError("asset grid_transform does not match its native O-Voxel resolution and aabb metadata")
-    if bool((coordinates > torch.iinfo(torch.uint16).max).any()):
-        raise ValueError("official O-Voxel NPZ coordinates must fit in uint16")
     arrays: dict[str, np.ndarray] = {"coord": coordinates.detach().cpu().numpy().astype(np.uint16)}
     arrays.update({name: value.detach().cpu().numpy() for name, value in attributes.items()})
+    attribute_metadata = {
+        "attributes": {
+            name: {
+                "dtype": str(value.dtype),
+                "encoding": (
+                    "xyz_bitfield_uint8"
+                    if name == "intersected"
+                    else "nonnegative_float"
+                    if name == "split_weight"
+                    else "unit_uint8"
+                    if packed
+                    else "unit_float"
+                ),
+                "layout": _ATTRIBUTE_LAYOUTS.get(name, "voxel_channels"),
+                "shape": list(value.shape[1:]),
+            }
+            for name, value in sorted(arrays.items())
+            if name != "coord"
+        },
+        "coordinate_dtype": "uint16",
+        "coordinate_layout": "voxel_xyz",
+        "morton_order": morton_order,
+        "schema_version": _OVOXEL_NPZ_SCHEMA_VERSION,
+    }
     arrays[f"{OVOXEL_METADATA_PREFIX}resolution"] = np.asarray(resolution, dtype=np.uint32)
     arrays[f"{OVOXEL_METADATA_PREFIX}aabb"] = np.asarray(aabb, dtype=np.float32)
     arrays[f"{OVOXEL_METADATA_PREFIX}packed"] = np.asarray([int(packed)], dtype=np.uint8)
+    arrays[f"{OVOXEL_METADATA_PREFIX}layout"] = np.asarray(
+        json.dumps(attribute_metadata, separators=(",", ":"), sort_keys=True)
+    )
     writer = np.savez_compressed if compressed else np.savez
     writer(file, **arrays)
 
@@ -389,7 +470,8 @@ def read_ovoxel_npz(
     with np.load(file, allow_pickle=False) as data:
         if "coord" not in data:
             raise ValueError("O-Voxel NPZ is missing coord")
-        coordinates = torch.from_numpy(np.array(data["coord"], dtype=np.int32, copy=True))
+        coordinate_array = np.array(data["coord"], copy=True)
+        coordinates = torch.from_numpy(coordinate_array.astype(np.int32))
         attributes = {
             name: torch.from_numpy(np.array(data[name], copy=True))
             for name in data.files
@@ -398,11 +480,46 @@ def read_ovoxel_npz(
         stored_resolution = data.get(f"{OVOXEL_METADATA_PREFIX}resolution")
         stored_aabb = data.get(f"{OVOXEL_METADATA_PREFIX}aabb")
         stored_packed = data.get(f"{OVOXEL_METADATA_PREFIX}packed")
+        stored_layout = data.get(f"{OVOXEL_METADATA_PREFIX}layout")
+        packed = bool(stored_packed[0]) if stored_packed is not None else None
+        if stored_layout is not None:
+            try:
+                layout_metadata = json.loads(str(stored_layout.item()))
+                expected_attributes = layout_metadata["attributes"]
+            except (AttributeError, KeyError, TypeError, ValueError, json.JSONDecodeError) as error:
+                raise ValueError("O-Voxel NPZ has invalid dtype/layout metadata") from error
+            if (
+                layout_metadata.get("schema_version") != _OVOXEL_NPZ_SCHEMA_VERSION
+                or layout_metadata.get("coordinate_dtype") != "uint16"
+                or layout_metadata.get("coordinate_layout") != "voxel_xyz"
+                or coordinate_array.dtype != np.uint16
+                or not isinstance(expected_attributes, dict)
+                or set(expected_attributes) != set(attributes)
+            ):
+                raise ValueError("O-Voxel NPZ dtype/layout metadata does not match its arrays")
+            for name, value in attributes.items():
+                description = expected_attributes[name]
+                expected_encoding = (
+                    "xyz_bitfield_uint8"
+                    if name == "intersected"
+                    else "nonnegative_float"
+                    if name == "split_weight"
+                    else "unit_uint8"
+                    if packed
+                    else "unit_float"
+                )
+                if (
+                    not isinstance(description, dict)
+                    or description.get("dtype") != str(value.numpy().dtype)
+                    or description.get("encoding") != expected_encoding
+                    or description.get("shape") != list(value.shape[1:])
+                    or description.get("layout") != _ATTRIBUTE_LAYOUTS.get(name, "voxel_channels")
+                ):
+                    raise ValueError(f"O-Voxel NPZ dtype/layout metadata does not match attribute {name!r}")
         if resolution is None and stored_resolution is not None:
             resolution = tuple(int(item) for item in stored_resolution.tolist())
         if aabb is None and stored_aabb is not None:
             aabb = stored_aabb.tolist()
-        packed = bool(stored_packed[0]) if stored_packed is not None else None
     return ovoxel_asset_from_official(
         coordinates,
         attributes,
@@ -581,11 +698,17 @@ class OVoxelBackend:
         asset: OVoxelAsset,
         **kwargs: Any,
     ) -> None:
+        _serialization_resolution(asset, format_name="native O-Voxel VXZ")
         runtime = self._load_runtime(
             ".vxz writing",
             capability=OVoxelCapability.NATIVE_CODEC,
             required_members=("io.write_vxz",),
         )
+        if asset.split_weights is not None:
+            raise ValueError(
+                "The pinned VXZ v0 runtime accepts only uint8 attributes and has no verified lossless "
+                "split_weights encoding; use write_npz() instead"
+            )
         coordinates, attributes = self.to_official(asset, packed=True, morton_order=True)
         runtime.io.write_vxz(
             self._native_file(file),

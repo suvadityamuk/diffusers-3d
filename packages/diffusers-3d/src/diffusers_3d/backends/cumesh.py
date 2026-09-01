@@ -6,7 +6,7 @@ from typing import Any
 import torch
 
 from ..objects import MeshAsset
-from ._optional import load_explicit_backend
+from ._optional import diagnostic_build_identity, load_explicit_backend, validate_accelerated_runtime
 from .defaults import BACKEND_REGISTRY
 from .registry import BackendRegistry
 from .types import BackendCapability
@@ -16,26 +16,16 @@ CUMESH_SOURCE_REVISION = "12289e1062f0603f2f0d0771b02e1395d247f26f"
 
 
 class CuMeshBackend:
-    """Explicit source-attested CuMesh repair, simplify, remesh, UV, and BVH adapter."""
+    """Registry-attested CuMesh repair, simplify, remesh, UV, and BVH adapter."""
 
     def __init__(
         self,
         *,
-        source_revision: str = CUMESH_SOURCE_REVISION,
-        build_id: str,
-        source_url: str = CUMESH_SOURCE_URL,
         device: str | torch.device = "cuda",
         registry: BackendRegistry = BACKEND_REGISTRY,
     ) -> None:
-        if source_url != CUMESH_SOURCE_URL:
-            raise ValueError(f"CuMesh source_url must be {CUMESH_SOURCE_URL!r}")
-        if source_revision != CUMESH_SOURCE_REVISION:
-            raise ValueError(f"CuMesh source_revision must be {CUMESH_SOURCE_REVISION!r}")
-        if not isinstance(build_id, str) or not build_id.strip():
-            raise ValueError("build_id must record the PyTorch/CUDA/compiler build")
-        self.source_url = source_url
-        self.source_revision = source_revision
-        self.build_id = build_id
+        self.source_url = CUMESH_SOURCE_URL
+        self.source_revision = CUMESH_SOURCE_REVISION
         self.device = torch.device(device)
         self._module = load_explicit_backend(
             "cumesh",
@@ -46,18 +36,18 @@ class CuMeshBackend:
             differentiable=False,
             registry=registry,
         )
-        declared_revision = getattr(self._module, "__source_revision__", None)
-        declared_build = getattr(self._module, "__build_id__", None)
-        if declared_revision is None or declared_build is None:
-            raise RuntimeError(
-                "the selected CuMesh wrapper must expose __source_revision__ and __build_id__ attestations"
-            )
-        if declared_revision != source_revision:
-            raise RuntimeError(f"loaded CuMesh declares revision {declared_revision!r}, expected {source_revision!r}")
-        if declared_build != build_id:
-            raise RuntimeError(f"loaded CuMesh declares build {declared_build!r}, expected {build_id!r}")
+        validate_accelerated_runtime(
+            "CuMesh",
+            device=self.device,
+            dtype=torch.float32,
+        )
         if not callable(getattr(self._module, "CuMesh", None)):
             raise RuntimeError("the selected CuMesh build does not expose CuMesh")
+        if not callable(getattr(self._module, "cuBVH", None)):
+            raise RuntimeError("the selected CuMesh build does not expose cuBVH")
+        if not callable(getattr(getattr(self._module, "remeshing", None), "remesh_narrow_band_dc", None)):
+            raise RuntimeError("the selected CuMesh build does not expose remeshing.remesh_narrow_band_dc")
+        self.build_identity = diagnostic_build_identity(self._module)
 
     def _native(self, mesh: MeshAsset) -> Any:
         if type(mesh) is not MeshAsset:
@@ -86,6 +76,13 @@ class CuMeshBackend:
         if not isinstance(values, tuple) or len(values) < 2:
             raise RuntimeError("CuMesh.read() must return vertices and faces")
         vertices, faces = values[:2]
+        metadata = {
+            **template.metadata,
+            "cumesh_operation": operation,
+            "cumesh_source_revision": self.source_revision,
+        }
+        if self.build_identity is not None:
+            metadata["cumesh_build_identity"] = self.build_identity
         return MeshAsset(
             vertices=vertices,
             faces=faces.to(dtype=torch.int64),
@@ -93,12 +90,7 @@ class CuMeshBackend:
             coordinate_system=template.coordinate_system,
             uvs=uvs,
             extras={} if extras is None else dict(extras),
-            metadata={
-                **template.metadata,
-                "cumesh_operation": operation,
-                "cumesh_source_revision": self.source_revision,
-                "cumesh_build_id": self.build_id,
-            },
+            metadata=metadata,
         )
 
     def process_geometry(

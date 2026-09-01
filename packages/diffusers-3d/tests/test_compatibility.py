@@ -15,6 +15,7 @@ def test_compatibility_report_lists_core_versions_and_registry_without_optional_
     report = compatibility_report()
 
     assert report["package"]["diffusers_3d"] == diffusers_3d.__version__
+    assert report["package"]["accelerate"]
     assert report["package"]["diffusers"]
     assert report["package"]["python"]
     assert report["package"]["torch"]

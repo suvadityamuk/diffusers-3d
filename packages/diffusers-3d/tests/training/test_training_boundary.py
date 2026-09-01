@@ -36,6 +36,7 @@ from diffusers_3d import (
     TrainingCheckpointError,
     TrainingConfig3D,
     TrainingConfigurationError,
+    TrainingDependencyError,
     TrainingManifestMismatchError,
     TrainingPolicyError,
     TrainingRecipe3D,
@@ -822,6 +823,60 @@ def _save_stochastic_checkpoint(monkeypatch, checkpoint_directory):
     return config
 
 
+class MaliciousRngPayload:
+    def __init__(self, marker: Path) -> None:
+        self.marker = marker
+
+    def __reduce__(self):
+        expression = f"__import__('pathlib').Path({str(self.marker)!r}).touch()"
+        return eval, (expression,)
+
+
+def test_checkpoint_rejects_old_accelerate_before_deserialization(monkeypatch, tmp_path):
+    monkeypatch.setattr(trainer_module, "version", lambda _: "1.0.0")
+    monkeypatch.setattr(
+        trainer_module,
+        "load_accelerator_file",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("checkpoint was deserialized")),
+    )
+
+    with pytest.raises(TrainingDependencyError, match=r"accelerate>=1\.1\.0.*accelerate==1\.0\.0"):
+        trainer_module._load_validated_rng_state(tmp_path, process_index=0, device_type="cpu")
+
+
+def test_checkpoint_weights_only_rejects_malicious_pickle(monkeypatch, tmp_path):
+    monkeypatch.setattr(trainer_module, "version", lambda _: "1.1.0")
+    marker = tmp_path / "executed"
+    torch.save(MaliciousRngPayload(marker), tmp_path / "random_states_0.pkl")
+
+    with pytest.raises(TrainingCheckpointError, match="safely load RNG state"):
+        trainer_module._load_validated_rng_state(tmp_path, process_index=0, device_type="cpu")
+    assert not marker.exists()
+
+
+def test_accelerator_state_load_uses_explicit_weights_only_where_supported(monkeypatch, tmp_path):
+    config = _save_stochastic_checkpoint(monkeypatch, tmp_path)
+    resumed = Object3DTrainer(
+        StochasticTinyRecipe(TinyTarget()),
+        CountingDataset(),
+        FullFineTune(("denoiser",)),
+        config,
+    ).prepare()
+    original_load_state = resumed.accelerator.load_state
+    captured = {}
+    supports_load_kwargs = "load_kwargs" in trainer_module.signature(type(resumed.accelerator).load_state).parameters
+
+    def load_state(input_directory, load_kwargs=None, **kwargs):
+        captured["load_kwargs"] = load_kwargs
+        if supports_load_kwargs:
+            return original_load_state(input_directory, load_kwargs=load_kwargs, **kwargs)
+        return original_load_state(input_directory, **kwargs)
+
+    monkeypatch.setattr(resumed.accelerator, "load_state", load_state)
+    resumed.load_checkpoint(tmp_path)
+    assert captured["load_kwargs"] == ({"weights_only": True} if supports_load_kwargs else None)
+
+
 def test_checkpoint_rejects_deleted_rng_state(monkeypatch, tmp_path):
     config = _save_stochastic_checkpoint(monkeypatch, tmp_path)
     (tmp_path / ACCELERATOR_STATE_DIRECTORY / "random_states_0.pkl").unlink()
@@ -1058,6 +1113,106 @@ def test_lora_targets_are_recipe_owned_and_actual_adapter_params_are_audited(mon
         id(target.adapter.projection.lora_A["object3d_training"].weight),
         id(target.adapter.projection.lora_B["object3d_training"].weight),
     }
+
+
+class RealPeftComponent(PeftAdapterMixin, nn.Module):
+    def __init__(self) -> None:
+        super().__init__()
+        self.projection = nn.Linear(4, 4)
+
+    def forward(self, inputs):
+        return self.projection(inputs)
+
+
+class RealLoraTarget(Object3DModel):
+    family_id = "real-lora-training"
+    component_role = "denoiser"
+
+    @register_to_config
+    def __init__(self) -> None:
+        super().__init__()
+        self.adapter = RealPeftComponent()
+
+    def forward(self, inputs):
+        return self.adapter(inputs)
+
+
+REAL_LORA_POLICY = ComponentPolicy(
+    key="denoiser",
+    component_path="adapter",
+    expected_types=(RealPeftComponent,),
+    supported_strategies=(FineTuneKind.LORA,),
+    lora_target_modules=("projection",),
+)
+
+
+class RealLoraRecipe(LoraRecipe):
+    recipe_id = "real-lora-objective"
+    recipe_version = "1.0"
+    family_id = "real-lora-training"
+    target_type = RealLoraTarget
+    example_type = Object3DExample
+    batch_type = TinyBatch
+    component_policies = (REAL_LORA_POLICY,)
+    frozen_component_policies = ()
+
+
+def _prepare_real_lora(monkeypatch, *, adapter_seed, disturbance):
+    install_registry(monkeypatch, make_registration(RealLoraRecipe, RealLoraTarget))
+    torch.manual_seed(100)
+    target = RealLoraTarget()
+    random.seed(disturbance)
+    np.random.seed(disturbance)
+    torch.manual_seed(disturbance)
+    random.random()
+    np.random.random()
+    torch.rand(13)
+    trainer = Object3DTrainer(
+        RealLoraRecipe(target),
+        CountingDataset(),
+        LoRAFineTune(("denoiser",), rank=2, adapter_seed=adapter_seed),
+        make_config(seed=41),
+    ).prepare()
+    weights = {
+        name: parameter.detach().clone()
+        for name, parameter in target.adapter.named_parameters()
+        if ".lora_" in name
+    }
+    ambient = (random.random(), float(np.random.random()), torch.rand(4))
+    return weights, ambient, trainer
+
+
+def test_real_peft_lora_initialization_is_seeded_and_isolated(monkeypatch):
+    first_weights, first_ambient, first_trainer = _prepare_real_lora(
+        monkeypatch,
+        adapter_seed=23,
+        disturbance=7,
+    )
+    second_weights, second_ambient, second_trainer = _prepare_real_lora(
+        monkeypatch,
+        adapter_seed=23,
+        disturbance=999,
+    )
+    changed_weights, changed_ambient, _ = _prepare_real_lora(
+        monkeypatch,
+        adapter_seed=24,
+        disturbance=123,
+    )
+
+    assert first_weights.keys() == second_weights.keys() == changed_weights.keys()
+    for name in first_weights:
+        torch.testing.assert_close(first_weights[name], second_weights[name], atol=0.0, rtol=0.0)
+    assert any(not torch.equal(first_weights[name], changed_weights[name]) for name in first_weights)
+    assert first_ambient[:2] == second_ambient[:2] == changed_ambient[:2]
+    torch.testing.assert_close(first_ambient[2], second_ambient[2], atol=0.0, rtol=0.0)
+    torch.testing.assert_close(first_ambient[2], changed_ambient[2], atol=0.0, rtol=0.0)
+    assert dict(first_trainer.manifest.strategy_config)["adapter_seed"] == 23
+    assert dict(second_trainer.manifest.strategy_config)["adapter_seed"] == 23
+
+
+def test_lora_adapter_seed_defaults_to_training_seed(monkeypatch):
+    _, _, trainer = _prepare_real_lora(monkeypatch, adapter_seed=None, disturbance=123)
+    assert dict(trainer.manifest.strategy_config)["adapter_seed"] == 41
 
 
 def test_trainer_has_no_generic_loading_shortcut():

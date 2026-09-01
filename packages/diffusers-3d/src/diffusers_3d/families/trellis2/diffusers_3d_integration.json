@@ -6,7 +6,7 @@
         "geometry-processing"
       ],
       "distribution": "cumesh",
-      "install_hint": "Build CuMesh from revision 12289e1062f0603f2f0d0771b02e1395d247f26f and expose matching source-revision and build-id attestations.",
+      "install_hint": "Install CuMesh directly from revision 12289e1062f0603f2f0d0771b02e1395d247f26f so PEP 610 records the exact source; no custom module attestations are required.",
       "license_class": "permissive",
       "license_identifier": "MIT",
       "name": "cumesh",
@@ -23,7 +23,7 @@
         "sparse-compute"
       ],
       "distribution": "flex_gemm",
-      "install_hint": "Build FlexGEMM from revision 6dd94a859c26ee8246888502eada3dd8ad85532e and expose matching source-revision and build-id attestations.",
+      "install_hint": "Install FlexGEMM directly from revision 6dd94a859c26ee8246888502eada3dd8ad85532e so PEP 610 records the exact source; no custom module attestations are required.",
       "license_class": "permissive",
       "license_identifier": "MIT",
       "name": "flex_gemm",

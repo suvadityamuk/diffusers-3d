@@ -19,7 +19,7 @@ from .types import FineTuneStrategy3D, LoRAFineTune
 
 TRAINING_MANIFEST_NAME = "diffusers_3d_training.json"
 TRAINING_MANIFEST_SCHEMA = "diffusers-3d-training"
-TRAINING_MANIFEST_VERSION = 3
+TRAINING_MANIFEST_VERSION = 4
 
 StrategyConfigValue = int | float | str
 ConfigValue = bool | int | float | str | None
@@ -131,14 +131,17 @@ class TrainingManifest3D:
             raise TrainingManifestError("training manifest strategy_config must not contain duplicate names")
         config_names = {name for name, _ in self.strategy_config}
         if (self.strategy == "full" and config_names) or (
-            self.strategy == "lora" and config_names != {"alpha", "dropout", "rank"}
+            self.strategy == "lora" and config_names != {"adapter_seed", "alpha", "dropout", "rank"}
         ):
             raise TrainingManifestError("strategy_config does not match the declared strategy")
         if self.strategy == "lora":
             config = dict(self.strategy_config)
+            adapter_seed = config["adapter_seed"]
             rank = config["rank"]
             alpha = config["alpha"]
             dropout = config["dropout"]
+            if not isinstance(adapter_seed, int) or isinstance(adapter_seed, bool):
+                raise TrainingManifestError("LoRA strategy adapter_seed must be an integer")
             if not isinstance(rank, int) or isinstance(rank, bool) or rank <= 0:
                 raise TrainingManifestError("LoRA strategy rank must be a positive integer")
             if (
@@ -201,7 +204,15 @@ class TrainingManifest3D:
         names = tuple(sorted(trainable_parameter_names))
         strategy_config: tuple[tuple[str, StrategyConfigValue], ...] = ()
         if type(strategy) is LoRAFineTune:
+            adapter_seed = strategy.adapter_seed
+            if adapter_seed is None:
+                adapter_seed = training_config.get("seed")  # type: ignore[assignment]
+            if not isinstance(adapter_seed, int) or isinstance(adapter_seed, bool):
+                raise TrainingManifestError(
+                    "LoRA manifests require an integer adapter_seed or integer training_config seed"
+                )
             strategy_config = (
+                ("adapter_seed", adapter_seed),
                 ("alpha", strategy.alpha),
                 ("dropout", strategy.dropout),
                 ("rank", strategy.rank),

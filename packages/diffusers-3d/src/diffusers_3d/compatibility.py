@@ -43,6 +43,7 @@ def compatibility_report(*, registry: BackendRegistry = BACKEND_REGISTRY) -> dic
             for status in statuses
         ],
         "package": {
+            "accelerate": _distribution_version("accelerate"),
             "diffusers": _distribution_version("diffusers"),
             "diffusers_3d": __version__,
             "python": platform.python_version(),

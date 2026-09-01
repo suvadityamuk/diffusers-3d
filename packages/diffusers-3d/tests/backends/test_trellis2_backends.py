@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import io
+import json
 import subprocess
 import sys
 import types
+from importlib.machinery import ModuleSpec
 from pathlib import Path
 
 import numpy as np
@@ -12,11 +14,16 @@ import torch
 
 from diffusers_3d import (
     CUMESH_SOURCE_REVISION,
+    CUMESH_SOURCE_URL,
     FLEX_GEMM_BATCH_INDICES,
     FLEX_GEMM_SOURCE_REVISION,
+    FLEX_GEMM_SOURCE_URL,
     BackendCapability,
     BackendLicenseClass,
+    BackendRegistry,
+    BackendSpec,
     BackendSupportLevel,
+    BackendUnavailableError,
     CoordinateSystem,
     CuMeshBackend,
     FlexGemmBackend,
@@ -61,12 +68,12 @@ def _packed_official() -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
             [[31, 32, 33], [34, 35, 36], [37, 38, 39], [40, 41, 42]],
             dtype=torch.uint8,
         ),
-        "split_weight": torch.tensor([[43], [44], [45], [46]], dtype=torch.uint8),
+        "split_weight": torch.tensor([[0.25], [1.5], [12.75], [2.0]], dtype=torch.float32),
     }
     return coordinates, attributes
 
 
-def test_ovoxel_official_uint8_roundtrip_preserves_all_channels_and_grid_metadata():
+def test_ovoxel_official_mixed_roundtrip_preserves_all_channels_and_grid_metadata():
     coordinates, attributes = _packed_official()
     aabb = [[-2.0, -1.0, 0.5], [2.0, 3.0, 4.5]]
     asset = ovoxel_asset_from_official(
@@ -114,7 +121,15 @@ def test_ovoxel_npz_uses_morton_order_and_roundtrips_without_compiled_runtime():
     buffer.seek(0)
     with np.load(buffer, allow_pickle=False) as data:
         assert data["coord"].dtype == np.uint16
-        assert all(data[name].dtype == np.uint8 for name in attributes)
+        assert all(data[name].dtype == np.uint8 for name in attributes if name != "split_weight")
+        assert data["split_weight"].dtype == np.float32
+        layout = json.loads(str(data["__diffusers_3d_ovoxel_layout"].item()))
+        assert layout["attributes"]["split_weight"] == {
+            "dtype": "float32",
+            "encoding": "nonnegative_float",
+            "layout": "voxel_scalar_nonnegative",
+            "shape": [1],
+        }
         stored_coordinates = torch.from_numpy(data["coord"].astype(np.int64))
         codes = morton_encode_3d(stored_coordinates)
         assert bool((codes[1:] >= codes[:-1]).all())
@@ -132,6 +147,50 @@ def test_ovoxel_npz_uses_morton_order_and_roundtrips_without_compiled_runtime():
         assert torch.equal(restored_attributes[name], value[expected_order]), name
     assert restored.metadata["resolution"] == [8, 8, 8]
     assert not restored.metadata["resolution_inferred"]
+
+
+@pytest.mark.parametrize("dtype", [torch.float16, torch.float32])
+def test_ovoxel_npz_preserves_unbounded_split_weight_dtype_and_values(dtype):
+    coordinates, attributes = _packed_official()
+    attributes["split_weight"] = torch.tensor([[0.125], [1.25], [17.5], [3.0]], dtype=dtype)
+    asset = ovoxel_asset_from_official(coordinates, attributes, resolution=8, packed=True)
+    buffer = io.BytesIO()
+
+    write_ovoxel_npz(buffer, asset, compressed=False)
+    buffer.seek(0)
+    restored = read_ovoxel_npz(buffer)
+
+    assert restored.split_weights.dtype is dtype
+    expected_order = torch.argsort(morton_encode_3d(coordinates), stable=True)
+    expected_split_weights = attributes["split_weight"][expected_order]
+    torch.testing.assert_close(restored.split_weights, expected_split_weights, atol=0.0, rtol=0.0)
+    _, restored_attributes = official_tensors_from_ovoxel_asset(restored, packed=True)
+    assert restored_attributes["split_weight"].dtype is dtype
+    torch.testing.assert_close(restored_attributes["split_weight"], expected_split_weights, atol=0.0, rtol=0.0)
+
+
+@pytest.mark.parametrize(
+    ("coordinates", "resolution", "message"),
+    [
+        (torch.tensor([[-1, 0, 0]], dtype=torch.int32), 8, "non-negative"),
+        (torch.tensor([[8, 0, 0]], dtype=torch.int32), 8, "strictly below"),
+        (torch.tensor([[65536, 0, 0]], dtype=torch.int64), 65537, "fit in uint16"),
+    ],
+)
+@pytest.mark.parametrize("morton_order", [False, True])
+def test_ovoxel_npz_rejects_invalid_coordinates_before_serialization(
+    coordinates,
+    resolution,
+    message,
+    morton_order,
+):
+    valid_coordinates, attributes = _packed_official()
+    asset = ovoxel_asset_from_official(valid_coordinates, attributes, resolution=8, packed=True)
+    asset.active_coordinates = coordinates
+    asset.metadata["resolution"] = [resolution, resolution, resolution]
+
+    with pytest.raises(ValueError, match=message):
+        write_ovoxel_npz(io.BytesIO(), asset, morton_order=morton_order)
 
 
 def test_ovoxel_unpacked_mapping_and_morton_codec_are_exact():
@@ -292,12 +351,17 @@ def test_ovoxel_native_facade_delegates_to_pinned_io_dual_grid_and_renderer_api(
     assert calls["read_vxz"] == ("asset.vxz", 3)
     assert asset.metadata["resolution"] == [8, 8, 8]
 
+    with pytest.raises(ValueError, match="no verified lossless split_weights encoding"):
+        backend.write_vxz("lossy.vxz", asset)
+    asset.split_weights = None
     backend.write_vxz("restored.vxz", asset, compression="zstd")
     output_file, output_coordinates, output_attributes, output_kwargs = calls["write_vxz"]
     assert output_file == "restored.vxz"
     expected_order = torch.argsort(morton_encode_3d(coordinates), stable=True)
     assert torch.equal(output_coordinates, coordinates[expected_order])
     for name, value in attributes.items():
+        if name == "split_weight":
+            continue
         assert torch.equal(output_attributes[name], value[expected_order])
     assert output_kwargs == {"compression": "zstd"}
 
@@ -338,7 +402,7 @@ def test_top_level_import_does_not_import_optional_trellis2_backends():
     subprocess.run([sys.executable, "-c", code], check=True)
 
 
-def test_flex_gemm_cpu_fake_enforces_attestation_and_adapts_sparse_operations(
+def test_flex_gemm_realistic_cpu_fake_adapts_sparse_operations_without_custom_attestations(
     monkeypatch,
     registry_factory,
     spec_factory,
@@ -354,8 +418,6 @@ def test_flex_gemm_cpu_fake_enforces_attestation_and_adapts_sparse_operations(
         return features.sum(dim=1, keepdim=True)
 
     module = types.ModuleType("flex_gemm")
-    module.__source_revision__ = FLEX_GEMM_SOURCE_REVISION
-    module.__build_id__ = "torch-cpu-test"
     module.ops = types.SimpleNamespace(
         spconv=types.SimpleNamespace(sparse_submanifold_conv3d=sparse_submanifold_conv3d),
         grid_sample=types.SimpleNamespace(grid_sample_3d=grid_sample_3d),
@@ -372,10 +434,10 @@ def test_flex_gemm_cpu_fake_enforces_attestation_and_adapts_sparse_operations(
         distribution_name="flex-gemm",
     )
     backend = FlexGemmBackend(
-        build_id="torch-cpu-test",
         device="cpu",
         registry=registry_factory((spec,)),
     )
+    assert backend.build_identity is None
     voxels = SparseVoxelAsset(
         coordinates=torch.tensor([[0, 1, 2], [3, 2, 1]], dtype=torch.int64),
         features=torch.tensor([[1.0, 2.0], [3.0, 4.0]]),
@@ -399,25 +461,10 @@ def test_flex_gemm_cpu_fake_enforces_attestation_and_adapts_sparse_operations(
     )
     assert captured["dilation"] == (1, 2, 1)
     assert projected.metadata["flex_gemm_source_revision"] == FLEX_GEMM_SOURCE_REVISION
+    assert "flex_gemm_build_identity" not in projected.metadata
     sampled = backend.grid_sample_3d(voxels, torch.zeros(1, 2, 3), mode="trilinear")
     torch.testing.assert_close(sampled, torch.tensor([[3.0], [7.0]]))
     assert captured["mode"] == "trilinear"
-
-    module.__build_id__ = "different"
-    with pytest.raises(RuntimeError, match="declares build"):
-        FlexGemmBackend(
-            build_id="torch-cpu-test",
-            device="cpu",
-            registry=registry_factory((spec,)),
-        )
-    with pytest.raises(ValueError, match="source_revision"):
-        FlexGemmBackend(
-            source_revision="unreviewed",
-            build_id="torch-cpu-test",
-            device="cpu",
-            registry=registry_factory((spec,)),
-        )
-
 
 def test_cumesh_cpu_fake_covers_repair_simplify_remesh_uv_and_bvh(
     monkeypatch,
@@ -470,8 +517,6 @@ def test_cumesh_cpu_fake_covers_repair_simplify_remesh_uv_and_bvh(
         return vertices, faces
 
     module = types.ModuleType("cumesh")
-    module.__source_revision__ = CUMESH_SOURCE_REVISION
-    module.__build_id__ = "cuda-api-cpu-fake"
     module.CuMesh = FakeCuMesh
     module.cuBVH = FakeBVH
     module.remeshing = types.SimpleNamespace(remesh_narrow_band_dc=remesh)
@@ -487,17 +532,10 @@ def test_cumesh_cpu_fake_covers_repair_simplify_remesh_uv_and_bvh(
         distribution_name="cumesh",
     )
     backend = CuMeshBackend(
-        build_id="cuda-api-cpu-fake",
         device="cpu",
         registry=registry_factory((spec,)),
     )
-    with pytest.raises(ValueError, match="source_revision"):
-        CuMeshBackend(
-            source_revision="unreviewed",
-            build_id="cuda-api-cpu-fake",
-            device="cpu",
-            registry=registry_factory((spec,)),
-        )
+    assert backend.build_identity is None
     mesh = MeshAsset(
         vertices=torch.tensor([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]]),
         faces=torch.tensor([[0, 1, 2]], dtype=torch.int64),
@@ -522,6 +560,74 @@ def test_cumesh_cpu_fake_covers_repair_simplify_remesh_uv_and_bvh(
     assert "remove_duplicate_faces" in calls
     assert ("simplify", 1, False) in calls
     assert ("remesh", 8, "FakeBVH") in calls
+
+
+@pytest.mark.parametrize(
+    ("name", "source_url", "source_revision", "capabilities", "differentiable", "backend_type"),
+    [
+        (
+            "flex_gemm",
+            FLEX_GEMM_SOURCE_URL,
+            FLEX_GEMM_SOURCE_REVISION,
+            (BackendCapability.SPARSE_COMPUTE,),
+            True,
+            FlexGemmBackend,
+        ),
+        (
+            "cumesh",
+            CUMESH_SOURCE_URL,
+            CUMESH_SOURCE_REVISION,
+            (BackendCapability.GEOMETRY_PROCESSING, BackendCapability.CONVERSION),
+            False,
+            CuMeshBackend,
+        ),
+    ],
+)
+def test_source_backends_reject_wrong_pep610_source_before_import(
+    monkeypatch,
+    name,
+    source_url,
+    source_revision,
+    capabilities,
+    differentiable,
+    backend_type,
+):
+    monkeypatch.delitem(sys.modules, name, raising=False)
+    spec = BackendSpec(
+        name=name,
+        import_names=(name,),
+        distribution_names=(name,),
+        capabilities=frozenset(capabilities),
+        support_level=BackendSupportLevel.ACCELERATED,
+        license_class=BackendLicenseClass.PERMISSIVE,
+        devices=frozenset({"cpu"}),
+        dtypes=frozenset({"float32"}),
+        differentiable=differentiable,
+        install_hint=f"Build {name} from its pinned source",
+        source_url=source_url,
+        source_revision=source_revision,
+        requires_source_provenance=True,
+    )
+
+    class WrongDistribution:
+        def read_text(self, filename):
+            assert filename == "direct_url.json"
+            return json.dumps(
+                {
+                    "url": "https://github.com/untrusted/fork.git",
+                    "vcs_info": {"vcs": "git", "commit_id": source_revision},
+                }
+            )
+
+    registry = BackendRegistry(
+        (spec,),
+        module_finder=lambda candidate: ModuleSpec(candidate, loader=None),
+        version_getter=lambda _: "1.0",
+        distribution_getter=lambda _: WrongDistribution(),
+    )
+    with pytest.raises(BackendUnavailableError, match="does not match required source"):
+        backend_type(device="cpu", registry=registry)
+    assert name not in sys.modules
 
 
 def test_pbr_facade_requires_all_backends_and_explicit_research_license(

@@ -5,7 +5,7 @@ from collections.abc import Mapping, Sequence
 import torch
 
 from ..objects import SparseVoxelAsset
-from ._optional import load_explicit_backend
+from ._optional import diagnostic_build_identity, load_explicit_backend, validate_accelerated_runtime
 from .defaults import BACKEND_REGISTRY
 from .registry import BackendRegistry
 from .types import BackendCapability
@@ -18,29 +18,19 @@ FLEX_GEMM_BATCH_INDICES = "flex_gemm_batch_indices"
 class FlexGemmBackend:
     """Narrow FlexGEMM sparse-convolution and 3D grid-sampling adapter.
 
-    FlexGEMM is source-built and upstream TRELLIS.2 does not pin it. Callers
-    therefore have to record both the source revision and build identity.
+    The registry verifies the exact PEP 610 source revision before this class
+    imports the upstream runtime.
     """
 
     def __init__(
         self,
         *,
-        source_revision: str = FLEX_GEMM_SOURCE_REVISION,
-        build_id: str,
-        source_url: str = FLEX_GEMM_SOURCE_URL,
         device: str | torch.device = "cuda",
         dtype: torch.dtype = torch.float32,
         registry: BackendRegistry = BACKEND_REGISTRY,
     ) -> None:
-        if source_url != FLEX_GEMM_SOURCE_URL:
-            raise ValueError(f"FlexGEMM source_url must be {FLEX_GEMM_SOURCE_URL!r}")
-        if source_revision != FLEX_GEMM_SOURCE_REVISION:
-            raise ValueError(f"FlexGEMM source_revision must be {FLEX_GEMM_SOURCE_REVISION!r}")
-        if not isinstance(build_id, str) or not build_id.strip():
-            raise ValueError("build_id must record the PyTorch/Triton/compiler build")
-        self.source_url = source_url
-        self.source_revision = source_revision
-        self.build_id = build_id
+        self.source_url = FLEX_GEMM_SOURCE_URL
+        self.source_revision = FLEX_GEMM_SOURCE_REVISION
         self.device = torch.device(device)
         self.dtype = dtype
         self._module = load_explicit_backend(
@@ -52,18 +42,19 @@ class FlexGemmBackend:
             differentiable=True,
             registry=registry,
         )
-        declared_revision = getattr(self._module, "__source_revision__", None)
-        declared_build = getattr(self._module, "__build_id__", None)
-        if declared_revision is None or declared_build is None:
-            raise RuntimeError(
-                "the selected FlexGEMM wrapper must expose __source_revision__ and __build_id__ attestations"
-            )
-        if declared_revision != source_revision:
-            raise RuntimeError(
-                f"loaded FlexGEMM declares revision {declared_revision!r}, expected {source_revision!r}"
-            )
-        if declared_build != build_id:
-            raise RuntimeError(f"loaded FlexGEMM declares build {declared_build!r}, expected {build_id!r}")
+        validate_accelerated_runtime(
+            "FlexGEMM",
+            device=self.device,
+            dtype=self.dtype,
+            require_triton=self.device.type == "cuda",
+        )
+        spconv = getattr(getattr(self._module, "ops", None), "spconv", None)
+        grid_sample = getattr(getattr(self._module, "ops", None), "grid_sample", None)
+        if not callable(getattr(spconv, "sparse_submanifold_conv3d", None)):
+            raise RuntimeError("the selected FlexGEMM build does not expose ops.spconv.sparse_submanifold_conv3d")
+        if not callable(getattr(grid_sample, "grid_sample_3d", None)):
+            raise RuntimeError("the selected FlexGEMM build does not expose ops.grid_sample.grid_sample_3d")
+        self.build_identity = diagnostic_build_identity(self._module)
 
     def _validate_voxels(self, voxels: SparseVoxelAsset) -> torch.Tensor:
         if type(voxels) is not SparseVoxelAsset:
@@ -133,6 +124,12 @@ class FlexGemmBackend:
         features = output[0] if isinstance(output, tuple) else output
         if not isinstance(features, torch.Tensor) or features.ndim != 2:
             raise RuntimeError("FlexGEMM sparse convolution returned an invalid feature tensor")
+        metadata = {
+            **voxels.metadata,
+            "flex_gemm_source_revision": self.source_revision,
+        }
+        if self.build_identity is not None:
+            metadata["flex_gemm_build_identity"] = self.build_identity
         return SparseVoxelAsset(
             coordinates=voxels.coordinates,
             features=features,
@@ -142,11 +139,7 @@ class FlexGemmBackend:
             coordinate_system=voxels.coordinate_system,
             semantic_labels=voxels.semantic_labels,
             extras=voxels.extras,
-            metadata={
-                **voxels.metadata,
-                "flex_gemm_source_revision": self.source_revision,
-                "flex_gemm_build_id": self.build_id,
-            },
+            metadata=metadata,
         )
 
     def grid_sample_3d(

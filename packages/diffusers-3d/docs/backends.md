@@ -38,13 +38,18 @@ The TRELLIS.2 adapters intentionally expose only reviewed narrow API surfaces:
   simplify, narrow-band remesh, UV unwrap, BVH construction, and unsigned distance. The package pins FlexGEMM at
   `6dd94a859c26ee8246888502eada3dd8ad85532e` and CuMesh at
   `12289e1062f0603f2f0d0771b02e1395d247f26f`. Discovery requires matching `direct_url.json` VCS provenance, and
-  the loaded runtime wrappers must attest to the pinned revision and caller-supplied build ID. Installable direct
-  source records are in `requirements/backends/flex-gemm.txt` and `requirements/backends/cumesh.txt`.
-- `OVoxelBackend` provides pure tensor schema conversion, official uint8 packing, and deterministic Morton-ordered
-  NPZ without loading an extension. `.vxz`, flexible-dual-grid mesh extraction, and voxel rendering are separate
+  this check completes before import. Runtime loading then validates the required upstream APIs and active
+  Torch/device/dtype/CUDA/Triton surfaces. Raw upstream modules need no custom `__source_revision__` or `__build_id__`
+  attributes; an upstream version/build string is retained only as diagnostic metadata when present. Installable
+  direct source records are in `requirements/backends/flex-gemm.txt` and `requirements/backends/cumesh.txt`.
+- `OVoxelBackend` provides pure tensor schema conversion, unit-domain uint8 packing, lossless float16/float32 split
+  weights, explicit NPZ dtype/layout metadata, and deterministic Morton ordering without loading an extension.
+  `.vxz`, flexible-dual-grid mesh extraction, and voxel rendering are separate
   native capabilities delegated to the O-Voxel API from pinned TRELLIS.2 revision
   `75fbf0183001ed9876c8dbb35de6b68552ee08bd`. `.vxz` does not contain grid resolution metadata, so callers must
-  supply it when reading. The pinned `o-voxel` subdirectory requirement is recorded in
+  supply it when reading. VXZ v0 accepts only uint8 attributes, so assets containing unbounded split weights are
+  rejected rather than omitted or quantized; use NPZ for lossless serialization. Every serializer rejects negative,
+  uint16-overflowing, or out-of-resolution coordinates before writing. The pinned `o-voxel` subdirectory requirement is recorded in
   `requirements/backends/o-voxel.txt`; install it together with the two direct dependency records.
 - The pinned `o_voxel` top-level package eagerly imports its nvdiffrast-dependent postprocess module. Native O-Voxel
   loading therefore requires explicit nvdiffrast license acknowledgement even for codec/conversion members. Pure
