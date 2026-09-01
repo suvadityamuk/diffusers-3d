@@ -1,0 +1,106 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "diffusers-3d"
+version = "0.1.0.dev0"
+description = "Object-native 3D generation and fine-tuning built on Diffusers"
+readme = "README.md"
+requires-python = ">=3.10"
+license = "Apache-2.0 AND MIT"
+license-files = [
+    "LICENSE-APACHE-2.0",
+    "src/diffusers_3d/families/trellis/LICENSE-MIT",
+    "src/diffusers_3d/families/trellis/NOTICE",
+    "src/diffusers_3d/families/trellis2/LICENSE-MIT",
+    "src/diffusers_3d/families/trellis2/NOTICE",
+]
+authors = [{ name = "The Diffusers 3D contributors" }]
+classifiers = [
+    "Development Status :: 2 - Pre-Alpha",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Science/Research",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+dependencies = [
+    "accelerate>=1.1.0",
+    "diffusers>=0.40.0.dev0,<0.41",
+    "huggingface-hub",
+    "numpy",
+    "Pillow",
+    "safetensors",
+    "torch>=2.4",
+    "transformers>=5.5.0",
+]
+
+[project.scripts]
+diffusers-3d-check-release = "diffusers_3d.contributions.removal:release_check_main"
+diffusers-3d-convert-trellis = "diffusers_3d.families.trellis.conversion:main"
+diffusers-3d-convert-trellis2 = "diffusers_3d.families.trellis2.conversion:main"
+diffusers-3d-report = "diffusers_3d.compatibility:main"
+diffusers-3d-validate = "diffusers_3d.contributions.cli:main"
+
+[project.optional-dependencies]
+portable = [
+    "scikit-image",
+    "trimesh",
+    "xatlas",
+]
+gaussian = ["gsplat"]
+training = ["peft"]
+reference-test = [
+    "einops",
+]
+test = [
+    "build",
+    "pytest",
+    "pytest-cov",
+    "ruff",
+]
+
+[project.urls]
+Repository = "https://github.com/suvadityamuk/diffusers-3d"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+diffusers_3d = [
+    "py.typed",
+    "families/trellis/*.json",
+    "families/trellis/*.md",
+    "families/trellis/LICENSE*",
+    "families/trellis/NOTICE",
+    "families/trellis2/*.json",
+    "families/trellis2/*.md",
+    "families/trellis2/LICENSE*",
+    "families/trellis2/NOTICE",
+]
+
+[tool.pytest.ini_options]
+addopts = "-ra --strict-markers"
+markers = [
+    "portable: requires the optional portable geometry backends",
+    "accelerated: requires an actual GPU or compiled accelerated backend",
+    "research_only: requires an explicitly accepted research-only backend or license",
+    "reference_parity: compares against a pinned upstream reference checkout",
+    "integration: exercises multiple package subsystems together",
+    "release: verifies release metadata or built distribution contents",
+]
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 119
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+ignore = ["C901", "E501"]
+select = ["C", "E", "F", "I", "W"]
+
+[tool.ruff.format]
+quote-style = "double"

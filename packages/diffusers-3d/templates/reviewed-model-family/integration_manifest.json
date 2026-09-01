@@ -1,0 +1,136 @@
+{
+  "backends": [
+    {
+      "capabilities": [
+        "tensor-compute"
+      ],
+      "distribution": "torch",
+      "install_hint": "Install diffusers-3d; PyTorch is a core package dependency.",
+      "license_class": "permissive",
+      "license_identifier": "BSD-3-Clause",
+      "name": "torch",
+      "required": true,
+      "source": null,
+      "support_level": "portable",
+      "version": "2.4"
+    }
+  ],
+  "components": [
+    {
+      "checkpoint_conversion": {
+        "converter": "reviewed_family.conversion.convert_denoiser_checkpoint",
+        "source_format": "reference-state-dict",
+        "target_format": "diffusers-safetensors",
+        "test": "tests/reviewed_family/test_conversion.py::test_denoiser_conversion_roundtrip"
+      },
+      "class_name": "reviewed_family.model.ReviewedDenoiser",
+      "parity": [
+        {
+          "atol": 0.0001,
+          "kind": "inference",
+          "passed": false,
+          "reference": "NOT RUN: replace with the exact pinned upstream denoiser invocation.",
+          "rtol": 0.0001,
+          "test": "NOT PROVIDED: replace with an executable denoiser parity node ID."
+        }
+      ],
+      "role": "denoiser"
+    },
+    {
+      "checkpoint_conversion": {
+        "converter": "reviewed_family.conversion.convert_pipeline_config",
+        "source_format": "reference-config",
+        "target_format": "diffusers-config",
+        "test": "tests/reviewed_family/test_conversion.py::test_pipeline_config_roundtrip"
+      },
+      "class_name": "reviewed_family.pipeline.ReviewedObject3DPipeline",
+      "parity": [
+        {
+          "atol": 0.001,
+          "kind": "inference",
+          "passed": false,
+          "reference": "NOT RUN: replace with the exact pinned upstream image-to-3D workflow.",
+          "rtol": 0.001,
+          "test": "NOT PROVIDED: replace with an executable pipeline parity node ID."
+        }
+      ],
+      "role": "pipeline"
+    }
+  ],
+  "integration_id": "reviewed-family",
+  "level": "reviewed_package",
+  "licenses": {
+    "artifacts": [
+      {
+        "artifact": "converted-checkpoints",
+        "license": {
+          "classification": "permissive",
+          "identifier": "Apache-2.0",
+          "url": "https://www.apache.org/licenses/LICENSE-2.0"
+        }
+      }
+    ],
+    "model": {
+      "classification": "permissive",
+      "identifier": "Apache-2.0",
+      "url": "https://www.apache.org/licenses/LICENSE-2.0"
+    }
+  },
+  "schema": "diffusers-3d-integration",
+  "schema_version": 2,
+  "training": {
+    "backward_parity": {
+      "atol": 0.0001,
+      "kind": "backward",
+      "passed": false,
+      "reference": "NOT RUN: replace with pinned upstream gradients for every recipe-owned parameter.",
+      "rtol": 0.0001,
+      "test": "NOT PROVIDED: replace with an executable backward parity node ID."
+    },
+    "batch_class": "reviewed_family.training_recipe.ReviewedBatch",
+    "checkpoint_parity": {
+      "atol": 0.0,
+      "kind": "checkpoint",
+      "passed": false,
+      "reference": "NOT RUN: replace with an exact save, load, and continuation comparison.",
+      "rtol": 0.0,
+      "test": "NOT PROVIDED: replace with an executable checkpoint continuation node ID."
+    },
+    "components": [
+      "denoiser"
+    ],
+    "example_class": "diffusers_3d.data.conditions.Object3DExample",
+    "objective_parity": {
+      "atol": 0.0001,
+      "kind": "objective",
+      "passed": false,
+      "reference": "NOT RUN: replace with the pinned upstream objective on an exact typed batch.",
+      "rtol": 0.0001,
+      "test": "NOT PROVIDED: replace with an executable objective parity node ID."
+    },
+    "recipe_class": "reviewed_family.training_recipe.ReviewedTrainingRecipe",
+    "recipe_id": "reviewed-family",
+    "recipe_version": "1.0",
+    "strategies": [
+      "full"
+    ],
+    "target_class": "reviewed_family.pipeline.ReviewedObject3DPipeline",
+    "trainer_registration": "reviewed_family.registrations.REVIEWED_TRAINING_REGISTRATION"
+  },
+  "upstream": {
+    "repository": "https://github.com/your-org/reviewed-family",
+    "revision": "2222222222222222222222222222222222222222"
+  },
+  "workflow": {
+    "input_representations": [
+      "image"
+    ],
+    "output_representations": [
+      "triangle-mesh"
+    ],
+    "task_ids": [
+      "image-to-3d"
+    ],
+    "workflow": "standard-pipeline"
+  }
+}
