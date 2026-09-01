@@ -57,7 +57,9 @@ def validate_accelerated_runtime(
             try:
                 triton = importlib.import_module("triton")
             except (ImportError, OSError, RuntimeError) as error:
-                raise RuntimeError(f"{backend_name} requires Triton compatible with the active torch runtime") from error
+                raise RuntimeError(
+                    f"{backend_name} requires Triton compatible with the active torch runtime"
+                ) from error
             if not callable(getattr(triton, "jit", None)):
                 raise RuntimeError(f"{backend_name} requires the public triton.jit runtime API")
 

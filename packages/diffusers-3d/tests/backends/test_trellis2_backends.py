@@ -466,6 +466,7 @@ def test_flex_gemm_realistic_cpu_fake_adapts_sparse_operations_without_custom_at
     torch.testing.assert_close(sampled, torch.tensor([[3.0], [7.0]]))
     assert captured["mode"] == "trilinear"
 
+
 def test_cumesh_cpu_fake_covers_repair_simplify_remesh_uv_and_bvh(
     monkeypatch,
     registry_factory,

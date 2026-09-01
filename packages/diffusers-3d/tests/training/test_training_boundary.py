@@ -1174,9 +1174,7 @@ def _prepare_real_lora(monkeypatch, *, adapter_seed, disturbance):
         make_config(seed=41),
     ).prepare()
     weights = {
-        name: parameter.detach().clone()
-        for name, parameter in target.adapter.named_parameters()
-        if ".lora_" in name
+        name: parameter.detach().clone() for name, parameter in target.adapter.named_parameters() if ".lora_" in name
     }
     ambient = (random.random(), float(np.random.random()), torch.rand(4))
     return weights, ambient, trainer
