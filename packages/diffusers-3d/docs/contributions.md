@@ -125,7 +125,3 @@ diffusers-3d-check-release /tmp/diffusers-3d-sdist
 The command reports every reserved-marker path, line, and column and exits nonzero until removal is complete. Its
 default marker is reconstructed at runtime so the checker does not place the blocked byte sequence in its own wheel.
 Callers may use `--marker` for another release-blocking marker.
-
-For Hunyuan3D-2.1, release notes must state that the VAE is decode-only, training requires precomputed shape latents,
-no official approximately 7 GB checkpoint/GPU quality run has been performed, and Hunyuan-derived code and converted
-checkpoints remain under the restricted Tencent Hunyuan 3D 2.1 Community License Agreement.

@@ -57,7 +57,7 @@ def _shipped_manifests() -> tuple[IntegrationManifest3D, ...]:
 
 def test_every_shipped_family_manifest_validates_and_references_executable_evidence():
     manifests = _shipped_manifests()
-    assert {manifest.integration_id for manifest in manifests} == {"hunyuan3d-2.1", "trellis", "trellis2"}
+    assert {manifest.integration_id for manifest in manifests} == {"trellis", "trellis2"}
     test_functions: dict[Path, set[str]] = {}
 
     for manifest in manifests:

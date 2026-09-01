@@ -16,9 +16,8 @@ UV unwrapping respectively. Constructing an adapter explicitly selects its exact
 the optional module is imported. Their NumPy/CPU conversions are non-differentiable.
 
 `ScikitImageBackend.extract_surface` generically defaults to
-`gradient_direction="ascent"` and `allow_degenerate=False`. Family integrations
-must pass different upstream settings explicitly; Hunyuan3D uses `"descent"`
-and `True`.
+`gradient_direction="ascent"` and `allow_degenerate=False`. Family integrations must pass different upstream
+settings explicitly when required.
 
 Trimesh I/O supports OBJ, PLY, GLB, and STL. The adapter rejects channels, transforms, or coordinate-system metadata
 that a requested format cannot preserve instead of silently dropping them. XAtlas remaps vertex-aligned channels

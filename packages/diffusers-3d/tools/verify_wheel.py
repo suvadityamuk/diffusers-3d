@@ -7,15 +7,12 @@ import zipfile
 from pathlib import Path, PurePosixPath
 
 FAMILIES = {
-    "hunyuan3d": "LICENSE-TENCENT-HUNYUAN-3D-2.1",
     "trellis": "LICENSE-MIT",
     "trellis2": "LICENSE-MIT",
 }
-LICENSE_EXPRESSION = "Apache-2.0 AND MIT AND LicenseRef-Tencent-Hunyuan-3D-2.1-Community"
+LICENSE_EXPRESSION = "Apache-2.0 AND MIT"
 LICENSE_FILES = {
     "LICENSE-APACHE-2.0",
-    "src/diffusers_3d/families/hunyuan3d/LICENSE-TENCENT-HUNYUAN-3D-2.1",
-    "src/diffusers_3d/families/hunyuan3d/NOTICE",
     "src/diffusers_3d/families/trellis/LICENSE-MIT",
     "src/diffusers_3d/families/trellis/NOTICE",
     "src/diffusers_3d/families/trellis2/LICENSE-MIT",
@@ -23,7 +20,6 @@ LICENSE_FILES = {
 }
 ENTRY_POINTS = {
     "diffusers-3d-check-release": "diffusers_3d.contributions.removal:release_check_main",
-    "diffusers-3d-convert-hunyuan3d": "diffusers_3d.families.hunyuan3d.conversion:main",
     "diffusers-3d-convert-trellis": "diffusers_3d.families.trellis.conversion:main",
     "diffusers-3d-convert-trellis2": "diffusers_3d.families.trellis2.conversion:main",
     "diffusers-3d-report": "diffusers_3d.compatibility:main",

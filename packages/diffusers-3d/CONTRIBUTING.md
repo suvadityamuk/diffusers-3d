@@ -48,9 +48,7 @@ Before publication, maintainers must confirm:
 - [ ] `verify_wheel.py` and `verify_sdist.py` confirm complete package modules, entry points, PEP 639 license metadata,
   required source/test/template documentation, and no temporary artifacts;
 
-For the current Hunyuan3D integration, review must account for its decode-only VAE, precomputed-latent-only training,
-the absence of an official approximately 7 GB checkpoint/GPU quality run, and the restricted Tencent Hunyuan 3D 2.1
-Community License Agreement. Code readiness does not select a final version or publish the package.
+Code readiness does not select a final version or publish the package.
 
 ## Dependency requirements
 

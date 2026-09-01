@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import inspect
-import types
 from dataclasses import dataclass
 from typing import Any, Callable
 
@@ -10,11 +9,6 @@ import torch
 from torch.utils.checkpoint import checkpoint as apply_checkpoint
 
 from diffusers_3d import (
-    Hunyuan3DDinov2Conditioner,
-    Hunyuan3DFlowMatchEulerDiscreteScheduler,
-    Hunyuan3DImageToShapePipeline,
-    Hunyuan3DShapeDiTModel,
-    Hunyuan3DShapeVAE,
     MeshAsset,
     Object3DModelRegistration,
     Object3DPipelineRegistration,
@@ -62,41 +56,6 @@ def _output_tensor(output: Any, *, return_dict: bool) -> torch.Tensor:
     if hasattr(output, "sample"):
         return output.sample
     return output.embeddings
-
-
-def _invoke_hunyuan_dit(model: Hunyuan3DShapeDiTModel, batch_size: int, return_dict: bool) -> torch.Tensor:
-    device, dtype = _parameter_properties(model)
-    hidden_states = torch.linspace(
-        -1.0,
-        1.0,
-        batch_size * model.config.input_size * model.config.in_channels,
-        device=device,
-        dtype=dtype,
-    ).reshape(batch_size, model.config.input_size, model.config.in_channels)
-    timesteps = torch.linspace(0.2, 0.8, batch_size, device=device, dtype=dtype)
-    context = torch.linspace(
-        -0.5,
-        0.5,
-        batch_size * model.config.text_len * model.config.context_dim,
-        device=device,
-        dtype=dtype,
-    ).reshape(batch_size, model.config.text_len, model.config.context_dim)
-    return _output_tensor(
-        model(hidden_states, timesteps, context, return_dict=return_dict),
-        return_dict=return_dict,
-    )
-
-
-def _invoke_hunyuan_vae(model: Hunyuan3DShapeVAE, batch_size: int, return_dict: bool) -> torch.Tensor:
-    device, dtype = _parameter_properties(model)
-    latents = torch.linspace(
-        -1.0,
-        1.0,
-        batch_size * model.num_latents * model.embed_dim,
-        device=device,
-        dtype=dtype,
-    ).reshape(batch_size, model.num_latents, model.embed_dim)
-    return _output_tensor(model(latents, return_dict=return_dict), return_dict=return_dict)
 
 
 def _invoke_conditioner(model: torch.nn.Module, batch_size: int, return_dict: bool) -> torch.Tensor:
@@ -149,9 +108,6 @@ def _invoke_sparse_decoder(model: TrellisSparseStructureDecoder, batch_size: int
 
 
 MODEL_CONTRACTS = (
-    ModelContract(Hunyuan3DShapeDiTModel, _invoke_hunyuan_dit),
-    ModelContract(Hunyuan3DShapeVAE, _invoke_hunyuan_vae),
-    ModelContract(Hunyuan3DDinov2Conditioner, _invoke_conditioner),
     ModelContract(TrellisSparseStructureFlowModel, _invoke_trellis_flow),
     ModelContract(TrellisSparseStructureDecoder, _invoke_sparse_decoder),
     ModelContract(TrellisDinov2Conditioner, _invoke_conditioner),
@@ -212,7 +168,6 @@ GRADIENT_CHECKPOINTING_CONTRACTS = tuple(
     for contract in MODEL_CONTRACTS
     if contract.model_type
     in {
-        Hunyuan3DShapeDiTModel,
         TrellisSparseStructureFlowModel,
         Trellis2SparseStructureFlowModel,
     }
@@ -292,8 +247,6 @@ def test_reviewed_models_expose_gradient_checkpointing_exactly_where_supported()
 
 def test_reviewed_attention_models_support_processor_and_native_backend_hooks():
     expected = {
-        Hunyuan3DShapeDiTModel,
-        Hunyuan3DShapeVAE,
         TrellisSparseStructureFlowModel,
         Trellis2SparseStructureFlowModel,
     }
@@ -316,34 +269,6 @@ def test_reviewed_attention_models_support_processor_and_native_backend_hooks():
         with torch.no_grad():
             assert contract.invoke(model, 2, True).shape[0] == 2
     assert found == expected
-
-
-def _triangle_decode(self, latents, **kwargs):
-    del kwargs
-    meshes = []
-    for value in latents.mean(dim=(1, 2)):
-        vertices = torch.stack(
-            (
-                torch.stack((value, value.new_tensor(0.0), value.new_tensor(0.0))),
-                torch.stack((value + 1.0, value.new_tensor(0.0), value.new_tensor(0.0))),
-                torch.stack((value, value.new_tensor(1.0), value.new_tensor(0.0))),
-            )
-        )
-        meshes.append(MeshAsset(vertices=vertices, faces=torch.tensor([[0, 1, 2]], dtype=torch.int64)))
-    return tuple(meshes)
-
-
-def _hunyuan_pipeline():
-    pipeline = Hunyuan3DImageToShapePipeline(
-        conditioner=Hunyuan3DDinov2Conditioner(**Hunyuan3DDinov2Conditioner.tiny_config()),
-        denoiser=Hunyuan3DShapeDiTModel(**Hunyuan3DShapeDiTModel.tiny_config()),
-        vae=Hunyuan3DShapeVAE(**Hunyuan3DShapeVAE.tiny_config()),
-        scheduler=Hunyuan3DFlowMatchEulerDiscreteScheduler(num_train_timesteps=1000),
-        image_processor_size=8,
-        image_processor_border_ratio=0.0,
-    )
-    pipeline.vae.decode_to_meshes = types.MethodType(_triangle_decode, pipeline.vae)
-    return pipeline
 
 
 def _trellis_pipeline():
@@ -374,24 +299,14 @@ def _trellis2_pipeline():
 
 
 PIPELINE_FACTORIES = (
-    pytest.param(_hunyuan_pipeline, id="Hunyuan3DImageToShapePipeline"),
     pytest.param(_trellis_pipeline, id="TrellisImageTo3DPipeline"),
     pytest.param(_trellis2_pipeline, id="Trellis2ImageTo3DPipeline"),
 )
 
 
-def _invoke_pipeline(pipeline, *, return_dict: bool, callback=None):
+def _invoke_pipeline(pipeline, *, return_dict: bool):
     _, dtype = _parameter_properties(pipeline)
     images = torch.linspace(0.0, 1.0, 2 * 3 * 8 * 8, dtype=dtype).reshape(2, 3, 8, 8)
-    if isinstance(pipeline, Hunyuan3DImageToShapePipeline):
-        latents = torch.linspace(-1.0, 1.0, 2 * 4 * 8, dtype=dtype).reshape(2, 4, 8)
-        return pipeline(
-            images,
-            latents=latents,
-            num_inference_steps=2,
-            callback_on_step_end=callback,
-            return_dict=return_dict,
-        )
     if isinstance(pipeline, Trellis2ImageTo3DPipeline):
         latents = torch.linspace(-1.0, 1.0, 2 * 2 * 2 * 2 * 2, dtype=dtype).reshape(2, 2, 2, 2, 2)
         return pipeline(
@@ -417,15 +332,7 @@ def _asset_tensor(asset) -> torch.Tensor:
 @pytest.mark.parametrize("pipeline_factory", PIPELINE_FACTORIES)
 def test_reviewed_pipeline_batch_dtype_device_and_tuple_contract(pipeline_factory):
     pipeline = pipeline_factory().to(device="cpu", dtype=torch.float64)
-    callback_steps = []
-
-    def callback(_pipeline, step_index, _timestep, callback_kwargs):
-        callback_steps.append(step_index)
-        assert callback_kwargs["latents"].shape[0] == 2
-        return None
-
-    callback_fn = callback if isinstance(pipeline, Hunyuan3DImageToShapePipeline) else None
-    output = _invoke_pipeline(pipeline, return_dict=True, callback=callback_fn)
+    output = _invoke_pipeline(pipeline, return_dict=True)
     tuple_output = _invoke_pipeline(pipeline, return_dict=False)
 
     assert len(output.objects) == 2
@@ -438,11 +345,7 @@ def test_reviewed_pipeline_batch_dtype_device_and_tuple_contract(pipeline_factor
     torch.testing.assert_close(output.latents.latents, tuple_output[1].latents)
 
     signature = inspect.signature(pipeline.__call__)
-    if isinstance(pipeline, Hunyuan3DImageToShapePipeline):
-        assert callback_steps == [0, 1]
-        assert "callback_on_step_end" in signature.parameters
-    else:
-        assert "callback_on_step_end" not in signature.parameters
+    assert "callback_on_step_end" not in signature.parameters
 
 
 def test_pipeline_contracts_cover_every_reviewed_registration():
@@ -450,6 +353,6 @@ def test_pipeline_contracts_cover_every_reviewed_registration():
         Object3DModelRegistration,
         Object3DPipelineRegistration,
     )
-    assert {factory().__class__ for factory in (_hunyuan_pipeline, _trellis_pipeline, _trellis2_pipeline)} == {
+    assert {factory().__class__ for factory in (_trellis_pipeline, _trellis2_pipeline)} == {
         registration.pipeline_class for registration in pipeline_registrations
     }

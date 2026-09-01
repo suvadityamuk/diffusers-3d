@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import re
 import subprocess
 import sys
 from pathlib import Path
@@ -33,14 +32,10 @@ PINNED_SOURCE_REQUIREMENTS = {
 
 
 @pytest.mark.release
-def test_test_extra_uses_only_headless_opencv():
+def test_distribution_does_not_require_opencv():
     pyproject = (PACKAGE_ROOT / "pyproject.toml").read_text(encoding="utf-8")
-
-    match = re.search(r"(?ms)^test = \[(?P<dependencies>.*?)^\]$", pyproject)
-    assert match is not None
-    dependencies = set(re.findall(r'"([^"]+)"', match.group("dependencies")))
-    assert "opencv-python-headless" in dependencies
-    assert "opencv-python" not in dependencies
+    assert '"opencv-python-headless"' not in pyproject
+    assert '"opencv-python"' not in pyproject
 
 
 @pytest.mark.release

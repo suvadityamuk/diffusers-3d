@@ -25,7 +25,7 @@ being simulated.
 python -m pip install -e .
 python -m pip install -e "packages/diffusers-3d[test,training]" --no-deps
 python -m pip install \
-  accelerate build opencv-python-headless peft pytest pytest-cov PyYAML ruff safetensors \
+  accelerate build peft pytest pytest-cov ruff safetensors \
   "transformers>=5.5.0"
 ```
 
@@ -59,32 +59,25 @@ python -m pytest packages/diffusers-3d/tests
 
 Reference parity defaults to these pinned source trees:
 
-- `/tmp/Hunyuan3D-2.1` at `82920d643c0dc2f7bfd7255f45f62d386edfe60c`
 - `/tmp/TRELLIS` at `442aa1e1afb9014e80681d3bf604e8d728a86ee7`
 - `/tmp/TRELLIS.2` at `75fbf0183001ed9876c8dbb35de6b68552ee08bd`
 
-The roots can be overridden with
-`DIFFUSERS_3D_HUNYUAN3D_REFERENCE_ROOT`,
-`DIFFUSERS_3D_TRELLIS_REFERENCE_ROOT`, and
-`DIFFUSERS_3D_TRELLIS2_REFERENCE_ROOT`. Each value must name the repository
-root. Before any upstream module is imported, tests use Git to require the
-exact commit, expected `origin` URL, a clean tracked/untracked worktree, and
-the expected source paths in that commit.
+The roots can be overridden with `DIFFUSERS_3D_TRELLIS_REFERENCE_ROOT` and
+`DIFFUSERS_3D_TRELLIS2_REFERENCE_ROOT`. Each value must name the repository root. Before any upstream module is
+imported, tests use Git to require the exact commit, expected `origin` URL, a clean tracked/untracked worktree, and the
+expected source paths in that commit.
 
 Generic local runs skip a missing, mismatched, dirty, or dependency-incomplete
-reference. The dedicated CI lane installs `einops`, `omegaconf`,
-`opencv-python-headless`, `PyYAML`, `scikit-image`, and `timm`, fetches all
-three exact commits, and runs:
+reference. The dedicated CI lane installs `einops`, fetches both exact commits, and runs:
 
 ```bash
 DIFFUSERS_3D_REQUIRE_REFERENCE=1 \
   python -m pytest packages/diffusers-3d/tests -m reference_parity
 ```
 
-Required mode turns every reference or dependency skip condition into a test
-failure. CI also parses JUnit output to require all 15 cases and zero skips.
-Scheduler, guidance, objective, interpolation, target, and timestep equations
-still run deterministically in the ordinary CPU lane without those trees.
+Required mode turns every reference or dependency skip condition into a test failure. CI also parses JUnit output to
+require all 4 cases and zero skips. Scheduler, guidance, objective, target, and timestep equations still run
+deterministically in the ordinary CPU lane without those trees.
 
 ## Static, manifest, and release checks
 
@@ -122,8 +115,8 @@ diffusers-3d-check-release \
   /tmp/diffusers3d-sdist
 ```
 
-The manifest validator intentionally reports policy warnings for restricted Hunyuan assets, DINOv3, nvdiffrast,
-diffoctreerast, and mip-Gaussian research dependencies. Any validation error is a failure.
+The manifest validator intentionally reports policy warnings for DINOv3, nvdiffrast, diffoctreerast, and
+mip-Gaussian research dependencies. Any validation error is a failure.
 
 ## GPU and research verification
 
@@ -137,7 +130,7 @@ tuple output equivalence, component save/load, attention processor/backend
 hooks, deterministic gradient-checkpointed forward/backward equivalence where
 implemented, and `torch.compile` with the eager backend and `fullgraph=True`.
 Shared reviewed-pipeline contracts additionally exercise
-batching, tuple output equivalence, and Hunyuan's supported step callback.
+batching and tuple output equivalence.
 Sequential CPU offload, model CPU offload, and group offload are meaningful
 only with an accelerator execution device for these pipelines; they remain
 part of the manual GPU lane rather than being simulated on CPU.

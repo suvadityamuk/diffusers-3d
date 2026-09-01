@@ -8,11 +8,9 @@ version = "0.1.0.dev0"
 description = "Object-native 3D generation and fine-tuning built on Diffusers"
 readme = "README.md"
 requires-python = ">=3.10"
-license = "Apache-2.0 AND MIT AND LicenseRef-Tencent-Hunyuan-3D-2.1-Community"
+license = "Apache-2.0 AND MIT"
 license-files = [
     "LICENSE-APACHE-2.0",
-    "src/diffusers_3d/families/hunyuan3d/LICENSE-TENCENT-HUNYUAN-3D-2.1",
-    "src/diffusers_3d/families/hunyuan3d/NOTICE",
     "src/diffusers_3d/families/trellis/LICENSE-MIT",
     "src/diffusers_3d/families/trellis/NOTICE",
     "src/diffusers_3d/families/trellis2/LICENSE-MIT",
@@ -41,7 +39,6 @@ dependencies = [
 
 [project.scripts]
 diffusers-3d-check-release = "diffusers_3d.contributions.removal:release_check_main"
-diffusers-3d-convert-hunyuan3d = "diffusers_3d.families.hunyuan3d.conversion:main"
 diffusers-3d-convert-trellis = "diffusers_3d.families.trellis.conversion:main"
 diffusers-3d-convert-trellis2 = "diffusers_3d.families.trellis2.conversion:main"
 diffusers-3d-report = "diffusers_3d.compatibility:main"
@@ -54,26 +51,14 @@ portable = [
     "xatlas",
 ]
 gaussian = ["gsplat"]
-hunyuan3d = [
-    "opencv-python",
-    "PyYAML",
-    "scikit-image",
-]
 training = ["peft"]
 reference-test = [
     "einops",
-    "omegaconf",
-    "opencv-python-headless",
-    "PyYAML",
-    "scikit-image",
-    "timm",
 ]
 test = [
     "build",
-    "opencv-python-headless",
     "pytest",
     "pytest-cov",
-    "PyYAML",
     "ruff",
 ]
 
@@ -86,10 +71,6 @@ where = ["src"]
 [tool.setuptools.package-data]
 diffusers_3d = [
     "py.typed",
-    "families/hunyuan3d/*.json",
-    "families/hunyuan3d/*.md",
-    "families/hunyuan3d/LICENSE*",
-    "families/hunyuan3d/NOTICE",
     "families/trellis/*.json",
     "families/trellis/*.md",
     "families/trellis/LICENSE*",

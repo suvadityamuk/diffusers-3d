@@ -12,38 +12,27 @@ model-specific recipe.
 
 The package is pre-alpha. Loading metadata uses schema version `1`, training manifests use schema version `3`, and
 contribution manifests use schema version `2`. Model integrations and optional compiled backends remain
-capability-gated.
+capability-gated. The reviewed model families are TRELLIS and TRELLIS.2, including TRELLIS.2's optional O-Voxel
+paths.
 
 ## First-release readiness
 
 The code release gate requires all of the following before publication:
 
-- [x] Production execution and training registries contain only reviewed Hunyuan3D, TRELLIS, and TRELLIS.2 classes
-  and are immutable.
+- [x] Production execution and training registries contain only reviewed TRELLIS and TRELLIS.2 classes and are
+  immutable.
 - [x] Pre-release-only scaffold code and tests are absent from source and built packages.
-- [x] Tiny Hunyuan3D, TRELLIS, and TRELLIS.2 model, pipeline, auto-loading, training, and checkpoint round trips pass.
+- [x] Tiny TRELLIS and TRELLIS.2 model, pipeline, auto-loading, training, and checkpoint round trips pass.
 - [x] Every reviewed family schema-v2 manifest validates with only its declared license/backend warnings.
 - [x] Source, unpacked wheel, and unpacked sdist scans pass with the default release checker.
 
 This checklist covers code readiness only. Selecting a final version and publishing a release are separate maintainer
 actions; the package remains at its development version until then.
 
-The distribution is intentionally mixed-license. Package-owned glue is
-Apache-2.0, the TRELLIS and TRELLIS.2-derived family code retains MIT terms,
-and Hunyuan-derived files retain the Tencent Hunyuan 3D 2.1 Community
-License. Wheel and sdist metadata declare the aggregate PEP 639 expression
-and ship the local Apache license, both MIT notices, the Tencent license, and
-all family notices. Those terms apply to their respective files; the
-aggregate expression does not relicense any family code or model artifact.
-
-## Current Hunyuan3D limitations
-
-- The shape VAE is decode-only. Its point-cloud encoder is not included.
-- Training supports precomputed shape latents only; surface-sample encoding is not implemented.
-- No official approximately 7 GB checkpoint/GPU quality run has been performed, so production mesh quality and
-  production-resolution GPU parity are not claimed.
-- Hunyuan-derived code and converted checkpoints are governed by the restricted Tencent Hunyuan 3D 2.1 Community
-  License Agreement, not the package's Apache-2.0 glue-code license.
+The distribution uses an `Apache-2.0 AND MIT` aggregate license expression. Package-owned glue is Apache-2.0, while
+the TRELLIS and TRELLIS.2-derived family code retains MIT terms. Wheel and sdist metadata ship the local Apache
+license and both applicable MIT licenses and notices. Those terms apply to their respective files; the aggregate
+expression does not relicense any family code or model artifact.
 
 ## Current TRELLIS.2 limitations
 

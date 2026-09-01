@@ -50,9 +50,10 @@ metadata without importing optional modules.
 
 ## Family and checkpoint matrix
 
+The shipped reviewed families are TRELLIS and TRELLIS.2.
+
 | Family | License boundary | Tiny CPU evidence | Pinned-source parity | Production GPU / real checkpoint |
 |---|---|---|---|---|
-| Hunyuan3D 2.1 | Tencent community license for derived code/checkpoints; Apache-2.0 glue | Denoiser, decode-only VAE, conditioner, scheduler, pipeline, training, save/load | Forward, backward, VAE field, composed stages | Not run |
 | TRELLIS | MIT upstream; Apache-2.0 glue; restricted renderers separate | Sparse structure plus experimental tiny SLAT equations, conversion, training, save/load | Sparse flow/decoder forward and flow backward | Not run |
 | TRELLIS.2 | MIT upstream; DINOv3 and nvdiffrast separately restricted | Reviewed sparse structure plus experimental tiny SLAT/O-Voxel/PBR channels, conversion, training, save/load | Sparse flow/decoder forward and flow backward | Not run |
 
