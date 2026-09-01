@@ -52,11 +52,7 @@ def test_source_backend_requirement_records_are_immutable():
     requirements_root = PACKAGE_ROOT / "requirements" / "backends"
     for filename, expected in PINNED_SOURCE_REQUIREMENTS.items():
         requirement_text = (requirements_root / filename).read_text(encoding="utf-8")
-        requirement_lines = [
-            line
-            for line in requirement_text.splitlines()
-            if line and not line.startswith("#")
-        ]
+        requirement_lines = [line for line in requirement_text.splitlines() if line and not line.startswith("#")]
         assert requirement_lines == [expected]
         if filename == "o-voxel.txt":
             assert "--no-deps --no-build-isolation" in requirement_text
