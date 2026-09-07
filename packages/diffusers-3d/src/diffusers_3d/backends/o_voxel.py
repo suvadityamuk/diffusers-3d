@@ -224,6 +224,7 @@ def ovoxel_asset_from_official(
     dual_key = "dual_vertices" if "dual_vertices" in values else "vertices"
     if dual_key not in values or "intersected" not in values:
         raise ValueError("official O-Voxel data requires dual_vertices (or vertices) and intersected")
+
     def unit(name: str, *, default: torch.Tensor | None = None) -> torch.Tensor | None:
         value = values.get(name, default)
         if value is None:
@@ -457,9 +458,7 @@ def read_ovoxel_npz(
         coordinate_array = np.array(data["coord"], copy=True)
         coordinates = torch.from_numpy(coordinate_array.astype(np.int32))
         attributes = {
-            name: torch.from_numpy(np.array(data[name], copy=True))
-            for name in data.files
-            if name != "coord"
+            name: torch.from_numpy(np.array(data[name], copy=True)) for name in data.files if name != "coord"
         }
     return ovoxel_asset_from_official(
         coordinates,

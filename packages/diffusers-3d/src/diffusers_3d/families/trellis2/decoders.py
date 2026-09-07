@@ -263,7 +263,9 @@ class Trellis2ShapeDualGridDecoder(Object3DModel):
                         device=values.device,
                         dtype=values.dtype,
                     ),
-                    transform=source.transform if source is not None else torch.eye(4, device=values.device, dtype=values.dtype),
+                    transform=source.transform
+                    if source is not None
+                    else torch.eye(4, device=values.device, dtype=values.dtype),
                     coordinate_system=(
                         source.coordinate_system if source is not None else CoordinateSystem.RIGHT_HANDED_Z_UP
                     ),

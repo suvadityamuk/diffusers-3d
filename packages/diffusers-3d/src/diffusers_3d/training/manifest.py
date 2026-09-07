@@ -210,9 +210,7 @@ class TrainingManifest3D:
                 raise TrainingManifestError(f"training manifest {field_name} must be canonical and sorted")
         for field_name in ("selected_component_configs", "frozen_component_configs"):
             value = getattr(self, field_name)
-            if not isinstance(value, tuple) or any(
-                not isinstance(entry, tuple) or len(entry) != 2 for entry in value
-            ):
+            if not isinstance(value, tuple) or any(not isinstance(entry, tuple) or len(entry) != 2 for entry in value):
                 raise TrainingManifestError(f"training manifest {field_name} must contain name/config pairs")
             names = [entry[0] for entry in value]
             if len(set(names)) != len(names):

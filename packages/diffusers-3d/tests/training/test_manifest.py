@@ -40,7 +40,17 @@ def make_manifest(**kwargs) -> TrainingManifest3D:
             "learning_rate": 1e-4,
             "seed": 0,
         },
-        "selected_component_configs": {
+        "frozen_component_configs": {
+            "conditioner": {
+                "component_path": "conditioner",
+                "component_type": "tests.ExactConditioner",
+                "config": None,
+            }
+        },
+    }
+    arguments.update(kwargs)
+    if "selected_component_configs" not in kwargs:
+        component_configs = {
             "decoder": {
                 "component_path": "decoder",
                 "component_type": "tests.ExactDecoder",
@@ -51,16 +61,10 @@ def make_manifest(**kwargs) -> TrainingManifest3D:
                 "component_type": "tests.ExactDenoiser",
                 "config": {"layers": [1, 2]},
             },
-        },
-        "frozen_component_configs": {
-            "conditioner": {
-                "component_path": "conditioner",
-                "component_type": "tests.ExactConditioner",
-                "config": None,
-            }
-        },
-    }
-    arguments.update(kwargs)
+        }
+        arguments["selected_component_configs"] = {
+            name: component_configs[name] for name in arguments["strategy"].components
+        }
     return TrainingManifest3D.create(**arguments)
 
 

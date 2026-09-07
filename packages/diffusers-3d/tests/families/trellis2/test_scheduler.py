@@ -84,10 +84,6 @@ def test_guidance_endpoints_return_exact_predictions_without_rescaling():
     )
     sparse_negative = sparse_conditional.replace(torch.zeros(1, 2))
     assert (
-        scheduler.apply_guidance(sparse_conditional, sparse_negative, 1.0, guidance_rescale=0.5)
-        is sparse_conditional
+        scheduler.apply_guidance(sparse_conditional, sparse_negative, 1.0, guidance_rescale=0.5) is sparse_conditional
     )
-    assert (
-        scheduler.apply_guidance(sparse_conditional, sparse_negative, 0.0, guidance_rescale=0.5)
-        is sparse_negative
-    )
+    assert scheduler.apply_guidance(sparse_conditional, sparse_negative, 0.0, guidance_rescale=0.5) is sparse_negative

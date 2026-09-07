@@ -532,7 +532,9 @@ class Trellis2ImageTo3DPipeline(Object3DPipeline):
                         device=value.device,
                         dtype=value.dtype,
                     ),
-                    transform=source.transform if source is not None else torch.eye(4, device=value.device, dtype=value.dtype),
+                    transform=source.transform
+                    if source is not None
+                    else torch.eye(4, device=value.device, dtype=value.dtype),
                     coordinate_system=source.coordinate_system if source is not None else "right_handed_z_up",
                     metadata={
                         **({} if source is None else source.metadata),

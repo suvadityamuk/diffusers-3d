@@ -455,9 +455,7 @@ def test_full_preparation_uses_exact_approved_parameters_and_optimizer_ids(monke
     }
     assert trainer.manifest.trainable_parameter_names == ("block.weight",)
     manifest_data = trainer.manifest.to_dict()
-    assert manifest_data["selected_component_configs"]["denoiser"]["config"] == {
-        "architecture": "tiny-block-v1"
-    }
+    assert manifest_data["selected_component_configs"]["denoiser"]["config"] == {"architecture": "tiny-block-v1"}
     assert manifest_data["frozen_component_configs"]["conditioner"]["config"] == {
         "architecture": "tiny-frozen-block-v1"
     }

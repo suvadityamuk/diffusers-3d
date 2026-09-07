@@ -127,11 +127,7 @@ def test_ovoxel_npz_is_official_reader_compatible_and_roundtrips_without_compile
         assert all(data[name].dtype == np.uint8 for name in attributes if name != "split_weight")
         assert data["split_weight"].dtype == np.float32
         official_coordinates = torch.from_numpy(data["coord"]).int()
-        official_attributes = {
-            name: torch.from_numpy(value)
-            for name, value in data.items()
-            if name != "coord"
-        }
+        official_attributes = {name: torch.from_numpy(value) for name, value in data.items() if name != "coord"}
         assert official_coordinates.shape == coordinates.shape
         assert official_attributes.keys() == attributes.keys()
         stored_coordinates = torch.from_numpy(data["coord"].astype(np.int64))
@@ -200,17 +196,11 @@ def test_ovoxel_npz_preserves_generated_out_of_cell_dual_vertices_for_official_r
     write_ovoxel_npz(buffer, asset, compressed=False)
     buffer.seek(0)
     with np.load(buffer, allow_pickle=False) as data:
-        official_attributes = {
-            name: torch.from_numpy(value)
-            for name, value in data.items()
-            if name != "coord"
-        }
+        official_attributes = {name: torch.from_numpy(value) for name, value in data.items() if name != "coord"}
         assert official_attributes["dual_vertices"].dtype is torch.float32
         torch.testing.assert_close(
             official_attributes["dual_vertices"],
-            asset.dual_grid_vertex_offsets[
-                torch.tensor([1, 2, 3, 0])
-            ],
+            asset.dual_grid_vertex_offsets[torch.tensor([1, 2, 3, 0])],
         )
 
     buffer.seek(0)
@@ -490,9 +480,7 @@ def test_ovoxel_native_facade_delegates_to_pinned_io_dual_grid_and_renderer_api(
     )
     torch.testing.assert_close(
         calls["render"]["position"],
-        (asset.active_coordinates.to(dtype=torch.float32) + 0.5) / 8
-        - 0.5
-        + torch.tensor([1.0, 2.0, 3.0]),
+        (asset.active_coordinates.to(dtype=torch.float32) + 0.5) / 8 - 0.5 + torch.tensor([1.0, 2.0, 3.0]),
     )
 
     high_coordinates = torch.tensor(
