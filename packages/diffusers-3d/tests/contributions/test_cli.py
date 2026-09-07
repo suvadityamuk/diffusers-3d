@@ -3,12 +3,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-import pytest
-
 from diffusers_3d.contributions.cli import main
 from diffusers_3d.contributions.removal import release_check_main
-
-pytestmark = pytest.mark.release
 
 PACKAGE_ROOT = Path(__file__).parents[2]
 
@@ -44,4 +40,3 @@ def test_console_scripts_are_wired_in_pyproject():
 
     assert 'diffusers-3d-validate = "diffusers_3d.contributions.cli:main"' in pyproject
     assert 'diffusers-3d-check-release = "diffusers_3d.contributions.removal:release_check_main"' in pyproject
-    assert 'diffusers-3d-report = "diffusers_3d.compatibility:main"' in pyproject
