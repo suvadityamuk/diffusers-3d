@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import os
+import subprocess
+import sys
 from collections import Counter
 from pathlib import Path
 
@@ -54,6 +57,30 @@ def test_template_python_skeletons_compile():
     assert python_paths
     for path in python_paths:
         compile(path.read_text(encoding="utf-8"), str(path), "exec")
+
+
+def test_reviewed_family_template_imports_and_builds_exact_registrations():
+    template = TEMPLATES / "reviewed-model-family"
+    source = (
+        "from reviewed_family.registrations import "
+        "REVIEWED_MODEL_REGISTRATION, REVIEWED_PIPELINE_REGISTRATION, REVIEWED_TRAINING_REGISTRATION; "
+        "metadata = REVIEWED_PIPELINE_REGISTRATION.metadata; "
+        "assert metadata.components[0].name == 'denoiser'; "
+        "assert REVIEWED_MODEL_REGISTRATION.metadata.family_id == metadata.family_id; "
+        "assert REVIEWED_TRAINING_REGISTRATION.family_id == metadata.family_id"
+    )
+    environment = dict(os.environ)
+    environment["PYTHONPATH"] = os.pathsep.join(
+        value
+        for value in (
+            str(template),
+            str(PACKAGE_ROOT / "src"),
+            environment.get("PYTHONPATH"),
+        )
+        if value
+    )
+
+    subprocess.run([sys.executable, "-c", source], check=True, env=environment)
 
 
 def test_templates_are_release_marker_clean():

@@ -6,6 +6,7 @@ from diffusers_3d import (
     ContributionStatus,
     ImageCondition,
     MeshAsset,
+    Object3DComponentSpec,
     Object3DKind,
     Object3DPipeline,
     Object3DPipelineOutput,
@@ -26,6 +27,16 @@ class ReviewedObject3DPipeline(Object3DPipeline):
     required_backends = ("torch",)
     contribution_status = ContributionStatus.REVIEWED_PACKAGE
     review_status = ReviewStatus.REVIEWED
+    component_specs = (
+        Object3DComponentSpec(
+            name="denoiser",
+            expected_class="reviewed_family.model.ReviewedDenoiser",
+            subfolder="denoiser",
+            optional=False,
+            review_status=ReviewStatus.REVIEWED,
+            loading_eligible=True,
+        ),
+    )
     model_cpu_offload_seq = "denoiser"
 
     def __init__(self, denoiser: ReviewedDenoiser) -> None:
