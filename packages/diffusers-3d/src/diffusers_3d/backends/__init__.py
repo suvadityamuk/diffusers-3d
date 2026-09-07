@@ -22,7 +22,6 @@ from .flex_gemm import (
 from .gsplat import GsplatBackend
 from .kaolin_flexicubes import KaolinFlexiCubesBackend
 from .o_voxel import (
-    OVOXEL_METADATA_PREFIX,
     OVOXEL_REFERENCE_REVISION,
     OVoxelBackend,
     OVoxelCapability,
@@ -75,7 +74,6 @@ __all__ = [
     "FLEX_GEMM_BATCH_INDICES",
     "FLEX_GEMM_SOURCE_REVISION",
     "FLEX_GEMM_SOURCE_URL",
-    "OVOXEL_METADATA_PREFIX",
     "OVOXEL_REFERENCE_REVISION",
     "BackendCapability",
     "BackendDiscoveryReport",

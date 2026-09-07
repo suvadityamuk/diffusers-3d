@@ -8,7 +8,6 @@
 from __future__ import annotations
 
 import importlib
-import json
 from collections.abc import Mapping, Sequence
 from enum import Enum
 from os import PathLike, fspath
@@ -24,20 +23,6 @@ from .registry import BackendRegistry
 from .types import BackendCapability
 
 OVOXEL_REFERENCE_REVISION = "75fbf0183001ed9876c8dbb35de6b68552ee08bd"
-OVOXEL_METADATA_PREFIX = "__diffusers_3d_ovoxel_"
-_OVOXEL_NPZ_SCHEMA_VERSION = 2
-_COORDINATE_ORDERS = frozenset({"input", "lexicographic_xyz", "morton_30bit"})
-_ATTRIBUTE_LAYOUTS = {
-    "alpha": "voxel_scalar",
-    "base_color": "voxel_rgb",
-    "dual_vertices": "voxel_xyz_offset",
-    "emissive": "voxel_rgb",
-    "intersected": "voxel_xyz_bitfield",
-    "metallic": "voxel_scalar",
-    "normal": "voxel_xyz_unit_encoded",
-    "roughness": "voxel_scalar",
-    "split_weight": "voxel_scalar_nonnegative",
-}
 
 
 class OVoxelRuntimeUnavailableError(RuntimeError):
@@ -126,19 +111,6 @@ def _lexicographic_coordinate_order(coordinates: torch.Tensor) -> torch.Tensor:
     for axis in (2, 1, 0):
         order = order[torch.argsort(coordinates[order, axis], stable=True)]
     return order
-
-
-def _validate_recorded_coordinate_order(coordinates: torch.Tensor, coordinate_order: str) -> None:
-    if coordinate_order == "input":
-        return
-    if coordinate_order == "morton_30bit":
-        keys = morton_encode_3d(coordinates)
-        ordered = bool((keys[1:] >= keys[:-1]).all())
-    else:
-        order = _lexicographic_coordinate_order(coordinates)
-        ordered = torch.equal(order, torch.arange(coordinates.shape[0], device=coordinates.device))
-    if not ordered:
-        raise ValueError(f"O-Voxel NPZ coordinates do not match recorded {coordinate_order!r} ordering")
 
 
 def _scalar_channel(value: torch.Tensor, count: int, name: str) -> torch.Tensor:
@@ -479,7 +451,6 @@ def read_ovoxel_npz(
 ) -> OVoxelAsset:
     """Read O-Voxel NPZ data without importing the compiled runtime."""
 
-    coordinate_order = None
     with np.load(file, allow_pickle=False) as data:
         if "coord" not in data:
             raise ValueError("O-Voxel NPZ is missing coord")
@@ -488,66 +459,15 @@ def read_ovoxel_npz(
         attributes = {
             name: torch.from_numpy(np.array(data[name], copy=True))
             for name in data.files
-            if name != "coord" and not name.startswith(OVOXEL_METADATA_PREFIX)
+            if name != "coord"
         }
-        stored_resolution = data.get(f"{OVOXEL_METADATA_PREFIX}resolution")
-        stored_aabb = data.get(f"{OVOXEL_METADATA_PREFIX}aabb")
-        stored_packed = data.get(f"{OVOXEL_METADATA_PREFIX}packed")
-        stored_layout = data.get(f"{OVOXEL_METADATA_PREFIX}layout")
-        packed = bool(stored_packed[0]) if stored_packed is not None else None
-        if stored_layout is not None:
-            try:
-                layout_metadata = json.loads(str(stored_layout.item()))
-                expected_attributes = layout_metadata["attributes"]
-            except (AttributeError, KeyError, TypeError, ValueError, json.JSONDecodeError) as error:
-                raise ValueError("O-Voxel NPZ has invalid dtype/layout metadata") from error
-            if (
-                layout_metadata.get("schema_version") != _OVOXEL_NPZ_SCHEMA_VERSION
-                or layout_metadata.get("coordinate_dtype") != "uint16"
-                or layout_metadata.get("coordinate_layout") != "voxel_xyz"
-                or layout_metadata.get("coordinate_order") not in _COORDINATE_ORDERS
-                or layout_metadata.get("morton_order")
-                is not (layout_metadata.get("coordinate_order") == "morton_30bit")
-                or coordinate_array.dtype != np.uint16
-                or not isinstance(expected_attributes, dict)
-                or set(expected_attributes) != set(attributes)
-            ):
-                raise ValueError("O-Voxel NPZ dtype/layout metadata does not match its arrays")
-            coordinate_order = layout_metadata["coordinate_order"]
-            _validate_recorded_coordinate_order(coordinates, coordinate_order)
-            for name, value in attributes.items():
-                description = expected_attributes[name]
-                expected_encoding = (
-                    "xyz_bitfield_uint8"
-                    if name == "intersected"
-                    else "nonnegative_float"
-                    if name == "split_weight"
-                    else "unit_uint8"
-                    if packed
-                    else "unit_float"
-                )
-                if (
-                    not isinstance(description, dict)
-                    or description.get("dtype") != str(value.numpy().dtype)
-                    or description.get("encoding") != expected_encoding
-                    or description.get("shape") != list(value.shape[1:])
-                    or description.get("layout") != _ATTRIBUTE_LAYOUTS.get(name, "voxel_channels")
-                ):
-                    raise ValueError(f"O-Voxel NPZ dtype/layout metadata does not match attribute {name!r}")
-        if resolution is None and stored_resolution is not None:
-            resolution = tuple(int(item) for item in stored_resolution.tolist())
-        if aabb is None and stored_aabb is not None:
-            aabb = stored_aabb.tolist()
-    asset = ovoxel_asset_from_official(
+    return ovoxel_asset_from_official(
         coordinates,
         attributes,
         resolution=resolution,
         aabb=((-0.5, -0.5, -0.5), (0.5, 0.5, 0.5)) if aabb is None else aabb,
-        packed=packed,
+        packed=None,
     )
-    if coordinate_order is not None:
-        asset.metadata["coordinate_order"] = coordinate_order
-    return asset
 
 
 class OVoxelBackend:
@@ -846,7 +766,6 @@ class OVoxelBackend:
 
 
 __all__ = [
-    "OVOXEL_METADATA_PREFIX",
     "OVOXEL_REFERENCE_REVISION",
     "OVoxelBackend",
     "OVoxelCapability",
