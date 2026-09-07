@@ -40,6 +40,25 @@ def make_manifest(**kwargs) -> TrainingManifest3D:
             "learning_rate": 1e-4,
             "seed": 0,
         },
+        "selected_component_configs": {
+            "decoder": {
+                "component_path": "decoder",
+                "component_type": "tests.ExactDecoder",
+                "config": {"channels": 8},
+            },
+            "denoiser": {
+                "component_path": "denoiser",
+                "component_type": "tests.ExactDenoiser",
+                "config": {"layers": [1, 2]},
+            },
+        },
+        "frozen_component_configs": {
+            "conditioner": {
+                "component_path": "conditioner",
+                "component_type": "tests.ExactConditioner",
+                "config": None,
+            }
+        },
     }
     arguments.update(kwargs)
     return TrainingManifest3D.create(**arguments)
@@ -59,6 +78,8 @@ def test_manifest_save_load_is_atomic_deterministic_and_hashed(tmp_path):
     assert manifest.trainable_parameter_hash == trainable_parameter_hash(("denoiser.a", "denoiser.z"))
     assert trainable_parameter_hash(("denoiser.z", "denoiser.a")) == manifest.trainable_parameter_hash
     assert json.loads(first_bytes)["components"] == ["decoder", "denoiser"]
+    assert json.loads(first_bytes)["selected_component_configs"]["denoiser"]["config"] == {"layers": [1, 2]}
+    assert json.loads(first_bytes)["frozen_component_configs"]["conditioner"]["config"] is None
     assert json.loads(first_bytes)["example_type"].endswith(".ExactExample")
     assert path.stat().st_mode & 0o044 == 0o044
 
@@ -77,7 +98,7 @@ def test_lora_manifest_records_effective_adapter_seed_and_rejects_mismatch():
         training_config={"seed": 17},
     )
 
-    assert TRAINING_MANIFEST_VERSION == 4
+    assert TRAINING_MANIFEST_VERSION == 5
     assert dict(inherited.strategy_config)["adapter_seed"] == 17
     assert explicit.strategy_config == inherited.strategy_config
     with pytest.raises(TrainingManifestMismatchError, match="strategy_config"):
@@ -98,6 +119,22 @@ def test_manifest_resume_requires_an_exact_match(tmp_path):
         loaded.validate_resume(mismatch)
     mismatch = make_manifest(training_config={"gradient_accumulation_steps": 1, "learning_rate": 2e-4, "seed": 0})
     with pytest.raises(TrainingManifestMismatchError, match="training_config"):
+        loaded.validate_resume(mismatch)
+    mismatch = make_manifest(
+        selected_component_configs={
+            "decoder": {
+                "component_path": "decoder",
+                "component_type": "tests.ExactDecoder",
+                "config": {"channels": 16},
+            },
+            "denoiser": {
+                "component_path": "denoiser",
+                "component_type": "tests.ExactDenoiser",
+                "config": {"layers": [1, 2]},
+            },
+        }
+    )
+    with pytest.raises(TrainingManifestMismatchError, match="selected_component_configs"):
         loaded.validate_resume(mismatch)
 
 

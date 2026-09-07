@@ -70,6 +70,7 @@ class TinyBatch:
 class TinyBlock(nn.Module):
     def __init__(self) -> None:
         super().__init__()
+        self.config = {"architecture": "tiny-block-v1"}
         self.weight = nn.Parameter(torch.tensor(0.5))
         self.bias = nn.Parameter(torch.tensor(0.25))
 
@@ -84,6 +85,7 @@ class OtherTinyBlock(TinyBlock):
 class TinyFrozenBlock(nn.Module):
     def __init__(self) -> None:
         super().__init__()
+        self.config = {"architecture": "tiny-frozen-block-v1"}
         self.scale = nn.Parameter(torch.tensor(1.0))
 
     def forward(self, inputs: torch.Tensor) -> torch.Tensor:
@@ -452,6 +454,67 @@ def test_full_preparation_uses_exact_approved_parameters_and_optimizer_ids(monke
         id(target.block.weight)
     }
     assert trainer.manifest.trainable_parameter_names == ("block.weight",)
+    manifest_data = trainer.manifest.to_dict()
+    assert manifest_data["selected_component_configs"]["denoiser"]["config"] == {
+        "architecture": "tiny-block-v1"
+    }
+    assert manifest_data["frozen_component_configs"]["conditioner"]["config"] == {
+        "architecture": "tiny-frozen-block-v1"
+    }
+
+
+def test_prepare_uses_rank_specific_rng_and_post_wrap_optimizer_parameters(monkeypatch):
+    install_registry(monkeypatch, make_registration())
+    wrapped_parameter = nn.Parameter(torch.tensor(0.75))
+    seed_calls = []
+
+    class WrappedBlock(nn.Module):
+        def __init__(self) -> None:
+            super().__init__()
+            self.flat_parameter = wrapped_parameter
+
+    class FakeAccelerator:
+        device = torch.device("cpu")
+        distributed_type = DistributedType.NO
+        is_main_process = True
+        num_processes = 4
+        process_index = 3
+        sync_gradients = True
+
+        def __init__(self, **kwargs) -> None:
+            self.kwargs = kwargs
+
+        def register_save_state_pre_hook(self, hook) -> None:
+            self.save_hook = hook
+
+        def register_load_state_pre_hook(self, hook) -> None:
+            self.load_hook = hook
+
+        def prepare(self, component, optimizer, lr_scheduler):
+            del component, optimizer
+            wrapped_optimizer = torch.optim.AdamW([wrapped_parameter], lr=1e-4)
+            return WrappedBlock(), wrapped_optimizer, lr_scheduler
+
+    monkeypatch.setattr(trainer_module, "Accelerator", FakeAccelerator)
+    monkeypatch.setattr(
+        trainer_module,
+        "set_seed",
+        lambda seed, *, device_specific: seed_calls.append((seed, device_specific)),
+    )
+    target = TinyTarget()
+    original_parameter = target.block.weight
+
+    trainer = Object3DTrainer(
+        TinyRecipe(target),
+        CountingDataset(),
+        FullFineTune(("denoiser",)),
+        make_config(seed=11),
+    ).prepare()
+
+    assert seed_calls == [(11, True)]
+    assert trainer._dataloader_generator.initial_seed() == 14
+    assert trainer.trainable_parameters == (wrapped_parameter,)
+    assert original_parameter not in trainer.trainable_parameters
 
 
 class SneakyBlock(nn.Module):
@@ -707,6 +770,48 @@ def test_checkpoint_restores_full_state_counters_and_next_data_position(monkeypa
     assert resumed_summary.final_loss == pytest.approx(expected_summary.final_loss, abs=0.0)
     torch.testing.assert_close(resumed_target.block.weight, expected_weight, atol=0.0, rtol=0.0)
     assert resumed.optimizer.state_dict() == expected_optimizer_state
+
+
+@pytest.mark.parametrize(
+    ("component_path", "manifest_field"),
+    (
+        ("block", "selected_component_configs"),
+        ("conditioner", "frozen_component_configs"),
+    ),
+)
+def test_checkpoint_rejects_changed_component_config_before_loading_state(
+    monkeypatch,
+    tmp_path,
+    component_path,
+    manifest_field,
+):
+    install_registry(monkeypatch, make_registration())
+    config = make_config(max_train_steps=1, output_dir=str(tmp_path))
+    trainer = Object3DTrainer(
+        TinyRecipe(TinyTarget()),
+        CountingDataset(),
+        FullFineTune(("denoiser",)),
+        config,
+    )
+    trainer.train()
+    trainer.save_checkpoint()
+
+    changed_target = TinyTarget()
+    getattr(changed_target, component_path).config["architecture"] = "incompatible-v2"
+    resumed = Object3DTrainer(
+        TinyRecipe(changed_target),
+        CountingDataset(),
+        FullFineTune(("denoiser",)),
+        config,
+    )
+    monkeypatch.setattr(
+        trainer_module.Accelerator,
+        "load_state",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("checkpoint state was loaded")),
+    )
+
+    with pytest.raises(TrainingManifestMismatchError, match=manifest_field):
+        resumed.load_checkpoint(tmp_path)
 
 
 def test_checkpoint_requires_accumulation_boundary_and_resumes_after_one(monkeypatch, tmp_path):

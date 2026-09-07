@@ -28,6 +28,7 @@ from torch.optim import AdamW, Optimizer
 from torch.utils.data import DataLoader, DistributedSampler
 
 from ..data import Object3DDataset
+from ..execution.metadata import fully_qualified_class_name
 from .exceptions import (
     TrainableParameterError,
     TrainingCheckpointError,
@@ -360,6 +361,36 @@ def _reachable_named_parameters(target: object) -> dict[int, tuple[nn.Parameter,
     return {parameter_id: (parameter, tuple(sorted(names))) for parameter_id, (parameter, names) in parameters.items()}
 
 
+def _component_config_snapshot(component: nn.Module, component_path: str) -> dict[str, object]:
+    config = getattr(component, "config", None)
+    if config is not None:
+        if not isinstance(config, Mapping):
+            raise TrainingConfigurationError(
+                f"Component {component_path!r} exposes a non-mapping config that cannot identify exact resume state"
+            )
+        config = dict(config)
+    return {
+        "component_path": component_path,
+        "component_type": fully_qualified_class_name(type(component)),
+        "config": config,
+    }
+
+
+def _optimizer_trainable_parameters(optimizer: Optimizer) -> tuple[nn.Parameter, ...]:
+    parameters = []
+    seen = set()
+    for group in optimizer.param_groups:
+        for parameter in group["params"]:
+            if not isinstance(parameter, nn.Parameter) or not parameter.requires_grad:
+                raise TrainableParameterError("Prepared optimizer contains a non-trainable parameter")
+            if id(parameter) not in seen:
+                parameters.append(parameter)
+                seen.add(id(parameter))
+    if not parameters:
+        raise TrainableParameterError("Prepared optimizer contains zero trainable parameters")
+    return tuple(parameters)
+
+
 class Object3DTrainer:
     """Strict trainer whose only executable objective is a reviewed recipe instance."""
 
@@ -532,6 +563,13 @@ class Object3DTrainer:
         all_managed_components = [*selected_components.values(), *frozen_components.values()]
         if len({id(component) for component in all_managed_components}) != len(all_managed_components):
             raise TrainingTargetError("Trainable and frozen component policies must resolve to distinct objects")
+        selected_component_configs = {
+            key: _component_config_snapshot(component, selected_policies[key].component_path)
+            for key, component in selected_components.items()
+        }
+        frozen_component_configs = {
+            path: _component_config_snapshot(component, path) for path, component in frozen_components.items()
+        }
         self.recipe.validate_target()
         if not isinstance(self.dataset, Object3DDataset):
             raise TrainingConfigurationError("dataset must implement the runtime-checkable Object3DDataset protocol")
@@ -696,14 +734,14 @@ class Object3DTrainer:
             if optimizer_parameter_ids != expected_parameter_ids:
                 raise TrainableParameterError("Optimizer parameters do not exactly match the audited parameter set")
 
-            set_seed(self.config.seed)
             accelerator = Accelerator(
                 gradient_accumulation_steps=self.config.gradient_accumulation_steps,
                 mixed_precision=self.config.mixed_precision,
                 cpu=self.config.cpu,
             )
+            set_seed(self.config.seed, device_specific=True)
             generator = torch.Generator()
-            generator.manual_seed(self.config.seed)
+            generator.manual_seed(self.config.seed + accelerator.process_index)
             sampler = DistributedSampler(
                 self.dataset,
                 num_replicas=accelerator.num_processes,
@@ -809,6 +847,7 @@ class Object3DTrainer:
             wrapped_components = prepared_values[: len(unique_components)]
             optimizer = prepared_values[-2]
             lr_scheduler = prepared_values[-1]
+            prepared_trainable_parameters = _optimizer_trainable_parameters(optimizer)
 
             for key in self.strategy.components:
                 policy = selected_policies[key]
@@ -827,7 +866,7 @@ class Object3DTrainer:
             self._components = MappingProxyType(dict(selected_components))
             self._frozen_components = MappingProxyType(dict(frozen_components))
             self._selected_policies = MappingProxyType(dict(selected_policies))
-            self._trainable_parameters = trainable_parameters
+            self._trainable_parameters = prepared_trainable_parameters
             self._trainable_parameter_names = trainable_parameter_names
             self._manifest = TrainingManifest3D.create(
                 target_type=registration.target_type,
@@ -845,6 +884,8 @@ class Object3DTrainer:
                     "distributed_type": accelerator.distributed_type.value,
                     "num_processes": accelerator.num_processes,
                 },
+                selected_component_configs=selected_component_configs,
+                frozen_component_configs=frozen_component_configs,
             )
             self._dataloader_generator = generator
             self._dataloader_sampler = sampler

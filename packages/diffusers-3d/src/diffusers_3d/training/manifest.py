@@ -19,7 +19,7 @@ from .types import FineTuneStrategy3D, LoRAFineTune
 
 TRAINING_MANIFEST_NAME = "diffusers_3d_training.json"
 TRAINING_MANIFEST_SCHEMA = "diffusers-3d-training"
-TRAINING_MANIFEST_VERSION = 4
+TRAINING_MANIFEST_VERSION = 5
 
 StrategyConfigValue = int | float | str
 ConfigValue = bool | int | float | str | None
@@ -49,6 +49,45 @@ def _canonical_config(value: Mapping[str, ConfigValue], field_name: str) -> tupl
     return tuple(sorted(entries))
 
 
+def _canonical_component_configs(
+    value: Mapping[str, Mapping[str, object]],
+    field_name: str,
+) -> tuple[tuple[str, str], ...]:
+    if not isinstance(value, Mapping):
+        raise TrainingManifestError(f"{field_name} must contain a JSON object")
+    entries = []
+    for name, snapshot in value.items():
+        if not isinstance(name, str) or not name:
+            raise TrainingManifestError(f"{field_name} keys must be non-empty strings")
+        if not isinstance(snapshot, Mapping):
+            raise TrainingManifestError(f"{field_name} values must contain JSON objects")
+        if set(snapshot) != {"component_path", "component_type", "config"}:
+            raise TrainingManifestError(
+                f"{field_name} snapshots must contain only component_path, component_type, and config"
+            )
+        component_path = snapshot["component_path"]
+        component_type = snapshot["component_type"]
+        config = snapshot["config"]
+        if not isinstance(component_path, str):
+            raise TrainingManifestError(f"{field_name} component_path must be a string")
+        if not isinstance(component_type, str) or not _QUALIFIED_TYPE_PATTERN.fullmatch(component_type):
+            raise TrainingManifestError(f"{field_name} component_type must be a fully-qualified concrete type")
+        if config is not None and not isinstance(config, Mapping):
+            raise TrainingManifestError(f"{field_name} config must be a JSON object or null")
+        try:
+            serialized = json.dumps(
+                dict(snapshot),
+                allow_nan=False,
+                ensure_ascii=True,
+                separators=(",", ":"),
+                sort_keys=True,
+            )
+        except (TypeError, ValueError) as error:
+            raise TrainingManifestError(f"{field_name} snapshots must be JSON serializable") from error
+        entries.append((name, serialized))
+    return tuple(sorted(entries))
+
+
 @dataclass(frozen=True, slots=True)
 class TrainingManifest3D:
     """Deterministic local checkpoint identity for exact resume validation."""
@@ -64,6 +103,8 @@ class TrainingManifest3D:
     strategy_config: tuple[tuple[str, StrategyConfigValue], ...]
     objective_config: tuple[tuple[str, ConfigValue], ...]
     training_config: tuple[tuple[str, ConfigValue], ...]
+    selected_component_configs: tuple[tuple[str, str], ...]
+    frozen_component_configs: tuple[tuple[str, str], ...]
     components: tuple[str, ...]
     base_model: str
     revision: str | None
@@ -167,6 +208,23 @@ class TrainingManifest3D:
                 raise TrainingManifestError(f"training manifest {field_name} must not contain duplicate names")
             if _canonical_config(dict(value), field_name) != value:
                 raise TrainingManifestError(f"training manifest {field_name} must be canonical and sorted")
+        for field_name in ("selected_component_configs", "frozen_component_configs"):
+            value = getattr(self, field_name)
+            if not isinstance(value, tuple) or any(
+                not isinstance(entry, tuple) or len(entry) != 2 for entry in value
+            ):
+                raise TrainingManifestError(f"training manifest {field_name} must contain name/config pairs")
+            names = [entry[0] for entry in value]
+            if len(set(names)) != len(names):
+                raise TrainingManifestError(f"training manifest {field_name} must not contain duplicate names")
+            try:
+                snapshots = {name: json.loads(snapshot) for name, snapshot in value}
+            except (TypeError, json.JSONDecodeError) as error:
+                raise TrainingManifestError(f"training manifest {field_name} contains invalid JSON") from error
+            if _canonical_component_configs(snapshots, field_name) != value:
+                raise TrainingManifestError(f"training manifest {field_name} must be canonical and sorted")
+        if tuple(name for name, _ in self.selected_component_configs) != self.components:
+            raise TrainingManifestError("selected_component_configs must exactly match components")
         if (
             not isinstance(self.trainable_parameter_names, tuple)
             or not self.trainable_parameter_names
@@ -200,6 +258,8 @@ class TrainingManifest3D:
         trainable_parameter_names: tuple[str, ...],
         objective_config: Mapping[str, ConfigValue],
         training_config: Mapping[str, ConfigValue],
+        selected_component_configs: Mapping[str, Mapping[str, object]],
+        frozen_component_configs: Mapping[str, Mapping[str, object]],
     ) -> TrainingManifest3D:
         names = tuple(sorted(trainable_parameter_names))
         strategy_config: tuple[tuple[str, StrategyConfigValue], ...] = ()
@@ -229,6 +289,14 @@ class TrainingManifest3D:
             strategy_config=strategy_config,
             objective_config=_canonical_config(objective_config, "objective_config"),
             training_config=_canonical_config(training_config, "training_config"),
+            selected_component_configs=_canonical_component_configs(
+                selected_component_configs,
+                "selected_component_configs",
+            ),
+            frozen_component_configs=_canonical_component_configs(
+                frozen_component_configs,
+                "frozen_component_configs",
+            ),
             components=tuple(sorted(strategy.components)),
             base_model=base_model,
             revision=revision,
@@ -245,6 +313,9 @@ class TrainingManifest3D:
             "diffusers_version": self.diffusers_version,
             "example_type": self.example_type,
             "family_id": self.family_id,
+            "frozen_component_configs": {
+                name: json.loads(snapshot) for name, snapshot in self.frozen_component_configs
+            },
             "objective_config": dict(self.objective_config),
             "package_version": self.package_version,
             "recipe_id": self.recipe_id,
@@ -254,6 +325,9 @@ class TrainingManifest3D:
             "schema_version": self.schema_version,
             "strategy": self.strategy,
             "strategy_config": dict(self.strategy_config),
+            "selected_component_configs": {
+                name: json.loads(snapshot) for name, snapshot in self.selected_component_configs
+            },
             "target_type": self.target_type,
             "training_config": dict(self.training_config),
             "trainable_parameter_hash": self.trainable_parameter_hash,
@@ -274,6 +348,12 @@ class TrainingManifest3D:
         strategy_config = data["strategy_config"]
         if not isinstance(strategy_config, Mapping):
             raise TrainingManifestError("strategy_config must contain a JSON object")
+        selected_component_configs = data["selected_component_configs"]
+        frozen_component_configs = data["frozen_component_configs"]
+        if not isinstance(selected_component_configs, Mapping) or not isinstance(frozen_component_configs, Mapping):
+            raise TrainingManifestError(
+                "selected_component_configs and frozen_component_configs must contain JSON objects"
+            )
         objective_config = data["objective_config"]
         training_config = data["training_config"]
         if not isinstance(objective_config, Mapping) or not isinstance(training_config, Mapping):
@@ -295,6 +375,14 @@ class TrainingManifest3D:
                 strategy_config=tuple(sorted(strategy_config.items())),  # type: ignore[arg-type]
                 objective_config=_canonical_config(objective_config, "objective_config"),  # type: ignore[arg-type]
                 training_config=_canonical_config(training_config, "training_config"),  # type: ignore[arg-type]
+                selected_component_configs=_canonical_component_configs(
+                    selected_component_configs,  # type: ignore[arg-type]
+                    "selected_component_configs",
+                ),
+                frozen_component_configs=_canonical_component_configs(
+                    frozen_component_configs,  # type: ignore[arg-type]
+                    "frozen_component_configs",
+                ),
                 components=tuple(data["components"]),  # type: ignore[arg-type]
                 base_model=data["base_model"],  # type: ignore[arg-type]
                 revision=data["revision"],  # type: ignore[arg-type]
