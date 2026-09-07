@@ -495,6 +495,7 @@ def test_prepare_uses_rank_specific_rng_and_post_wrap_optimizer_parameters(monke
         def prepare(self, component, optimizer, lr_scheduler):
             del component, optimizer
             wrapped_optimizer = torch.optim.AdamW([wrapped_parameter], lr=1e-4)
+            lr_scheduler.optimizer = wrapped_optimizer
             return WrappedBlock(), wrapped_optimizer, lr_scheduler
 
         def accumulate(self, *models):

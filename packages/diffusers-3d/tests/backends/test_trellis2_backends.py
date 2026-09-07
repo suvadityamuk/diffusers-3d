@@ -196,6 +196,7 @@ def test_ovoxel_npz_preserves_generated_out_of_cell_dual_vertices_for_official_r
     write_ovoxel_npz(buffer, asset, compressed=False)
     buffer.seek(0)
     with np.load(buffer, allow_pickle=False) as data:
+        official_coordinates = torch.from_numpy(data["coord"]).int()
         official_attributes = {name: torch.from_numpy(value) for name, value in data.items() if name != "coord"}
         assert official_attributes["dual_vertices"].dtype is torch.float32
         torch.testing.assert_close(
