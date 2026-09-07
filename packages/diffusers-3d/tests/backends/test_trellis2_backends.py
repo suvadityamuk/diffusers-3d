@@ -114,7 +114,7 @@ def test_ovoxel_official_mixed_roundtrip_preserves_all_channels_and_grid_metadat
         assert torch.equal(restored_attributes[name], value), name
 
 
-def test_ovoxel_npz_uses_default_lexicographic_order_and_roundtrips_without_compiled_runtime():
+def test_ovoxel_npz_is_official_reader_compatible_and_roundtrips_without_compiled_runtime():
     coordinates, attributes = _packed_official()
     asset = ovoxel_asset_from_official(coordinates, attributes, resolution=8, packed=True)
     buffer = io.BytesIO()
@@ -122,18 +122,18 @@ def test_ovoxel_npz_uses_default_lexicographic_order_and_roundtrips_without_comp
 
     buffer.seek(0)
     with np.load(buffer, allow_pickle=False) as data:
+        assert set(data.files) == {"coord", *attributes}
         assert data["coord"].dtype == np.uint16
         assert all(data[name].dtype == np.uint8 for name in attributes if name != "split_weight")
         assert data["split_weight"].dtype == np.float32
-        layout = json.loads(str(data["__diffusers_3d_ovoxel_layout"].item()))
-        assert layout["attributes"]["split_weight"] == {
-            "dtype": "float32",
-            "encoding": "nonnegative_float",
-            "layout": "voxel_scalar_nonnegative",
-            "shape": [1],
+        official_coordinates = torch.from_numpy(data["coord"]).int()
+        official_attributes = {
+            name: torch.from_numpy(value)
+            for name, value in data.items()
+            if name != "coord"
         }
-        assert layout["coordinate_order"] == "lexicographic_xyz"
-        assert not layout["morton_order"]
+        assert official_coordinates.shape == coordinates.shape
+        assert official_attributes.keys() == attributes.keys()
         stored_coordinates = torch.from_numpy(data["coord"].astype(np.int64))
         expected_order = torch.from_numpy(
             np.lexsort(
@@ -147,13 +147,12 @@ def test_ovoxel_npz_uses_default_lexicographic_order_and_roundtrips_without_comp
         assert torch.equal(stored_coordinates, coordinates[expected_order])
 
     buffer.seek(0)
-    restored = read_ovoxel_npz(buffer)
+    restored = read_ovoxel_npz(buffer, resolution=8)
     restored_coordinates, restored_attributes = official_tensors_from_ovoxel_asset(restored, packed=True)
     assert torch.equal(restored_coordinates, coordinates[expected_order])
     for name, value in attributes.items():
         assert torch.equal(restored_attributes[name], value[expected_order]), name
     assert restored.metadata["resolution"] == [8, 8, 8]
-    assert restored.metadata["coordinate_order"] == "lexicographic_xyz"
     assert not restored.metadata["resolution_inferred"]
 
 
@@ -166,7 +165,7 @@ def test_ovoxel_npz_preserves_unbounded_split_weight_dtype_and_values(dtype):
 
     write_ovoxel_npz(buffer, asset, compressed=False)
     buffer.seek(0)
-    restored = read_ovoxel_npz(buffer)
+    restored = read_ovoxel_npz(buffer, resolution=8)
 
     assert restored.split_weights.dtype is dtype
     expected_order = torch.from_numpy(
@@ -183,6 +182,60 @@ def test_ovoxel_npz_preserves_unbounded_split_weight_dtype_and_values(dtype):
     _, restored_attributes = official_tensors_from_ovoxel_asset(restored, packed=True)
     assert restored_attributes["split_weight"].dtype is dtype
     torch.testing.assert_close(restored_attributes["split_weight"], expected_split_weights, atol=0.0, rtol=0.0)
+
+
+def test_ovoxel_npz_preserves_generated_out_of_cell_dual_vertices_for_official_reader():
+    coordinates, attributes = _packed_official()
+    asset = ovoxel_asset_from_official(coordinates, attributes, resolution=8, packed=True)
+    asset.dual_grid_vertex_offsets = torch.tensor(
+        [
+            [-0.5, 0.0, 1.5],
+            [0.25, 0.5, 0.75],
+            [1.25, -0.25, 1.0],
+            [0.0, 1.0, 0.5],
+        ]
+    )
+    buffer = io.BytesIO()
+
+    write_ovoxel_npz(buffer, asset, compressed=False)
+    buffer.seek(0)
+    with np.load(buffer, allow_pickle=False) as data:
+        official_attributes = {
+            name: torch.from_numpy(value)
+            for name, value in data.items()
+            if name != "coord"
+        }
+        assert official_attributes["dual_vertices"].dtype is torch.float32
+        torch.testing.assert_close(
+            official_attributes["dual_vertices"],
+            asset.dual_grid_vertex_offsets[
+                torch.tensor([1, 2, 3, 0])
+            ],
+        )
+
+    buffer.seek(0)
+    restored = read_ovoxel_npz(buffer, resolution=8)
+    torch.testing.assert_close(
+        restored.dual_grid_vertex_offsets,
+        asset.dual_grid_vertex_offsets[torch.tensor([1, 2, 3, 0])],
+    )
+
+
+@pytest.mark.parametrize(
+    "intersection_data",
+    (
+        torch.tensor([[-1], [0], [0], [0]], dtype=torch.int64),
+        torch.tensor([[8], [0], [0], [0]], dtype=torch.int64),
+        torch.tensor([[256, 0, 0], [0, 0, 0], [0, 0, 0], [0, 0, 0]], dtype=torch.int64),
+    ),
+)
+def test_ovoxel_official_mapping_validates_intersection_flags_before_uint8_cast(intersection_data):
+    coordinates, attributes = _packed_official()
+    asset = ovoxel_asset_from_official(coordinates, attributes, resolution=8, packed=True)
+    asset.intersection_data = intersection_data
+
+    with pytest.raises(ValueError, match="intersected|intersection"):
+        official_tensors_from_ovoxel_asset(asset, packed=True)
 
 
 @pytest.mark.parametrize(
@@ -221,14 +274,12 @@ def test_ovoxel_npz_uint16_boundaries_use_default_lexicographic_fallback():
     write_ovoxel_npz(buffer, asset, compressed=False)
     buffer.seek(0)
     with np.load(buffer, allow_pickle=False) as data:
-        layout = json.loads(str(data["__diffusers_3d_ovoxel_layout"].item()))
-        assert layout["coordinate_order"] == "lexicographic_xyz"
+        assert set(data.files) == {"coord", *attributes}
         assert data["coord"].dtype == np.uint16
         assert data["coord"][:, 0].tolist() == [0, 1023, 1024, 1535]
-        assert data["__diffusers_3d_ovoxel_resolution"].tolist() == [1536, 1536, 1536]
 
     buffer.seek(0)
-    restored = read_ovoxel_npz(buffer)
+    restored = read_ovoxel_npz(buffer, resolution=1536)
     assert restored.active_coordinates[:, 0].tolist() == [0, 1023, 1024, 1535]
     assert restored.metadata["resolution"] == [1536, 1536, 1536]
     with pytest.raises(ValueError, match=r"\[0, 1023\]"):
@@ -427,7 +478,21 @@ def test_ovoxel_native_facade_delegates_to_pinned_io_dual_grid_and_renderer_api(
     assert calls["render"]["voxel_size"] == pytest.approx(1 / 8)
     torch.testing.assert_close(
         calls["render"]["position"],
-        asset.active_coordinates.to(dtype=torch.float32) / 8 - 0.5,
+        (asset.active_coordinates.to(dtype=torch.float32) + 0.5) / 8 - 0.5,
+    )
+    asset.transform = torch.eye(4)
+    asset.transform[:3, 3] = torch.tensor([1.0, 2.0, 3.0])
+    backend.render_voxels(
+        asset,
+        extrinsics=torch.eye(4),
+        intrinsics=torch.eye(3),
+        image_size=4,
+    )
+    torch.testing.assert_close(
+        calls["render"]["position"],
+        (asset.active_coordinates.to(dtype=torch.float32) + 0.5) / 8
+        - 0.5
+        + torch.tensor([1.0, 2.0, 3.0]),
     )
 
     high_coordinates = torch.tensor(

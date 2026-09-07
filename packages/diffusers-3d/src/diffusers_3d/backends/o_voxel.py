@@ -252,14 +252,16 @@ def ovoxel_asset_from_official(
     dual_key = "dual_vertices" if "dual_vertices" in values else "vertices"
     if dual_key not in values or "intersected" not in values:
         raise ValueError("official O-Voxel data requires dual_vertices (or vertices) and intersected")
-    if packed is None:
-        packed = values[dual_key].dtype is torch.uint8
-
     def unit(name: str, *, default: torch.Tensor | None = None) -> torch.Tensor | None:
         value = values.get(name, default)
         if value is None:
             return None
-        return _unpack_unit(value, name) if packed else value.to(dtype=torch.float32)
+        value_is_packed = packed is True or (packed is None and value.dtype is torch.uint8)
+        if value_is_packed:
+            return _unpack_unit(value, name)
+        if not value.is_floating_point() or not bool(torch.isfinite(value).all()):
+            raise ValueError(f"unpacked official {name} must be a finite floating-point tensor")
+        return value.to(dtype=torch.float32)
 
     dual_vertices = unit(dual_key)
     assert dual_vertices is not None
@@ -267,12 +269,13 @@ def ovoxel_asset_from_official(
         raise ValueError("dual_vertices must have shape (num_voxels, 3)")
     intersected_bits = _unpack_intersection_flags(values["intersected"], count)
 
-    default_base = torch.zeros(count, 3, dtype=torch.uint8 if packed else torch.float32, device=coordinates.device)
-    default_metallic = torch.zeros(count, 1, dtype=torch.uint8 if packed else torch.float32, device=coordinates.device)
+    default_dtype = torch.uint8 if packed is True else torch.float32
+    default_base = torch.zeros(count, 3, dtype=default_dtype, device=coordinates.device)
+    default_metallic = torch.zeros(count, 1, dtype=default_dtype, device=coordinates.device)
     default_roughness = torch.full(
         (count, 1),
-        128 if packed else 0.5,
-        dtype=torch.uint8 if packed else torch.float32,
+        128 if packed is True else 0.5,
+        dtype=default_dtype,
         device=coordinates.device,
     )
     base_color = unit("base_color", default=default_base)
@@ -293,7 +296,7 @@ def ovoxel_asset_from_official(
     split_weights = values.get("split_weight", values.get("split_weights"))
     if split_weights is not None:
         split_weights = _scalar_channel(split_weights, count, "split_weight")
-        if packed and split_weights.dtype is torch.uint8:
+        if packed is not False and split_weights.dtype is torch.uint8:
             # Read legacy/native VXZ data according to the only value domain
             # that uint8 can represent. New lossless writes keep this channel
             # floating point.
@@ -320,7 +323,8 @@ def ovoxel_asset_from_official(
         "resolution": list(resolution_values),
         "aabb": bounds.detach().cpu().tolist(),
         "resolution_inferred": resolution_inferred,
-        "official_packed_input": bool(packed),
+        "official_packed_input": packed is True
+        or (packed is None and all(value.dtype is torch.uint8 for value in values.values())),
         "dual_vertex_semantics": "fractional_cell_offset",
     }
     return OVoxelAsset(
@@ -364,18 +368,9 @@ def official_tensors_from_ovoxel_asset(
         raise ValueError("dual-grid vertices must align one-to-one with active coordinates")
     if asset.intersection_data is None:
         raise ValueError("official O-Voxel mapping requires intersection flags")
-    flags = asset.intersection_data
-    if flags.ndim == 1:
-        flags = flags[:, None]
-    if flags.shape[1] == 1:
-        intersected = flags.to(dtype=torch.uint8)
-    elif flags.shape[1] == 3:
-        bits = flags.to(dtype=torch.uint8)
-        if bool((bits > 1).any()):
-            raise ValueError("unpacked intersection flags must contain only zero or one")
-        intersected = bits[:, 0:1] + 2 * bits[:, 1:2] + 4 * bits[:, 2:3]
-    else:
-        raise ValueError("intersection flags must have one packed or three unpacked channels")
+    flags = _unpack_intersection_flags(asset.intersection_data, asset.active_coordinates.shape[0])
+    bits = flags.to(dtype=torch.uint8)
+    intersected = bits[:, 0:1] + 2 * bits[:, 1:2] + 4 * bits[:, 2:3]
 
     attributes: dict[str, torch.Tensor] = {
         "dual_vertices": asset.dual_grid_vertex_offsets,
@@ -397,6 +392,19 @@ def official_tensors_from_ovoxel_asset(
         for name, value in attributes.items():
             if name == "intersected":
                 packed_attributes[name] = value.to(dtype=torch.uint8)
+            elif name == "dual_vertices":
+                if not value.is_floating_point() or not bool(torch.isfinite(value).all()):
+                    raise ValueError("packed official dual_vertices must be finite and floating point")
+                if bool(((value < -0.5) | (value > 1.5)).any()):
+                    raise ValueError("packed official dual_vertices must lie in [-0.5, 1.5]")
+                if bool(((value < 0) | (value > 1)).any()):
+                    if value.dtype not in (torch.float16, torch.float32):
+                        raise ValueError(
+                            "out-of-cell packed official dual_vertices must use torch.float16 or torch.float32"
+                        )
+                    packed_attributes[name] = value
+                else:
+                    packed_attributes[name] = _pack_unit(value, name)
             elif name == "split_weight":
                 if value.dtype not in (torch.float16, torch.float32) or not bool(torch.isfinite(value).all()):
                     raise ValueError("packed official split_weight must use finite torch.float16 or torch.float32")
@@ -425,11 +433,13 @@ def write_ovoxel_npz(
     packed: bool = True,
     morton_order: bool | None = None,
 ) -> None:
-    """Write an official-compatible NPZ plus reserved lossless grid metadata.
+    """Write an NPZ containing only fields accepted as attributes by the official reader.
 
     The default deterministic lexicographic order supports the full uint16
     coordinate domain. Passing ``morton_order=True`` explicitly requests the
     official 30-bit order and therefore limits every coordinate to 1023.
+    Grid resolution and AABB are not part of the official NPZ format and must
+    be supplied to :func:`read_ovoxel_npz` when they cannot be inferred.
     """
 
     resolution = _serialization_resolution(asset, format_name="official O-Voxel NPZ")
@@ -444,9 +454,6 @@ def write_ovoxel_npz(
         order = _lexicographic_coordinate_order(coordinates)
         coordinates = coordinates[order]
         attributes = {name: value[order] for name, value in attributes.items()}
-        coordinate_order = "lexicographic_xyz"
-    else:
-        coordinate_order = "morton_30bit" if morton_order else "input"
     if "split_weight" in attributes and attributes["split_weight"].dtype not in (torch.float16, torch.float32):
         raise ValueError("O-Voxel NPZ split_weight must use torch.float16 or torch.float32")
     aabb = asset.metadata.get("aabb", [[-0.5, -0.5, -0.5], [0.5, 0.5, 0.5]])
@@ -460,37 +467,6 @@ def write_ovoxel_npz(
         raise ValueError("asset grid_transform does not match its native O-Voxel resolution and aabb metadata")
     arrays: dict[str, np.ndarray] = {"coord": coordinates.detach().cpu().numpy().astype(np.uint16)}
     arrays.update({name: value.detach().cpu().numpy() for name, value in attributes.items()})
-    attribute_metadata = {
-        "attributes": {
-            name: {
-                "dtype": str(value.dtype),
-                "encoding": (
-                    "xyz_bitfield_uint8"
-                    if name == "intersected"
-                    else "nonnegative_float"
-                    if name == "split_weight"
-                    else "unit_uint8"
-                    if packed
-                    else "unit_float"
-                ),
-                "layout": _ATTRIBUTE_LAYOUTS.get(name, "voxel_channels"),
-                "shape": list(value.shape[1:]),
-            }
-            for name, value in sorted(arrays.items())
-            if name != "coord"
-        },
-        "coordinate_dtype": "uint16",
-        "coordinate_layout": "voxel_xyz",
-        "coordinate_order": coordinate_order,
-        "morton_order": coordinate_order == "morton_30bit",
-        "schema_version": _OVOXEL_NPZ_SCHEMA_VERSION,
-    }
-    arrays[f"{OVOXEL_METADATA_PREFIX}resolution"] = np.asarray(resolution, dtype=np.uint32)
-    arrays[f"{OVOXEL_METADATA_PREFIX}aabb"] = np.asarray(aabb, dtype=np.float32)
-    arrays[f"{OVOXEL_METADATA_PREFIX}packed"] = np.asarray([int(packed)], dtype=np.uint8)
-    arrays[f"{OVOXEL_METADATA_PREFIX}layout"] = np.asarray(
-        json.dumps(attribute_metadata, separators=(",", ":"), sort_keys=True)
-    )
     writer = np.savez_compressed if compressed else np.savez
     writer(file, **arrays)
 
@@ -757,6 +733,11 @@ class OVoxelBackend:
         # The official runtime performs chunk-local ordering internally. Global
         # Morton sorting here would reject valid uint16-resolution assets.
         coordinates, attributes = self.to_official(asset, packed=True, morton_order=False)
+        if any(value.dtype is not torch.uint8 for value in attributes.values()):
+            raise ValueError(
+                "The pinned VXZ v0 runtime accepts only uint8 attributes; use write_npz() for "
+                "out-of-cell dual vertices or other floating-point channels"
+            )
         runtime.io.write_vxz(
             self._native_file(file),
             coordinates.to(dtype=torch.int32),
@@ -834,18 +815,26 @@ class OVoxelBackend:
             raise ValueError("native voxel rendering requires explicit cubic resolution metadata") from error
         if len(set(resolution_values)) != 1:
             raise ValueError("native voxel rendering currently requires explicit cubic resolution metadata")
-        voxel_sizes = asset.grid_transform.diagonal()[:3]
+        voxel_transform = asset.transform @ asset.grid_transform
+        voxel_axes = voxel_transform[:3, :3]
+        voxel_sizes = torch.linalg.vector_norm(voxel_axes, dim=0)
         if not torch.allclose(voxel_sizes, voxel_sizes[:1].expand_as(voxel_sizes)):
             raise ValueError("native voxel rendering requires equal world-space voxel sizes on every axis")
+        normalized_axes = voxel_axes / voxel_sizes
+        if not torch.allclose(
+            normalized_axes.T @ normalized_axes,
+            torch.eye(3, device=asset.device, dtype=normalized_axes.dtype),
+        ):
+            raise ValueError("native voxel rendering does not support sheared world transforms")
         renderer = runtime.rasterize.VoxelRenderer({"resolution": image_size})
         position = torch.cat(
             [
-                asset.active_coordinates.to(dtype=asset.base_color.dtype),
+                asset.active_coordinates.to(dtype=asset.base_color.dtype) + 0.5,
                 torch.ones(asset.active_coordinates.shape[0], 1, device=asset.device, dtype=asset.base_color.dtype),
             ],
             dim=1,
         )
-        position = (asset.grid_transform @ position.T).T[:, :3]
+        position = (voxel_transform @ position.T).T[:, :3]
         result = renderer.render(
             position=position.to(self.device),
             attrs=values.to(self.device),

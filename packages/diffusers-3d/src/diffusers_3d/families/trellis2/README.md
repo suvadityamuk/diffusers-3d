@@ -46,11 +46,13 @@ resolution, and AABB.
 The package-owned O-Voxel adapter has independent capability surfaces:
 
 - schema conversion and mixed official packing are pure PyTorch: unit-domain
-  channels use uint8 while unbounded split weights retain float16/float32;
+  channels use uint8 while out-of-cell dual vertices and unbounded split
+  weights retain float16/float32;
 - `.npz` read/write is pure NumPy/Python and defaults to deterministic
-  lexicographic ordering across the uint16 coordinate domain, with exact
-  ordering, grid, dtype, and layout metadata. Explicit 30-bit Morton ordering
-  remains available when every coordinate is at most 1023;
+  lexicographic ordering across the uint16 coordinate domain. Files contain
+  only fields accepted by the official reader; pass resolution and AABB back
+  to the package reader when they cannot be inferred. Explicit 30-bit Morton
+  ordering remains available when every coordinate is at most 1023;
 - `.vxz` read/write delegates unsorted global coordinates to
   `o_voxel.io.read_vxz`/`write_vxz`, whose official runtime performs
   chunk-local ordering;

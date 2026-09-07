@@ -237,6 +237,7 @@ class Trellis2ShapeDualGridDecoder(Object3DModel):
             mask = hidden_states.coordinates[:, 0] == batch_index
             coordinates = hidden_states.coordinates[mask, 1:].to(dtype=torch.int64)
             values = parameters[mask]
+            source = hidden_states.source_assets[batch_index] if hidden_states.source_assets is not None else None
             dual_vertices = (1 + 2 * self.voxel_margin) * torch.sigmoid(values[:, 0:3]) - self.voxel_margin
             intersected = values[:, 3:6] > 0
             split_weights = F.softplus(values[:, 6:7])
@@ -262,8 +263,12 @@ class Trellis2ShapeDualGridDecoder(Object3DModel):
                         device=values.device,
                         dtype=values.dtype,
                     ),
-                    coordinate_system=CoordinateSystem.RIGHT_HANDED_Z_UP,
+                    transform=source.transform if source is not None else torch.eye(4, device=values.device, dtype=values.dtype),
+                    coordinate_system=(
+                        source.coordinate_system if source is not None else CoordinateSystem.RIGHT_HANDED_Z_UP
+                    ),
                     metadata={
+                        **({} if source is None else source.metadata),
                         "family": "trellis2",
                         "representation": "o_voxel",
                         "stage": "shape_decoder_tiny",

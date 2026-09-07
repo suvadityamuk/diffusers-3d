@@ -30,7 +30,7 @@ from ...objects import (
     OVoxelAsset,
     SparseVoxelAsset,
 )
-from ..trellis.sparse import TrellisSparseTensor
+from ..trellis.sparse import TrellisSparseTensor, trellis_grid_transform
 from .conditioner import Trellis2Dinov3Conditioner
 from .decoders import Trellis2PBRSparseDecoder, Trellis2ShapeDualGridDecoder, Trellis2SparseStructureDecoder
 from .models import Trellis2SLatFlowModel, Trellis2SparseStructureFlowModel
@@ -426,10 +426,6 @@ class Trellis2ImageTo3DPipeline(Object3DPipeline):
             latents = scheduler.step(velocity, timestep, latents).prev_sample
         return latents
 
-    @staticmethod
-    def _sparse_coordinates(structures: Sequence[SparseVoxelAsset]) -> torch.Tensor:
-        return TrellisSparseTensor.from_sparse_voxel_assets(tuple(structures)).coordinates
-
     def prepare_slat_latents(
         self,
         structures: Sequence[SparseVoxelAsset],
@@ -439,12 +435,15 @@ class Trellis2ImageTo3DPipeline(Object3DPipeline):
         generator: torch.Generator | list[torch.Generator] | None = None,
         latents: TrellisSparseTensor | None = None,
     ) -> TrellisSparseTensor:
-        coordinates = self._sparse_coordinates(structures)
+        source = TrellisSparseTensor.from_sparse_voxel_assets(tuple(structures))
+        coordinates = source.coordinates
         parameter = next(model.parameters())
         if latents is not None:
             if not torch.equal(latents.coordinates, coordinates) or latents.channels != channels:
                 raise ValueError("supplied SLAT latents must match extracted coordinates and channels")
-            return latents.to(device=self._execution_device, dtype=parameter.dtype)
+            moved = latents.to(device=self._execution_device, dtype=parameter.dtype)
+            source_assets = tuple(asset.to(device=moved.device) for asset in structures)
+            return TrellisSparseTensor(moved.coordinates, moved.features, source_assets)
         if isinstance(generator, list):
             if len(generator) != len(structures):
                 raise ValueError("a generator list must contain one generator per sparse structure")
@@ -465,7 +464,8 @@ class Trellis2ImageTo3DPipeline(Object3DPipeline):
                 device=self._execution_device,
                 dtype=parameter.dtype,
             )
-        return TrellisSparseTensor(coordinates.to(device=features.device), features)
+        source_assets = tuple(asset.to(device=features.device) for asset in structures)
+        return TrellisSparseTensor(coordinates.to(device=features.device), features, source_assets)
 
     @staticmethod
     def _sample_sparse(
@@ -522,18 +522,20 @@ class Trellis2ImageTo3DPipeline(Object3DPipeline):
         assets = []
         for batch_index in range(value.batch_size):
             mask = value.coordinates[:, 0] == batch_index
+            source = value.source_assets[batch_index] if value.source_assets is not None else None
             assets.append(
                 SparseVoxelAsset(
                     coordinates=value.coordinates[mask, 1:].to(dtype=torch.int64),
                     features=value.features[mask],
-                    voxel_size=1.0 / resolution,
-                    coordinate_system=next(
-                        iter(value.source_assets),
-                        None,
-                    ).coordinate_system
-                    if value.source_assets
-                    else "right_handed_z_up",
+                    grid_transform=trellis_grid_transform(
+                        resolution,
+                        device=value.device,
+                        dtype=value.dtype,
+                    ),
+                    transform=source.transform if source is not None else torch.eye(4, device=value.device, dtype=value.dtype),
+                    coordinate_system=source.coordinate_system if source is not None else "right_handed_z_up",
                     metadata={
+                        **({} if source is None else source.metadata),
                         "family": "trellis2",
                         "representation": "slat",
                         "stage": stage,

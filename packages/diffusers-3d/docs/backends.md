@@ -42,10 +42,11 @@ The TRELLIS.2 adapters intentionally expose only reviewed narrow API surfaces:
   Torch/device/dtype/CUDA/Triton surfaces. Raw upstream modules need no custom `__source_revision__` or `__build_id__`
   attributes; an upstream version/build string is retained only as diagnostic metadata when present. Installable
   direct source records are in `requirements/backends/flex-gemm.txt` and `requirements/backends/cumesh.txt`.
-- `OVoxelBackend` provides pure tensor schema conversion, unit-domain uint8 packing, lossless float16/float32 split
-  weights, explicit NPZ dtype/layout/coordinate-order metadata, and deterministic lexicographic ordering across the
-  full uint16 coordinate domain without loading an extension. Explicit 30-bit Morton ordering remains available for
-  coordinates at most 1023.
+- `OVoxelBackend` provides pure tensor schema conversion, unit-domain uint8 packing, lossless float16/float32
+  out-of-cell dual vertices and split weights, and deterministic lexicographic NPZ ordering across the full uint16
+  coordinate domain without loading an extension. NPZ writes contain only fields accepted by the official reader;
+  callers provide resolution and AABB on read when they cannot be inferred. Explicit 30-bit Morton ordering remains
+  available for coordinates at most 1023.
   `.vxz`, flexible-dual-grid mesh extraction, and voxel rendering are separate
   native capabilities delegated to the O-Voxel API from pinned TRELLIS.2 revision
   `75fbf0183001ed9876c8dbb35de6b68552ee08bd`. `.vxz` does not contain grid resolution metadata, so callers must

@@ -6,6 +6,7 @@ import torch.nn.functional as F
 
 from diffusers_3d import (
     AutoPipelineForImageTo3D,
+    CoordinateSystem,
     ImageCondition,
     MeshAsset,
     Object3DPipelineOutput,
@@ -143,6 +144,35 @@ def test_tiny_experimental_shape_texture_and_ovoxel_stages_return_native_assets(
     assert ovoxel.metallic.shape[1] == ovoxel.roughness.shape[1] == ovoxel.opacity.shape[1] == 1
     assert ovoxel.normals.shape[1] == ovoxel.emissive.shape[1] == 3
     assert ovoxel.split_weights.shape[1] == 1
+
+
+def test_slat_and_ovoxel_assets_preserve_centered_grid_and_world_transform(tiny_trellis2_full_pipeline):
+    pipeline = tiny_trellis2_full_pipeline
+    world_transform = torch.eye(4)
+    world_transform[:3, 3] = torch.tensor([1.0, 2.0, 3.0])
+    structure = SparseVoxelAsset(
+        coordinates=torch.tensor([[0, 0, 0], [1, 1, 1]], dtype=torch.int64),
+        features=torch.ones(2, 1),
+        grid_transform=trellis_grid_transform(4),
+        transform=world_transform,
+        coordinate_system=CoordinateSystem.RIGHT_HANDED_Z_UP,
+        metadata={"resolution": 4},
+    )
+    latents = pipeline.prepare_slat_latents(
+        (structure,),
+        pipeline.shape_slat_flow_model,
+        channels=pipeline.shape_slat_flow_model.config.in_channels,
+        generator=torch.Generator().manual_seed(0),
+    )
+    slat = pipeline._slat_assets(latents, resolution=8, stage="shape")[0]
+
+    torch.testing.assert_close(slat.grid_transform, trellis_grid_transform(8))
+    torch.testing.assert_close(slat.transform, world_transform)
+    decoder_input = latents.replace(
+        torch.zeros(latents.features.shape[0], pipeline.shape_slat_decoder.config.latent_channels)
+    )
+    ovoxel = pipeline.shape_slat_decoder(decoder_input).assets[0]
+    torch.testing.assert_close(ovoxel.transform, world_transform)
 
 
 def test_production_cascade_and_missing_experimental_components_fail_explicitly(tiny_trellis2_pipeline):

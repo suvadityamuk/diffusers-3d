@@ -7,6 +7,7 @@
 
 from __future__ import annotations
 
+import math
 from collections.abc import Sequence
 from dataclasses import dataclass
 
@@ -168,11 +169,16 @@ class Trellis2FlowEulerScheduler(SchedulerMixin, ConfigMixin):
         _validate_pair(conditional, negative, names="conditional and negative predictions")
         if not 0 <= guidance_rescale <= 1:
             raise ValueError("guidance_rescale must lie in [0, 1]")
+        strength = float(guidance_strength)
+        if not math.isfinite(strength):
+            raise ValueError("guidance_strength must be finite")
+        if strength == 1:
+            return conditional
+        if strength == 0:
+            return negative
         conditional_features = _features(conditional)
         negative_features = _features(negative)
-        guided_features = (
-            float(guidance_strength) * conditional_features + (1 - float(guidance_strength)) * negative_features
-        )
+        guided_features = strength * conditional_features + (1 - strength) * negative_features
         guided = _replace(conditional, guided_features)
         if guidance_rescale == 0:
             return guided

@@ -68,3 +68,26 @@ def test_scheduler_sparse_equations_preserve_coordinates():
     output = scheduler.step(guided, scheduler.timesteps[0], sample)
     assert torch.equal(output.prev_sample.coordinates, coordinates)
     torch.testing.assert_close(output.prev_sample.features, sample.features - guided.features)
+
+
+def test_guidance_endpoints_return_exact_predictions_without_rescaling():
+    scheduler = Trellis2FlowEulerScheduler()
+    conditional = torch.ones(1, 1, 1, 1, 1)
+    negative = torch.zeros_like(conditional)
+
+    assert scheduler.apply_guidance(conditional, negative, 1.0, guidance_rescale=1.0) is conditional
+    assert scheduler.apply_guidance(conditional, negative, 0.0, guidance_rescale=1.0) is negative
+
+    sparse_conditional = TrellisSparseTensor(
+        torch.tensor([[0, 0, 0, 0]], dtype=torch.int64),
+        torch.ones(1, 2),
+    )
+    sparse_negative = sparse_conditional.replace(torch.zeros(1, 2))
+    assert (
+        scheduler.apply_guidance(sparse_conditional, sparse_negative, 1.0, guidance_rescale=0.5)
+        is sparse_conditional
+    )
+    assert (
+        scheduler.apply_guidance(sparse_conditional, sparse_negative, 0.0, guidance_rescale=0.5)
+        is sparse_negative
+    )
