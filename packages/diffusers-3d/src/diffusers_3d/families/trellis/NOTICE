@@ -1,0 +1,28 @@
+Microsoft TRELLIS integration notice
+
+Portions of the model architecture, sparse-structure decoder, image
+conditioning, scheduler and pipeline behavior, sparse representation mapping,
+Gaussian parameter mapping, and training objectives in this directory are
+modified from:
+
+  microsoft/TRELLIS
+  https://github.com/microsoft/TRELLIS
+  revision 442aa1e1afb9014e80681d3bf604e8d728a86ee7
+
+Those portions are provided under the accompanying MIT License:
+
+  MIT License
+  Copyright (c) Microsoft Corporation.
+
+All ported source files carry a prominent modification notice. Independently
+written diffusers-3d package glue remains under the package Apache-2.0 license.
+
+No source from Graphdeco diff-gaussian-rasterization, diffoctreerast,
+nvdiffrast, mip-splatting, or the restricted TRELLIS modified FlexiCubes
+submodule is included. Their registry entries are policy metadata only and
+their research-only facades never import or select them implicitly.
+
+The optional Kaolin adapter accepts only the Apache-2.0
+kaolin.ops.conversions.FlexiCubes implementation and rejects
+kaolin.non_commercial. No affiliation, sponsorship, or endorsement by
+Microsoft or the optional backend authors is claimed.

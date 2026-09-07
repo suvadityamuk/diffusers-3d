@@ -8,8 +8,12 @@ version = "0.1.0.dev0"
 description = "Object-native 3D generation and fine-tuning built on Diffusers"
 readme = "README.md"
 requires-python = ">=3.10"
-license = "Apache-2.0"
-license-files = ["LICENSE-APACHE-2.0"]
+license = "Apache-2.0 AND MIT"
+license-files = [
+    "LICENSE-APACHE-2.0",
+    "src/diffusers_3d/families/trellis/LICENSE-MIT",
+    "src/diffusers_3d/families/trellis/NOTICE",
+]
 authors = [{ name = "The Diffusers 3D contributors" }]
 classifiers = [
     "Development Status :: 2 - Pre-Alpha",
@@ -34,6 +38,7 @@ dependencies = [
 
 [project.scripts]
 diffusers-3d-check-release = "diffusers_3d.contributions.removal:release_check_main"
+diffusers-3d-convert-trellis = "diffusers_3d.families.trellis.conversion:main"
 diffusers-3d-validate = "diffusers_3d.contributions.cli:main"
 
 [project.optional-dependencies]
@@ -61,7 +66,13 @@ Repository = "https://github.com/suvadityamuk/diffusers-3d"
 where = ["src"]
 
 [tool.setuptools.package-data]
-diffusers_3d = ["py.typed"]
+diffusers_3d = [
+    "py.typed",
+    "families/trellis/*.json",
+    "families/trellis/*.md",
+    "families/trellis/LICENSE*",
+    "families/trellis/NOTICE",
+]
 
 [tool.pytest.ini_options]
 addopts = "-ra --strict-markers"
