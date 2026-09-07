@@ -4,6 +4,7 @@ import pytest
 import torch
 
 from diffusers_3d import (
+    ImageCondition,
     Trellis2Dinov3Conditioner,
     Trellis2FlowEulerScheduler,
     Trellis2ImageTo3DPipeline,
@@ -11,8 +12,29 @@ from diffusers_3d import (
     Trellis2ShapeDualGridDecoder,
     Trellis2SLatFlowModel,
     Trellis2SparseStructureDecoder,
+    Trellis2SparseStructureExample,
     Trellis2SparseStructureFlowModel,
 )
+
+
+class TinyTrellis2PrecomputedLatentDataset:
+    def __init__(self, length: int = 2) -> None:
+        self.length = length
+
+    def __len__(self) -> int:
+        return self.length
+
+    def __getitem__(self, index: int) -> Trellis2SparseStructureExample:
+        if not 0 <= index < self.length:
+            raise IndexError(index)
+        offset = float(index) / self.length
+        image = torch.linspace(0.0, 1.0 - 0.1 * offset, 3 * 8 * 8).reshape(3, 8, 8)
+        latents = torch.linspace(-0.75 + offset, 0.75 + offset, 2 * 2 * 2 * 2).reshape(2, 2, 2, 2)
+        return Trellis2SparseStructureExample(
+            condition=ImageCondition(image=image),
+            sparse_structure_latents=latents,
+            example_id=f"tiny-trellis2-{index}",
+        )
 
 
 @pytest.fixture
@@ -107,3 +129,8 @@ def tiny_trellis2_full_pipeline(tiny_trellis2_components):
         texture_slat_std=[1.0] * texture_flow.config.out_channels,
         default_pipeline_type="tiny",
     )
+
+
+@pytest.fixture
+def tiny_trellis2_latent_dataset():
+    return TinyTrellis2PrecomputedLatentDataset()

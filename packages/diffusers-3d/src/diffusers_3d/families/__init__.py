@@ -33,6 +33,9 @@ _TRELLIS_EXPORTS = {
 
 _TRELLIS2_EXPORTS = {
     "TRELLIS2_REFERENCE_REVISION",
+    "TRELLIS2_SHAPE_SLAT_FLOW_POLICY",
+    "TRELLIS2_SPARSE_STRUCTURE_FLOW_POLICY",
+    "TRELLIS2_TEXTURE_SLAT_FLOW_POLICY",
     "Trellis2ConditionerOutput",
     "Trellis2Dinov3Conditioner",
     "Trellis2FlowEulerScheduler",
@@ -40,13 +43,22 @@ _TRELLIS2_EXPORTS = {
     "Trellis2ImageTo3DPipeline",
     "Trellis2PBRDecoderOutput",
     "Trellis2PBRSparseDecoder",
+    "Trellis2SLatBatch",
+    "Trellis2SLatExample",
     "Trellis2SLatFlowModel",
     "Trellis2SLatFlowOutput",
     "Trellis2ShapeDecoderOutput",
     "Trellis2ShapeDualGridDecoder",
+    "Trellis2ShapeSLatFlowRecipe",
+    "Trellis2SparseStructureBatch",
     "Trellis2SparseStructureDecoder",
+    "Trellis2SparseStructureExample",
     "Trellis2SparseStructureFlowModel",
     "Trellis2SparseStructureFlowOutput",
+    "Trellis2SparseStructureFlowRecipe",
+    "Trellis2TextureSLatBatch",
+    "Trellis2TextureSLatExample",
+    "Trellis2TextureSLatFlowRecipe",
     "convert_trellis2_checkpoint",
 }
 

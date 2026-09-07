@@ -30,8 +30,11 @@ def production_training_registrations(training_registration_type: type[Any]) -> 
     """Build exact reviewed training registrations for released families."""
 
     from .trellis.registrations import trellis_training_registrations
+    from .trellis2.registrations import trellis2_training_registrations
 
-    return trellis_training_registrations(training_registration_type)
+    return trellis_training_registrations(training_registration_type) + trellis2_training_registrations(
+        training_registration_type
+    )
 
 
 __all__ = ["production_execution_registrations", "production_training_registrations"]
