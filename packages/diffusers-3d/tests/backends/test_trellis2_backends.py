@@ -408,12 +408,14 @@ def test_ovoxel_native_facade_delegates_to_pinned_io_dual_grid_and_renderer_api(
         ),
         support_level=BackendSupportLevel.ACCELERATED,
         devices=("cpu",),
+        dtypes=("float16",),
         differentiable=False,
         import_name="o_voxel",
         distribution_name="o-voxel",
     )
     backend = OVoxelBackend(
         device="cpu",
+        dtype=torch.float16,
         registry=registry_factory((spec,)),
         accept_nvdiffrast_research_license=True,
     )
@@ -505,6 +507,9 @@ def test_ovoxel_native_facade_delegates_to_pinned_io_dual_grid_and_renderer_api(
     assert set(rendered) == {"attr", "depth", "alpha"}
     assert calls["renderer_options"] == {"resolution": 4}
     assert calls["render"]["voxel_size"] == pytest.approx(1 / 8)
+    assert all(
+        calls["render"][name].dtype is torch.float32 for name in ("position", "attrs", "extrinsics", "intrinsics")
+    )
     torch.testing.assert_close(
         calls["render"]["position"],
         (asset.active_coordinates.to(dtype=torch.float32) + 0.5) / 8 - 0.5,

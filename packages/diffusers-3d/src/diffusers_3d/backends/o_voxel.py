@@ -773,12 +773,15 @@ class OVoxelBackend:
             dim=1,
         )
         position = (voxel_transform @ position.T).T[:, :3]
+        # The pinned CUDA rasterizer reads every floating input through
+        # data_ptr<float>(), independently of the model/asset dtype.
+        render_dtype = torch.float32
         result = renderer.render(
-            position=position.to(device=self.device, dtype=self.dtype),
-            attrs=values.to(device=self.device, dtype=self.dtype),
+            position=position.to(device=self.device, dtype=render_dtype),
+            attrs=values.to(device=self.device, dtype=render_dtype),
             voxel_size=float(voxel_sizes[0].item()),
-            extrinsics=extrinsics.to(device=self.device, dtype=self.dtype),
-            intrinsics=intrinsics.to(device=self.device, dtype=self.dtype),
+            extrinsics=extrinsics.to(device=self.device, dtype=render_dtype),
+            intrinsics=intrinsics.to(device=self.device, dtype=render_dtype),
         )
         return {"attr": result.attr, "depth": result.depth, "alpha": result.alpha}
 
