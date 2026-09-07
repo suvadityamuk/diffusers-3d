@@ -1,0 +1,7 @@
+{
+  "_class_name": "ExperimentalObject3DBlock",
+  "_diffusers_version": "0.40.0.dev0",
+  "auto_map": {
+    "ModularPipelineBlocks": "block.ExperimentalObject3DBlock"
+  }
+}
