@@ -20,6 +20,7 @@ import, followed by runtime API and Torch/CUDA/dtype/Triton checks. Upstream mod
 non-upstream revision or build attributes; optional version/build strings are diagnostic only. Availability of an
 importable module alone is not treated as compatibility.
 
-Training manifest schema 4 adds the effective LoRA adapter seed to strategy identity. Schema-3 training checkpoints
-must be recreated because exact continuation cannot infer whether their adapter initialization matches. Removing or
-changing other serialized object, pipeline, recipe, or training-manifest fields requires an explicit migration.
+Training manifest schema 5 adds selected and frozen component configurations to exact resume identity, in addition
+to the effective LoRA adapter seed introduced in schema 4. Older training checkpoints must be recreated because
+exact continuation cannot infer omitted identity data. Removing or changing other serialized object, pipeline,
+recipe, or training-manifest fields requires an explicit migration.

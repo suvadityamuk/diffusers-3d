@@ -10,7 +10,7 @@ model-specific recipe.
 
 ## Status
 
-The package is pre-alpha. Loading metadata uses schema version `2`, training manifests use schema version `4`, and
+The package is pre-alpha. Loading metadata uses schema version `2`, training manifests use schema version `5`, and
 contribution manifests use schema version `2`. Model integrations and optional compiled backends remain
 capability-gated. The reviewed model families are TRELLIS and TRELLIS.2, including TRELLIS.2's optional O-Voxel
 paths.
@@ -41,9 +41,10 @@ expression does not relicense any family code or model artifact.
   performed.
 - O-Voxel schema/mixed lossless packing and deterministic lexicographic NPZ across the uint16 coordinate domain are
   pure package code. Explicit 30-bit Morton ordering remains available through coordinate 1023. Unit-domain PBR
-  channels use uint8 while unbounded split weights retain float16/float32. `.vxz`, native dual-grid conversion, and
-  voxel rendering require a separately compiled, pinned O-Voxel runtime; the pinned VXZ v0 codec cannot losslessly
-  store split weights and rejects such writes.
+  channels use uint8 while out-of-cell dual vertices and unbounded split weights retain float16/float32. NPZ files
+  contain only official-reader fields. `.vxz`, native dual-grid conversion, and voxel rendering require a separately
+  compiled, pinned O-Voxel runtime; the pinned VXZ v0 codec cannot losslessly store floating-point attributes and
+  rejects such writes.
 - FlexGEMM and CuMesh are MIT source builds pinned by this package to audited commits with direct-URL provenance and
   runtime API/toolchain checks. Raw upstream modules do not need custom revision or build attributes.
 - Production DINOv3 weights are gated under the separate DINOv3 License. nvdiffrast is a restricted research
@@ -66,11 +67,13 @@ Install the package from this repository:
 pip install -e packages/diffusers-3d
 ```
 
-The core training/checkpoint stack requires `accelerate>=1.1.0`. Exact checkpoint persistence requires one process,
-`DistributedType.NO`, and no registered custom checkpoint objects. Loads reject older versions before
-deserialization and keep Accelerate/PyTorch loading in weights-only mode.
+The core package requires PyTorch 2.6 or newer, and the training/checkpoint stack requires `accelerate>=1.1.0`.
+Exact checkpoint persistence requires one process, `DistributedType.NO`, and no registered custom checkpoint
+objects. Loads reject older versions before deserialization and keep Accelerate/PyTorch loading in weights-only
+mode. Distributed training is supported; FSDP gradient clipping currently requires exactly one selected component.
 `LoRAFineTune(..., adapter_seed=None)` inherits `TrainingConfig3D.seed`; adapter injection runs in an isolated Torch
-RNG context and schema-4 checkpoints record the effective seed as resume identity.
+RNG context and schema-5 checkpoints record the effective seed and exact trainable/frozen component configurations
+as resume identity.
 
 Portable mesh processing is optional:
 

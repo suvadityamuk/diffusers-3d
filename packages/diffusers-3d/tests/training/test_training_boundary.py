@@ -465,15 +465,19 @@ def test_prepare_uses_rank_specific_rng_and_post_wrap_optimizer_parameters(monke
     install_registry(monkeypatch, make_registration())
     wrapped_parameter = nn.Parameter(torch.tensor(0.75))
     seed_calls = []
+    clipped_parameters = []
 
     class WrappedBlock(nn.Module):
         def __init__(self) -> None:
             super().__init__()
             self.flat_parameter = wrapped_parameter
 
+        def forward(self, inputs):
+            return inputs * self.flat_parameter
+
     class FakeAccelerator:
         device = torch.device("cpu")
-        distributed_type = DistributedType.NO
+        distributed_type = DistributedType.FSDP
         is_main_process = True
         num_processes = 4
         process_index = 3
@@ -492,6 +496,17 @@ def test_prepare_uses_rank_specific_rng_and_post_wrap_optimizer_parameters(monke
             del component, optimizer
             wrapped_optimizer = torch.optim.AdamW([wrapped_parameter], lr=1e-4)
             return WrappedBlock(), wrapped_optimizer, lr_scheduler
+
+        def accumulate(self, *models):
+            del models
+            return trainer_module.nullcontext()
+
+        def backward(self, loss):
+            loss.backward()
+
+        def clip_grad_norm_(self, parameters, max_norm):
+            clipped_parameters.extend(parameters)
+            return torch.nn.utils.clip_grad_norm_(clipped_parameters, max_norm)
 
     monkeypatch.setattr(trainer_module, "Accelerator", FakeAccelerator)
     monkeypatch.setattr(
@@ -512,7 +527,9 @@ def test_prepare_uses_rank_specific_rng_and_post_wrap_optimizer_parameters(monke
     assert seed_calls == [(11, True)]
     assert trainer._dataloader_generator.initial_seed() == 14
     assert trainer.trainable_parameters == (wrapped_parameter,)
-    assert original_parameter not in trainer.trainable_parameters
+    assert id(original_parameter) not in {id(parameter) for parameter in trainer.trainable_parameters}
+    trainer.train_step(TinyBatch(inputs=torch.ones(1, 1), labels=torch.full((1, 1), 2.0)))
+    assert clipped_parameters == list(trainer.components["denoiser"].parameters())
 
 
 class SneakyBlock(nn.Module):

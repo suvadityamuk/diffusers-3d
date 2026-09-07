@@ -422,6 +422,7 @@ class Object3DTrainer:
         self._frozen_components: Mapping[str, nn.Module] = MappingProxyType({})
         self._selected_policies: Mapping[str, ComponentPolicy] = MappingProxyType({})
         self._trainable_parameters: tuple[nn.Parameter, ...] = ()
+        self._gradient_clip_parameters: tuple[nn.Parameter, ...] = ()
         self._trainable_parameter_names: tuple[str, ...] = ()
         self._manifest: TrainingManifest3D | None = None
         self._micro_steps = 0
@@ -848,6 +849,15 @@ class Object3DTrainer:
             optimizer = prepared_values[-2]
             lr_scheduler = prepared_values[-1]
             prepared_trainable_parameters = _optimizer_trainable_parameters(optimizer)
+            gradient_clip_parameters = prepared_trainable_parameters
+            if accelerator.distributed_type is DistributedType.FSDP:
+                if len(wrapped_components) != 1:
+                    raise TrainingConfigurationError(
+                        "FSDP gradient clipping currently supports exactly one selected component"
+                    )
+                gradient_clip_parameters = tuple(wrapped_components[0].parameters())
+                if not gradient_clip_parameters:
+                    raise TrainableParameterError("Prepared FSDP component contains zero parameters")
 
             for key in self.strategy.components:
                 policy = selected_policies[key]
@@ -867,6 +877,7 @@ class Object3DTrainer:
             self._frozen_components = MappingProxyType(dict(frozen_components))
             self._selected_policies = MappingProxyType(dict(selected_policies))
             self._trainable_parameters = prepared_trainable_parameters
+            self._gradient_clip_parameters = gradient_clip_parameters
             self._trainable_parameter_names = trainable_parameter_names
             self._manifest = TrainingManifest3D.create(
                 target_type=registration.target_type,
@@ -953,7 +964,7 @@ class Object3DTrainer:
                 raise TrainingConfigurationError("training loss must require gradients")
             self.accelerator.backward(output.loss)
             if self.accelerator.sync_gradients:
-                self.accelerator.clip_grad_norm_(self._trainable_parameters, self.config.max_grad_norm)
+                self.accelerator.clip_grad_norm_(self._gradient_clip_parameters, self.config.max_grad_norm)
             self.optimizer.step()
             self.lr_scheduler.step()
             self.optimizer.zero_grad(set_to_none=True)

@@ -23,6 +23,7 @@ from .registry import BackendRegistry
 from .types import BackendCapability
 
 OVOXEL_REFERENCE_REVISION = "75fbf0183001ed9876c8dbb35de6b68552ee08bd"
+_LEGACY_OVOXEL_METADATA_PREFIX = "__diffusers_3d_ovoxel_"
 
 
 class OVoxelRuntimeUnavailableError(RuntimeError):
@@ -229,7 +230,7 @@ def ovoxel_asset_from_official(
         value = values.get(name, default)
         if value is None:
             return None
-        value_is_packed = packed is True or (packed is None and value.dtype is torch.uint8)
+        value_is_packed = packed is not False and value.dtype is torch.uint8
         if value_is_packed:
             return _unpack_unit(value, name)
         if not value.is_floating_point() or not bool(torch.isfinite(value).all()):
@@ -296,8 +297,11 @@ def ovoxel_asset_from_official(
         "resolution": list(resolution_values),
         "aabb": bounds.detach().cpu().tolist(),
         "resolution_inferred": resolution_inferred,
-        "official_packed_input": packed is True
-        or (packed is None and all(value.dtype is torch.uint8 for value in values.values())),
+        "official_packed_input": all(
+            value.dtype is torch.uint8
+            for name, value in values.items()
+            if name not in {"split_weight", "split_weights"}
+        ),
         "dual_vertex_semantics": "fractional_cell_offset",
     }
     return OVoxelAsset(
@@ -458,14 +462,24 @@ def read_ovoxel_npz(
         coordinate_array = np.array(data["coord"], copy=True)
         coordinates = torch.from_numpy(coordinate_array.astype(np.int32))
         attributes = {
-            name: torch.from_numpy(np.array(data[name], copy=True)) for name in data.files if name != "coord"
+            name: torch.from_numpy(np.array(data[name], copy=True))
+            for name in data.files
+            if name != "coord" and not name.startswith(_LEGACY_OVOXEL_METADATA_PREFIX)
         }
+        stored_resolution = data.get(f"{_LEGACY_OVOXEL_METADATA_PREFIX}resolution")
+        stored_aabb = data.get(f"{_LEGACY_OVOXEL_METADATA_PREFIX}aabb")
+        stored_packed = data.get(f"{_LEGACY_OVOXEL_METADATA_PREFIX}packed")
+        if resolution is None and stored_resolution is not None:
+            resolution = tuple(int(item) for item in stored_resolution.tolist())
+        if aabb is None and stored_aabb is not None:
+            aabb = stored_aabb.tolist()
+        packed = bool(stored_packed[0]) if stored_packed is not None else None
     return ovoxel_asset_from_official(
         coordinates,
         attributes,
         resolution=resolution,
         aabb=((-0.5, -0.5, -0.5), (0.5, 0.5, 0.5)) if aabb is None else aabb,
-        packed=None,
+        packed=packed,
     )
 
 
@@ -688,7 +702,8 @@ class OVoxelBackend:
         return MeshAsset(
             vertices=vertices,
             faces=faces.to(dtype=torch.int64),
-            coordinate_system=CoordinateSystem.RIGHT_HANDED_Z_UP,
+            transform=asset.transform.to(device=vertices.device, dtype=vertices.dtype),
+            coordinate_system=asset.coordinate_system,
             metadata={
                 "source": "o_voxel",
                 "reference_revision": OVOXEL_REFERENCE_REVISION,
@@ -734,32 +749,36 @@ class OVoxelBackend:
             raise ValueError("native voxel rendering requires explicit cubic resolution metadata") from error
         if len(set(resolution_values)) != 1:
             raise ValueError("native voxel rendering currently requires explicit cubic resolution metadata")
-        voxel_transform = asset.transform @ asset.grid_transform
+        transform_dtype = torch.promote_types(asset.transform.dtype, asset.grid_transform.dtype)
+        voxel_transform = asset.transform.to(dtype=transform_dtype) @ asset.grid_transform.to(dtype=transform_dtype)
         voxel_axes = voxel_transform[:3, :3]
         voxel_sizes = torch.linalg.vector_norm(voxel_axes, dim=0)
         if not torch.allclose(voxel_sizes, voxel_sizes[:1].expand_as(voxel_sizes)):
             raise ValueError("native voxel rendering requires equal world-space voxel sizes on every axis")
         normalized_axes = voxel_axes / voxel_sizes
-        if not torch.allclose(
-            normalized_axes.T @ normalized_axes,
-            torch.eye(3, device=asset.device, dtype=normalized_axes.dtype),
+        axis_alignment = normalized_axes.abs()
+        rounded_alignment = axis_alignment.round()
+        if (
+            not torch.allclose(axis_alignment, rounded_alignment, atol=1e-5, rtol=1e-5)
+            or not bool((rounded_alignment.sum(dim=0) == 1).all())
+            or not bool((rounded_alignment.sum(dim=1) == 1).all())
         ):
-            raise ValueError("native voxel rendering does not support sheared world transforms")
+            raise ValueError("native voxel rendering supports only axis-aligned world transforms")
         renderer = runtime.rasterize.VoxelRenderer({"resolution": image_size})
         position = torch.cat(
             [
-                asset.active_coordinates.to(dtype=asset.base_color.dtype) + 0.5,
-                torch.ones(asset.active_coordinates.shape[0], 1, device=asset.device, dtype=asset.base_color.dtype),
+                asset.active_coordinates.to(dtype=transform_dtype) + 0.5,
+                torch.ones(asset.active_coordinates.shape[0], 1, device=asset.device, dtype=transform_dtype),
             ],
             dim=1,
         )
         position = (voxel_transform @ position.T).T[:, :3]
         result = renderer.render(
-            position=position.to(self.device),
-            attrs=values.to(self.device),
+            position=position.to(device=self.device, dtype=self.dtype),
+            attrs=values.to(device=self.device, dtype=self.dtype),
             voxel_size=float(voxel_sizes[0].item()),
-            extrinsics=extrinsics.to(self.device),
-            intrinsics=intrinsics.to(self.device),
+            extrinsics=extrinsics.to(device=self.device, dtype=self.dtype),
+            intrinsics=intrinsics.to(device=self.device, dtype=self.dtype),
         )
         return {"attr": result.attr, "depth": result.depth, "alpha": result.alpha}
 

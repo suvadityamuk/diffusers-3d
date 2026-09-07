@@ -209,6 +209,39 @@ def test_ovoxel_npz_preserves_generated_out_of_cell_dual_vertices_for_official_r
         restored.dual_grid_vertex_offsets,
         asset.dual_grid_vertex_offsets[torch.tensor([1, 2, 3, 0])],
     )
+    direct = ovoxel_asset_from_official(
+        official_coordinates,
+        official_attributes,
+        resolution=8,
+        packed=True,
+    )
+    torch.testing.assert_close(
+        direct.dual_grid_vertex_offsets,
+        asset.dual_grid_vertex_offsets[torch.tensor([1, 2, 3, 0])],
+    )
+
+
+def test_ovoxel_reader_accepts_pre_release_metadata_without_exposing_it_as_attributes():
+    coordinates, attributes = _packed_official()
+    buffer = io.BytesIO()
+    arrays = {"coord": coordinates.numpy().astype(np.uint16)}
+    arrays.update({name: value.numpy() for name, value in attributes.items()})
+    arrays.update(
+        {
+            "__diffusers_3d_ovoxel_resolution": np.asarray([8, 8, 8], dtype=np.uint32),
+            "__diffusers_3d_ovoxel_aabb": np.asarray([[-0.5] * 3, [0.5] * 3], dtype=np.float32),
+            "__diffusers_3d_ovoxel_packed": np.asarray([1], dtype=np.uint8),
+            "__diffusers_3d_ovoxel_layout": np.asarray('{"schema_version":2}'),
+        }
+    )
+    np.savez(buffer, **arrays)
+
+    buffer.seek(0)
+    restored = read_ovoxel_npz(buffer)
+
+    assert restored.metadata["resolution"] == [8, 8, 8]
+    _, restored_attributes = official_tensors_from_ovoxel_asset(restored, packed=True)
+    assert restored_attributes.keys() == attributes.keys()
 
 
 @pytest.mark.parametrize(
@@ -447,9 +480,12 @@ def test_ovoxel_native_facade_delegates_to_pinned_io_dual_grid_and_renderer_api(
         assert torch.equal(output_attributes[name], value)
     assert output_kwargs == {"compression": "zstd"}
 
+    asset.transform = torch.eye(4)
+    asset.transform[:3, 3] = torch.tensor([1.0, 2.0, 3.0])
     mesh = backend.to_mesh(asset, train=True)
     assert mesh.faces.dtype is torch.int64
     assert mesh.metadata["resolution"] == [8, 8, 8]
+    torch.testing.assert_close(mesh.transform, asset.transform)
     assert torch.equal(
         calls["to_mesh"]["intersected"],
         torch.tensor([[True, False, True], [False, True, False], [True, True, True], [False, False, False]]),
@@ -457,6 +493,8 @@ def test_ovoxel_native_facade_delegates_to_pinned_io_dual_grid_and_renderer_api(
     assert calls["to_mesh"]["grid_size"] == [8, 8, 8]
     assert calls["to_mesh"]["train"]
 
+    asset.transform = torch.eye(4)
+    asset.grid_transform = asset.grid_transform.to(dtype=torch.float16)
     rendered = backend.render_voxels(
         asset,
         extrinsics=torch.eye(4),
@@ -470,6 +508,7 @@ def test_ovoxel_native_facade_delegates_to_pinned_io_dual_grid_and_renderer_api(
         calls["render"]["position"],
         (asset.active_coordinates.to(dtype=torch.float32) + 0.5) / 8 - 0.5,
     )
+    asset.grid_transform = asset.grid_transform.float()
     asset.transform = torch.eye(4)
     asset.transform[:3, 3] = torch.tensor([1.0, 2.0, 3.0])
     backend.render_voxels(
@@ -482,6 +521,22 @@ def test_ovoxel_native_facade_delegates_to_pinned_io_dual_grid_and_renderer_api(
         calls["render"]["position"],
         (asset.active_coordinates.to(dtype=torch.float32) + 0.5) / 8 - 0.5 + torch.tensor([1.0, 2.0, 3.0]),
     )
+    angle = torch.tensor(torch.pi / 4)
+    asset.transform = torch.tensor(
+        [
+            [torch.cos(angle), -torch.sin(angle), 0.0, 0.0],
+            [torch.sin(angle), torch.cos(angle), 0.0, 0.0],
+            [0.0, 0.0, 1.0, 0.0],
+            [0.0, 0.0, 0.0, 1.0],
+        ]
+    )
+    with pytest.raises(ValueError, match="axis-aligned"):
+        backend.render_voxels(
+            asset,
+            extrinsics=torch.eye(4),
+            intrinsics=torch.eye(3),
+            image_size=4,
+        )
 
     high_coordinates = torch.tensor(
         [[1535, 2, 0], [1024, 1, 0], [1023, 3, 0], [0, 0, 0]],
@@ -490,6 +545,7 @@ def test_ovoxel_native_facade_delegates_to_pinned_io_dual_grid_and_renderer_api(
     asset.active_coordinates = high_coordinates
     asset.metadata["resolution"] = [1536, 1536, 1536]
     asset.grid_transform = ovoxel_grid_transform(1536)
+    asset.transform = torch.eye(4)
     backend.write_vxz("high-resolution.vxz", asset)
     assert calls["write_vxz"][0] == "high-resolution.vxz"
     assert torch.equal(calls["write_vxz"][1], high_coordinates)
