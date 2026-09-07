@@ -12,6 +12,7 @@ from .exceptions import (
     BackendPolicyError,
     BackendUnavailableError,
 )
+from .kaolin_flexicubes import KaolinFlexiCubesBackend
 from .protocols import (
     FieldRenderingBackend,
     GaussianRasterizerBackend,
@@ -54,6 +55,7 @@ __all__ = [
     "FieldRenderingBackend",
     "GaussianRasterizerBackend",
     "GeometryProcessingBackend",
+    "KaolinFlexiCubesBackend",
     "MeshRasterizerBackend",
     "NativeRepresentationBackend",
     "PBRBakingBackend",
