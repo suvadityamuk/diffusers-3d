@@ -42,6 +42,7 @@ dependencies = [
 diffusers-3d-check-release = "diffusers_3d.contributions.removal:release_check_main"
 diffusers-3d-convert-trellis = "diffusers_3d.families.trellis.conversion:main"
 diffusers-3d-convert-trellis2 = "diffusers_3d.families.trellis2.conversion:main"
+diffusers-3d-report = "diffusers_3d.compatibility:main"
 diffusers-3d-validate = "diffusers_3d.contributions.cli:main"
 
 [project.optional-dependencies]

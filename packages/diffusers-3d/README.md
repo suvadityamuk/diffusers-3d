@@ -10,8 +10,45 @@ model-specific recipe.
 
 ## Status
 
-The package is pre-alpha. Public contracts use schema version `1`; model integrations and optional compiled
-backends remain capability-gated.
+The package is pre-alpha. Loading metadata uses schema version `2`, training manifests use schema version `5`, and
+contribution manifests use schema version `2`. Model integrations and optional compiled backends remain
+capability-gated. The reviewed model families are TRELLIS and TRELLIS.2, including TRELLIS.2's optional O-Voxel
+paths.
+
+## First-release readiness
+
+The code release gate requires all of the following before publication:
+
+- [x] Production execution and training registries contain only reviewed TRELLIS and TRELLIS.2 classes and are
+  immutable.
+- [x] Pre-release-only scaffold code and tests are absent from source and built packages.
+- [x] Tiny TRELLIS and TRELLIS.2 model, pipeline, auto-loading, training, and checkpoint round trips pass.
+- [x] Every reviewed family schema-v2 manifest validates with only its declared license/backend warnings.
+- [x] Source, unpacked wheel, and unpacked sdist scans pass with the default release checker.
+
+This checklist covers code readiness only. Selecting a final version and publishing a release are separate maintainer
+actions; the package remains at its development version until then.
+
+The distribution uses an `Apache-2.0 AND MIT` aggregate license expression. Package-owned glue is Apache-2.0, while
+the TRELLIS and TRELLIS.2-derived family code retains MIT terms. Wheel and sdist metadata ship the local Apache
+license and both applicable MIT licenses and notices. Those terms apply to their respective files; the aggregate
+expression does not relicense any family code or model artifact.
+
+## Current TRELLIS.2 limitations
+
+- The reviewed contract ends at CPU-capable sparse-structure output. Tiny SLAT and O-Voxel stages are experimental.
+- No full 4B checkpoint, 1024 cascade, production GPU quality, compiled O-Voxel mesh/render, or PBR GLB run has been
+  performed.
+- O-Voxel schema/mixed lossless packing and deterministic lexicographic NPZ across the uint16 coordinate domain are
+  pure package code. Explicit 30-bit Morton ordering remains available through coordinate 1023. Unit-domain PBR
+  channels use uint8 while out-of-cell dual vertices and unbounded split weights retain float16/float32. NPZ files
+  contain only official-reader fields. `.vxz`, native dual-grid conversion, and voxel rendering require a separately
+  compiled, pinned O-Voxel runtime; the pinned VXZ v0 codec cannot losslessly store floating-point attributes and
+  rejects such writes.
+- FlexGEMM and CuMesh are MIT source builds pinned by this package to audited commits with direct-URL provenance and
+  runtime API/toolchain checks. Raw upstream modules do not need custom revision or build attributes.
+- Production DINOv3 weights are gated under the separate DINOv3 License. nvdiffrast is a restricted research
+  dependency and requires explicit acknowledgement; neither is redistributed or selected silently.
 
 ## Design principles
 
@@ -30,6 +67,14 @@ Install the package from this repository:
 pip install -e packages/diffusers-3d
 ```
 
+The core package requires PyTorch 2.6 or newer, and the training/checkpoint stack requires `accelerate>=1.1.0`.
+Exact checkpoint persistence requires one process, `DistributedType.NO`, and no registered custom checkpoint
+objects. Loads reject older versions before deserialization and keep Accelerate/PyTorch loading in weights-only
+mode. Distributed training is supported; FSDP gradient clipping currently requires exactly one selected component.
+`LoRAFineTune(..., adapter_seed=None)` inherits `TrainingConfig3D.seed`; adapter injection runs in an isolated Torch
+RNG context and schema-5 checkpoints record the effective seed and exact trainable/frozen component configurations
+as resume identity.
+
 Portable mesh processing is optional:
 
 ```bash
@@ -39,6 +84,23 @@ pip install -e "packages/diffusers-3d[portable]"
 Source-built or CUDA-specific dependencies such as nvdiffrast, spconv, FlexGEMM, CuMesh, and O-Voxel require an
 explicit backend installation. See [docs/backends.md](docs/backends.md).
 
+## Secure reviewed Hub loading
+
+`AutoPipelineFor3D.from_pretrained()` accepts local directories or Hub repository IDs for reviewed package
+integrations. Schema-v2 sidecars contain an exact immutable record for every constructor component: its name,
+installed fully-qualified class, component subfolder, optionality, review status, and auto-loading eligibility.
+
+For Hub IDs, the sidecar is validated before component download. The auto-loader then downloads only
+`model_index.json`, the sidecar, and eligible component folders into a local Hub snapshot, validates every Diffusers
+library/class tuple, and invokes the installed concrete pipeline class on that local path with remote code disabled.
+Experimental optional SLAT and decoder components are not eligible for this path; use the concrete family pipeline
+directly for explicitly experimental local artifacts.
+
+Schema-v1 sidecars are no longer accepted. Re-run the matching converter or save the reviewed pipeline with this
+package version to create a schema-v2 sidecar. `revision`, `cache_dir`, `token`, `local_files_only`, and `subfolder`
+still apply to Hub snapshot resolution; they are consumed by the auto-loader rather than forwarded to the concrete
+local pipeline load. `trust_remote_code=True` remains an error and never changes component eligibility.
+
 ## Contribution levels
 
 1. Experimental Hub blocks use Modular Diffusers remote code and are inference-only.
@@ -47,4 +109,8 @@ explicit backend installation. See [docs/backends.md](docs/backends.md).
 3. Stable dependency-light primitives may be proposed upstream to Diffusers. Upstream availability alone does not
    make a component trainable through this package.
 
-See [CONTRIBUTING.md](CONTRIBUTING.md) for the integration and promotion requirements.
+See the [contribution guide](CONTRIBUTING.md), [lifecycle and review checklists](docs/contributions.md), and
+[contribution templates](templates/README.md) for integration and promotion requirements.
+
+Verification commands and the distinction between tiny CPU parity and production GPU quality are documented in
+[docs/testing.md](docs/testing.md) and [docs/compatibility.md](docs/compatibility.md).
