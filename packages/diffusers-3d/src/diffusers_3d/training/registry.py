@@ -6,6 +6,7 @@ from collections.abc import Iterable, Iterator, Mapping
 from dataclasses import dataclass
 
 from ..execution import ModularObject3DPipeline, Object3DModel, Object3DPipeline, ReviewStatus
+from ..families.registrations import production_training_registrations
 from .exceptions import TrainingRegistrationError, TrainingTargetError
 from .recipe import TrainingRecipe3D
 from .types import ComponentPolicy, FrozenComponentPolicy
@@ -237,7 +238,9 @@ def create_training_recipe_registry(
     return TrainingRecipeRegistry(registrations)
 
 
-_TRAINING_RECIPE_REGISTRY = create_training_recipe_registry().freeze()
+_TRAINING_RECIPE_REGISTRY = create_training_recipe_registry(
+    production_training_registrations(TrainingRecipeRegistration)
+).freeze()
 
 
 __all__ = [
