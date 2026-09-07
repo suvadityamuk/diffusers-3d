@@ -31,10 +31,31 @@ _TRELLIS_EXPORTS = {
     "trellis_grid_transform",
 }
 
+_TRELLIS2_EXPORTS = {
+    "TRELLIS2_REFERENCE_REVISION",
+    "Trellis2ConditionerOutput",
+    "Trellis2Dinov3Conditioner",
+    "Trellis2FlowEulerScheduler",
+    "Trellis2FlowEulerSchedulerOutput",
+    "Trellis2ImageTo3DPipeline",
+    "Trellis2PBRDecoderOutput",
+    "Trellis2PBRSparseDecoder",
+    "Trellis2SLatFlowModel",
+    "Trellis2SLatFlowOutput",
+    "Trellis2ShapeDecoderOutput",
+    "Trellis2ShapeDualGridDecoder",
+    "Trellis2SparseStructureDecoder",
+    "Trellis2SparseStructureFlowModel",
+    "Trellis2SparseStructureFlowOutput",
+    "convert_trellis2_checkpoint",
+}
+
 
 def __getattr__(name: str):
     if name in _TRELLIS_EXPORTS:
         module_name = ".trellis"
+    elif name in _TRELLIS2_EXPORTS:
+        module_name = ".trellis2"
     else:
         raise AttributeError(name) from None
     value = getattr(import_module(module_name, __name__), name)
@@ -42,4 +63,4 @@ def __getattr__(name: str):
     return value
 
 
-__all__ = sorted(_TRELLIS_EXPORTS)
+__all__ = sorted(_TRELLIS_EXPORTS | _TRELLIS2_EXPORTS)

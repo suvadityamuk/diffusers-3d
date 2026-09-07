@@ -10,10 +10,19 @@ def production_execution_registrations(
     """Build exact reviewed execution registrations for released families."""
 
     from .trellis.registrations import trellis_execution_registrations
+    from .trellis2.registrations import trellis2_execution_registrations
 
-    return trellis_execution_registrations(
+    trellis_models, trellis_pipelines = trellis_execution_registrations(
         model_registration_type,
         pipeline_registration_type,
+    )
+    trellis2_models, trellis2_pipelines = trellis2_execution_registrations(
+        model_registration_type,
+        pipeline_registration_type,
+    )
+    return (
+        trellis_models + trellis2_models,
+        trellis_pipelines + trellis2_pipelines,
     )
 
 
