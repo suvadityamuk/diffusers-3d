@@ -36,8 +36,8 @@ def validate_accelerated_runtime(
         torch_version = Version(torch.__version__.split("+", maxsplit=1)[0])
     except InvalidVersion as error:
         raise RuntimeError(f"{backend_name} could not validate torch version {torch.__version__!r}") from error
-    if torch_version < Version("2.4"):
-        raise RuntimeError(f"{backend_name} requires torch>=2.4, found torch=={torch.__version__}")
+    if torch_version < Version("2.6"):
+        raise RuntimeError(f"{backend_name} requires torch>=2.6, found torch=={torch.__version__}")
     try:
         floating = torch.empty((), dtype=dtype).is_floating_point()
     except (RuntimeError, TypeError) as error:

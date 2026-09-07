@@ -56,7 +56,6 @@ def _snapshot_allow_patterns(metadata: Object3DModelIndex, subfolder: str | None
                 (
                     f"{folder}/*.json",
                     f"{folder}/*.safetensors",
-                    f"{folder}/*.bin",
                     f"{folder}/*.flashpack",
                 )
             )

@@ -1,6 +1,6 @@
 # Compatibility policy
 
-The core package supports Python 3.10 or newer, PyTorch 2.4 or newer,
+The core package supports Python 3.10 or newer, PyTorch 2.6 or newer,
 Accelerate 1.1.0 or newer, Transformers 5.5.0 or newer, and the current
 Diffusers minor release declared in `pyproject.toml`. DINOv3 first appeared in Transformers 4.56.0, but that
 line is incompatible with the required Hugging Face Hub 1.x stack and

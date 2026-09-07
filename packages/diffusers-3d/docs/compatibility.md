@@ -12,7 +12,7 @@ versions and side-effect-free `BACKEND_REGISTRY` discovery status of a particula
 | Accelerate | `>=1.1.0` | Exact minimum safety lane plus latest-resolved CPU lanes |
 | Transformers | `>=5.5.0` | Exact 5.5.0 minimum lane plus latest-resolved CPU lanes |
 | Python | `>=3.10` | Core CPU matrix: 3.10, 3.11, 3.12 |
-| PyTorch | `>=2.4` | CPU wheels in CI; no upper bound is claimed |
+| PyTorch | `>=2.6` | CPU wheels in CI; no upper bound is claimed |
 
 The verification environment recorded on 2026-08-24 used Python 3.12.3, Diffusers 0.40.0.dev0,
 diffusers-3d 0.1.0.dev0, and PyTorch 2.13.0+cu130. That run was CPU-only despite the CUDA-enabled PyTorch build.
