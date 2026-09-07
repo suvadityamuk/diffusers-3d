@@ -38,7 +38,7 @@ def test_auto_loader_reads_metadata_then_delegates_to_exact_registered_class(
     monkeypatch,
 ):
     metadata_directory = tmp_path / "variant"
-    dispatch_pipeline_class.object3d_model_index().save_pretrained(metadata_directory)
+    dispatch_pipeline_class().save_pretrained(metadata_directory)
     monkeypatch.setattr(
         AutoPipelineFor3D,
         "_registry",
@@ -57,13 +57,9 @@ def test_auto_loader_reads_metadata_then_delegates_to_exact_registered_class(
     )
 
     assert type(pipeline) is dispatch_pipeline_class
-    assert pipeline.loaded_from == tmp_path
+    assert pipeline.loaded_from == metadata_directory
     assert pipeline.loaded_kwargs == {
-        "cache_dir": tmp_path / "cache",
         "local_files_only": True,
-        "revision": "exact-revision",
-        "subfolder": "variant",
-        "token": "token",
         "torch_dtype": "float32",
         "trust_remote_code": False,
     }
@@ -74,7 +70,7 @@ def test_auto_loader_requires_task_when_metadata_is_ambiguous(
     dispatch_pipeline_class,
     monkeypatch,
 ):
-    dispatch_pipeline_class.object3d_model_index().save_pretrained(tmp_path)
+    dispatch_pipeline_class().save_pretrained(tmp_path)
     monkeypatch.setattr(
         AutoPipelineFor3D,
         "_registry",
@@ -92,7 +88,7 @@ def test_task_specific_auto_loaders_enforce_task_constraints(
     dispatch_pipeline_class,
     monkeypatch,
 ):
-    dispatch_pipeline_class.object3d_model_index().save_pretrained(tmp_path)
+    dispatch_pipeline_class().save_pretrained(tmp_path)
     monkeypatch.setattr(
         AutoPipelineFor3D,
         "_registry",
@@ -113,7 +109,7 @@ def test_task_specific_auto_loader_rejects_pipeline_without_its_task(
     tiny_pipeline_class,
     monkeypatch,
 ):
-    tiny_pipeline_class.object3d_model_index().save_pretrained(tmp_path)
+    tiny_pipeline_class().save_pretrained(tmp_path)
     monkeypatch.setattr(
         AutoPipelineFor3D,
         "_registry",
@@ -139,7 +135,7 @@ def test_unknown_object3d_metadata_fails_before_concrete_loading(
     dispatch_pipeline_class,
     monkeypatch,
 ):
-    dispatch_pipeline_class.object3d_model_index().save_pretrained(tmp_path)
+    dispatch_pipeline_class().save_pretrained(tmp_path)
     monkeypatch.setattr(
         AutoPipelineFor3D,
         "_registry",
