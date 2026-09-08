@@ -1,0 +1,5 @@
+# Package/import: nvdiffrast
+# License: NVIDIA Source Code License-NC
+# Build from source against the selected PyTorch and CUDA stack with --no-build-isolation.
+# No externally hosted wheel is approved by this record.
+nvdiffrast @ git+https://github.com/NVlabs/nvdiffrast.git@253ac4fcea7de5f396371124af597e6cc957bfae
