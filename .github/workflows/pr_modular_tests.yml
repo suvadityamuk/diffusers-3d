@@ -42,6 +42,7 @@ env:
 
 jobs:
   check_code_quality:
+    if: github.repository == 'huggingface/diffusers'
     runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v6
@@ -61,6 +62,7 @@ jobs:
           echo "Quality check failed. Please ensure the right dependency versions are installed with 'pip install -e .[quality]' and run 'make style && make quality'" >> $GITHUB_STEP_SUMMARY
 
   check_repository_consistency:
+    if: github.repository == 'huggingface/diffusers'
     needs: check_code_quality
     runs-on: ubuntu-22.04
     steps:
