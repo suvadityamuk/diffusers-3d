@@ -1,0 +1,34 @@
+Microsoft TRELLIS.2 integration notice
+
+Portions of the sparse-structure and SLAT transformer architecture,
+sparse-structure decoder contract, image-conditioning behavior, scheduler and
+pipeline equations, O-Voxel schema mapping, experimental decoder contracts,
+and training objectives in this family and its package backend adapters are
+modified from:
+
+  microsoft/TRELLIS.2
+  https://github.com/microsoft/TRELLIS.2
+  revision 75fbf0183001ed9876c8dbb35de6b68552ee08bd
+
+Those portions are provided under the accompanying MIT License:
+
+  MIT License
+  Copyright (c) Microsoft Corporation.
+
+All ported source files carry a prominent modification notice. Independently
+written diffusers-3d package glue remains under the package Apache-2.0 license.
+
+The package does not include source from nvdiffrast or nvdiffrec. Those
+dependencies have separate restricted terms and are never selected silently.
+No CuMesh, FlexGEMM, or compiled O-Voxel source is vendored; their adapters
+load separately built modules only after explicit capability and provenance
+checks. Upstream TRELLIS.2 does not pin CuMesh or FlexGEMM revisions, so callers
+must record audited revisions and build identities.
+
+Production DINOv3 weights are not redistributed. The referenced
+facebook/dinov3-vitl16-pretrain-lvd1689m checkpoint is gated and governed by
+the separate DINOv3 License. The tiny tests instantiate Transformers DINOv3
+classes from configuration and perform no network access.
+
+No affiliation, sponsorship, or endorsement by Microsoft, Meta, NVIDIA, or
+the optional backend authors is claimed.

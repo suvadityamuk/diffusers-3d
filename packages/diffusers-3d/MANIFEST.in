@@ -1,0 +1,19 @@
+include LICENSE-APACHE-2.0
+include README.md
+include CONTRIBUTING.md
+include COMPATIBILITY.md
+include pyproject.toml
+
+recursive-include docs *.md
+recursive-include requirements *.md *.txt
+recursive-include templates *.json *.md *.py
+recursive-include tests *.py
+recursive-include tools *.py
+
+global-exclude *.py[cod]
+global-exclude .DS_Store
+global-exclude __pycache__
+prune build
+prune dist
+prune wheelhouse
+prune wheel-unpacked
