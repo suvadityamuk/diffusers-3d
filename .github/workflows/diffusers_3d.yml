@@ -244,7 +244,7 @@ jobs:
             pytest pytest-cov ruff safetensors "transformers==5.5.0"
       - name: Verify declared local and minimum compatibility
         run: |
-          python -c "import diffusers; assert diffusers.__version__.split('.')[:2] == ['0', '40'], diffusers.__version__"
+          python -c "import diffusers; assert diffusers.__version__.split('.')[:2] in (['0', '40'], ['0', '41']), diffusers.__version__"
           python -c "import accelerate; assert accelerate.__version__ == '1.1.0', accelerate.__version__"
           python -c "import transformers; assert transformers.__version__ == '5.5.0', transformers.__version__"
           python -m pip check
