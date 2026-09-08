@@ -87,6 +87,7 @@ jobs:
   check_auto_docs:
     # the check regenerates each docstring from the block declarations, which requires importing diffusers —
     # so this job runs in the torch container rather than a lint-only environment
+    if: github.repository == 'huggingface/diffusers'
     runs-on:
       group: aws-highmemory-32-plus
     container:
@@ -106,6 +107,7 @@ jobs:
           echo "Auto docstring checks failed. Please run `python utils/modular_auto_docstring.py --fix_and_overwrite`." >> $GITHUB_STEP_SUMMARY
 
   run_fast_tests:
+    if: github.repository == 'huggingface/diffusers'
     needs: [check_code_quality, check_repository_consistency, check_auto_docs]
     name: Fast PyTorch Modular Pipeline CPU tests
 
