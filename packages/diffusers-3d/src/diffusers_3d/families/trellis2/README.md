@@ -6,6 +6,11 @@ revision `75fbf0183001ed9876c8dbb35de6b68552ee08bd`. It is a distinct
 image-to-sparse-structure stage; sparse SLAT, O-Voxel decoding, mesh conversion,
 and PBR/GLB postprocess remain explicitly experimental or capability-gated.
 
+A runnable end-to-end example lives in
+[`examples/image_to_3d.py`](examples/image_to_3d.py); see
+[docs/inference.md](../../../../docs/inference.md) and
+[docs/finetuning.md](../../../../docs/finetuning.md) for the usage guides.
+
 ## Reviewed portable path
 
 - `Trellis2SparseStructureFlowModel` preserves the released state layout,

@@ -186,7 +186,6 @@ class AttentionModuleMixin:
         self,
         use_xla_flash_attention: bool,
         partition_spec: tuple[str | None, ...] | None = None,
-        is_flux=False,
     ) -> None:
         """
         Set whether to use XLA flash attention from `torch_xla` or not.
@@ -196,8 +195,6 @@ class AttentionModuleMixin:
                 Whether to use pallas flash attention kernel from `torch_xla` or not.
             partition_spec (`tuple[]`, *optional*):
                 Specify the partition specification if using SPMD. Otherwise None.
-            is_flux (`bool`, *optional*, defaults to `False`):
-                Whether the model is a Flux model.
         """
         if use_xla_flash_attention:
             if not is_torch_xla_available():

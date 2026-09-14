@@ -84,6 +84,17 @@ pip install -e "packages/diffusers-3d[portable]"
 Source-built or CUDA-specific dependencies such as nvdiffrast, spconv, FlexGEMM, CuMesh, and O-Voxel require an
 explicit backend installation. See [docs/backends.md](docs/backends.md).
 
+## Usage
+
+[docs/inference.md](docs/inference.md) covers checkpoint conversion, loading, conditioning, `formats`, and saving
+each asset type. [docs/finetuning.md](docs/finetuning.md) covers recipes, datasets, strategies, and checkpoints. The
+runnable [TRELLIS.2 example](src/diffusers_3d/families/trellis2/examples/image_to_3d.py) exercises the whole
+inference API and has an offline tiny-component mode:
+
+```bash
+python -m diffusers_3d.families.trellis2.examples.image_to_3d --tiny --output out/
+```
+
 ## Secure reviewed Hub loading
 
 `AutoPipelineFor3D.from_pretrained()` accepts local directories or Hub repository IDs for reviewed package

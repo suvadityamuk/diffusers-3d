@@ -2609,13 +2609,3 @@ class MultiIPAdapterImageProjection(nn.Module):
             projected_image_embeds.append(image_embed)
 
         return projected_image_embeds
-
-
-class FluxPosEmbed(nn.Module):
-    def __new__(cls, *args, **kwargs):
-        deprecation_message = "Importing and using `FluxPosEmbed` from `diffusers.models.embeddings` is deprecated. Please import it from `diffusers.models.transformers.transformer_flux`."
-        deprecate("FluxPosEmbed", "1.0.0", deprecation_message)
-
-        from .transformers.transformer_flux import FluxPosEmbed
-
-        return FluxPosEmbed(*args, **kwargs)

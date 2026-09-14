@@ -14,219 +14,170 @@ See the License for the specific language governing permissions and
 limitations under the License.
 -->
 
+<h1 align="center">diffusers-3d</h1>
+
 <p align="center">
-    <br>
-    <img src="https://raw.githubusercontent.com/huggingface/diffusers/main/docs/source/en/imgs/diffusers_library.jpg" width="400"/>
-    <br>
-<p>
-<p align="center">
-    <a href="https://github.com/huggingface/diffusers/blob/main/LICENSE"><img alt="GitHub" src="https://img.shields.io/github/license/huggingface/datasets.svg?color=blue"></a>
-    <a href="https://github.com/huggingface/diffusers/releases"><img alt="GitHub release" src="https://img.shields.io/github/release/huggingface/diffusers.svg"></a>
-    <a href="https://pepy.tech/project/diffusers"><img alt="GitHub release" src="https://static.pepy.tech/badge/diffusers/month"></a>
+    <a href="LICENSE"><img alt="License" src="https://img.shields.io/badge/license-Apache--2.0-blue.svg"></a>
     <a href="CODE_OF_CONDUCT.md"><img alt="Contributor Covenant" src="https://img.shields.io/badge/Contributor%20Covenant-2.1-4baaaa.svg"></a>
-    <a href="https://twitter.com/diffuserslib"><img alt="X account" src="https://img.shields.io/twitter/url/https/twitter.com/diffuserslib.svg?style=social&label=Follow%20%40diffuserslib"></a>
 </p>
 
-🤗 Diffusers is the go-to library for state-of-the-art pretrained diffusion models for generating images, audio, and even 3D structures of molecules. Whether you're looking for a simple inference solution or training your own diffusion models, 🤗 Diffusers is a modular toolbox that supports both. Our library is designed with a focus on [usability over performance](https://huggingface.co/docs/diffusers/conceptual/philosophy#usability-over-performance), [simple over easy](https://huggingface.co/docs/diffusers/conceptual/philosophy#simple-over-easy), and [customizability over abstractions](https://huggingface.co/docs/diffusers/conceptual/philosophy#tweakable-contributorfriendly-over-abstraction).
+`diffusers-3d` is an object-native companion to [🤗 Diffusers](https://github.com/huggingface/diffusers) for
+generative 3D. It gives 3D models the same treatment Diffusers gives image and video models: pretrained weights load
+with `from_pretrained`, pipelines compose from swappable models and schedulers, and fine-tuning runs through a
+trainer built on Accelerate. What is different is the output. Instead of pixels, pipelines return meshes, Gaussian
+splats, sparse voxels, and O-Voxels as typed, tensor-native objects that keep their geometry, materials, and
+coordinate frames intact.
 
-🤗 Diffusers offers three core components:
+The repository contains two things:
 
-- State-of-the-art [diffusion pipelines](https://huggingface.co/docs/diffusers/api/pipelines/overview) that can be run in inference with just a few lines of code.
-- Interchangeable noise [schedulers](https://huggingface.co/docs/diffusers/api/schedulers/overview) for different diffusion speeds and output quality.
-- Pretrained [models](https://huggingface.co/docs/diffusers/api/models/overview) that can be used as building blocks, and combined with schedulers, for creating your own end-to-end diffusion systems.
+- **`src/diffusers`** — the Diffusers core that `diffusers-3d` builds on: `ModelMixin`, `DiffusionPipeline`,
+  schedulers, attention and embedding layers, modular pipeline blocks, hooks, guiders, and loading utilities.
+- **`packages/diffusers-3d`** — the `diffusers_3d` package: 3D object contracts, the model families, backends, and
+  the training stack.
+
+## What it does
+
+**Tensor-native 3D objects.** `MeshAsset`, `GaussianSplatAsset`, `SparseVoxelAsset`, and `OVoxelAsset` are
+dataclasses of tensors with explicit `transform`, `grid_transform`, and `coordinate_system` fields, validated on
+construction and movable with `.to(device, dtype)`. Representation-specific channels (PBR materials, dual-grid
+vertices, spherical harmonics) are first-class fields, not lossy conversions. Every pipeline returns an
+`Object3DPipelineOutput` whose first value is always a tuple of these objects.
+
+**Diffusers-style pipelines for 3D models.** Model families are integrated as ordinary Diffusers models and
+pipelines. Components live in subfolders, configs are JSON, weights are safetensors, and `save_pretrained` /
+`from_pretrained` round-trip. Family conversion CLIs turn official releases into this layout once.
+
+**Reviewed, verifiable integrations.** Each family records the exact upstream revision it reproduces and ships tiny
+CPU parity tests against it. Pipeline configs and asset metadata state what has been measured and what has not, so
+"supported" always has a specific meaning.
+
+**Secure Hub auto-loading.** `AutoPipelineForImageTo3D.from_pretrained(repo_or_path)` resolves the concrete
+pipeline from a schema-v2 sidecar that names every component's class, validates identities before downloading, fetches
+only eligible components, and never enables remote code.
+
+**Optional geometry backends, never implicit.** Portable CPU tooling (trimesh, scikit-image, xatlas), accelerated
+CUDA kernels (spconv, FlexGEMM, CuMesh, gsplat, O-Voxel), and research-licensed dependencies (nvdiffrast) are
+discovered through a registry with provenance and license checks. Nothing is imported or selected silently; a backend
+is chosen explicitly and reports its own status.
+
+**Recipe-gated fine-tuning.** Training goes through per-stage `TrainingRecipe3D` classes that fix the objective,
+the example type, and which components may be trained. `Object3DTrainer` handles Accelerate, optimizer, scheduling,
+and exact-resume checkpoints with a self-describing manifest. Generic, unreviewed targets are rejected.
+
+## Supported models
+
+| Family | Pipeline | Task | Reviewed output | Experimental stages |
+|---|---|---|---|---|
+| [TRELLIS](packages/diffusers-3d/src/diffusers_3d/families/trellis/README.md) | `TrellisImageTo3DPipeline` | image → 3D | sparse structure | SLAT, Gaussian splats |
+| [TRELLIS.2](packages/diffusers-3d/src/diffusers_3d/families/trellis2/README.md) | `Trellis2ImageTo3DPipeline` | image → 3D | sparse structure | shape/texture SLAT, O-Voxel, PBR mesh |
 
 ## Installation
 
-We recommend installing 🤗 Diffusers in a virtual environment from PyPI or Conda. For more details about installing [PyTorch](https://pytorch.org/get-started/locally/), please refer to their official documentation.
-
-### PyTorch
-
-With `pip` (official package):
-
 ```bash
-pip install --upgrade diffusers[torch]
+uv venv && source .venv/bin/activate
+uv pip install -e .                                  # diffusers core
+uv pip install -e "packages/diffusers-3d[training]"  # diffusers_3d + Accelerate/PEFT training stack
 ```
 
-With `conda` (maintained by the community):
-
-```sh
-conda install -c conda-forge diffusers
-```
-
-### Apple Silicon (M1/M2) support
-
-Please refer to the [How to use Stable Diffusion in Apple Silicon](https://huggingface.co/docs/diffusers/optimization/mps) guide.
+Optional extras: `portable` (trimesh, scikit-image, xatlas for CPU mesh I/O), `gaussian` (gsplat). Compiled and
+research backends are installed separately; see [backends.md](packages/diffusers-3d/docs/backends.md). Requires
+Python 3.10+, PyTorch 2.6+, Transformers 5.5+, Accelerate 1.1+.
 
 ## Quickstart
 
-Generating outputs is super easy with 🤗 Diffusers. To generate an image from text, use the `from_pretrained` method to load any pretrained diffusion model (browse the [Hub](https://huggingface.co/models?library=diffusers&sort=downloads) for 30,000+ checkpoints):
+Convert an official TRELLIS.2 release once, then generate:
+
+```bash
+diffusers-3d-convert-trellis2 /path/to/TRELLIS.2 /path/to/trellis2 --conditioner-path /path/to/dinov3
+```
 
 ```python
-from diffusers import DiffusionPipeline
 import torch
+from diffusers_3d import AutoPipelineForImageTo3D, ImageCondition
 
-pipeline = DiffusionPipeline.from_pretrained("stable-diffusion-v1-5/stable-diffusion-v1-5", dtype=torch.float16)
-pipeline.to("cuda")
-pipeline("An image of a squirrel in Picasso style").images[0]
+pipeline = AutoPipelineForImageTo3D.from_pretrained("/path/to/trellis2").to("cuda")
+
+rgba = ...  # (4, H, W) float tensor in [0, 1]; alpha drives foreground cropping
+output = pipeline(
+    ImageCondition(image=rgba),
+    formats=("sparse_structure",),
+    sparse_structure_sampler_params={"steps": 12, "guidance_strength": 7.5},
+    generator=torch.Generator("cuda").manual_seed(0),
+)
+
+voxels = output.objects[0]      # SparseVoxelAsset
+voxels.coordinates              # (N, 3) int64 grid indices
+voxels.features                 # (N, C) per-voxel channels
+voxels.metadata                 # {"family": "trellis2", "representation": "sparse_structure", "resolution": 32, ...}
 ```
 
-You can also dig into the models and schedulers toolbox to build your own diffusion system:
+The full walkthrough — loading, conditioning, batching, experimental stages, and saving each asset type — is the
+runnable [TRELLIS.2 example](packages/diffusers-3d/src/diffusers_3d/families/trellis2/examples/image_to_3d.py).
+It also has an offline mode built from tiny components, so the whole API can be exercised on CPU without a
+checkpoint:
+
+```bash
+python -m diffusers_3d.families.trellis2.examples.image_to_3d --tiny --output out/
+python -m diffusers_3d.families.trellis2.examples.image_to_3d --experimental --output out/   # + SLAT and O-Voxel stages
+```
+
+## Fine-tuning
 
 ```python
-from diffusers import DDPMScheduler, UNet2DModel
-from PIL import Image
-import torch
+from diffusers_3d import FullFineTune, Object3DTrainer, TrainingConfig3D, Trellis2SparseStructureFlowRecipe
 
-scheduler = DDPMScheduler.from_pretrained("google/ddpm-cat-256")
-model = UNet2DModel.from_pretrained("google/ddpm-cat-256").to("cuda")
-scheduler.set_timesteps(50)
-
-sample_size = model.config.sample_size
-noise = torch.randn((1, 3, sample_size, sample_size), device="cuda")
-input = noise
-
-for t in scheduler.timesteps:
-    with torch.no_grad():
-        noisy_residual = model(input, t).sample
-        prev_noisy_sample = scheduler.step(noisy_residual, t, input).prev_sample
-        input = prev_noisy_sample
-
-image = (input / 2 + 0.5).clamp(0, 1)
-image = image.cpu().permute(0, 2, 3, 1).numpy()[0]
-image = Image.fromarray((image * 255).round().astype("uint8"))
-image
+recipe = Trellis2SparseStructureFlowRecipe(pipeline)
+trainer = Object3DTrainer(
+    recipe,
+    dataset,                                              # yields Trellis2SparseStructureExample
+    FullFineTune(("sparse_structure_flow_model",)),
+    TrainingConfig3D(base_model="/path/to/trellis2", dataset_fingerprint="latents-v1",
+                     output_dir="runs/ss", train_batch_size=8, max_train_steps=2000, mixed_precision="bf16"),
+)
+summary = trainer.prepare().train()
+trainer.save_checkpoint()
+pipeline.save_pretrained("checkpoints/trellis2-finetuned")
 ```
 
-Check out the [Quickstart](https://huggingface.co/docs/diffusers/quicktour) to launch your diffusion journey today!
+See [finetuning.md](packages/diffusers-3d/docs/finetuning.md) for data preparation, component policies, checkpoints
+and resume, and [inference.md](packages/diffusers-3d/docs/inference.md) for the complete inference contract.
 
-## How to navigate the documentation
+## Documentation
 
-| **Documentation**                                                   | **What can I learn?**                                                                                                                                                                           |
-|---------------------------------------------------------------------|-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
-| [Quickstart](https://huggingface.co/docs/diffusers/quicktour)                                                            | A basic crash course for loading pipelines, generating outputs, and applying common inference optimizations.  |
-| [Loading](https://huggingface.co/docs/diffusers/using-diffusers/loading)                                                             | Guides for how to load and configure all the components (pipelines, models, and schedulers) of the library, as well as how to use different schedulers.                                         |
-| [Modular Diffusers](https://huggingface.co/docs/diffusers/main/en/modular_diffusers/overview)                                             | Build flexible diffusion systems from modular pipeline components.               |
-| [Optimization](https://huggingface.co/docs/diffusers/optimization/fp16)                                                        | Guides for how to optimize your diffusion model to run faster and consume less memory.                                                                                                          |
-| [Training](https://huggingface.co/docs/diffusers/training/overview) | Guides for how to train a diffusion model for different tasks with different training techniques.                                                                                               |
-## Contribution
+| Guide | Contents |
+|---|---|
+| [Inference](packages/diffusers-3d/docs/inference.md) | Converting checkpoints, loading, conditioning, `formats`, asset types, saving |
+| [Fine-tuning](packages/diffusers-3d/docs/finetuning.md) | Recipes, datasets, strategies, `TrainingConfig3D`, checkpoints, reuse |
+| [Backends](packages/diffusers-3d/docs/backends.md) | Portable, accelerated, and research backends; provenance and license gates |
+| [Compatibility](packages/diffusers-3d/docs/compatibility.md) | Supported Python/Torch/Transformers/Accelerate ranges and test lanes |
+| [Testing](packages/diffusers-3d/docs/testing.md) | Marker policy and exact commands |
+| [Contributions](packages/diffusers-3d/docs/contributions.md) | Experimental → reviewed → upstream lifecycle |
+| [Package README](packages/diffusers-3d/README.md) | Status, release gate, licensing, current limitations |
 
-We ❤️  contributions from the open-source community!
-If you want to contribute to this library, please check out our [Contribution guide](https://huggingface.co/docs/diffusers/main/en/conceptual/contribution).
-If you are using an AI agent, please point it at the project conventions in [`.ai/`](https://github.com/huggingface/diffusers/tree/main/.ai) first (install them as a plugin with `claude plugin marketplace add huggingface/diffusers`, or a skill at a time with `diffusers-cli skills add <name>`) — see [Coding with AI agents](https://huggingface.co/docs/diffusers/main/en/conceptual/contribution#coding-with-ai-agents).
-You can look out for [issues](https://github.com/huggingface/diffusers/issues) you'd like to tackle to contribute to the library.
-- See [Good first issues](https://github.com/huggingface/diffusers/issues?q=is%3Aopen+is%3Aissue+label%3A%22good+first+issue%22) for general opportunities to contribute
-- See [New model/pipeline](https://github.com/huggingface/diffusers/issues?q=is%3Aopen+is%3Aissue+label%3A%22New+pipeline%2Fmodel%22) to contribute exciting new diffusion models / diffusion pipelines
-- See [New scheduler](https://github.com/huggingface/diffusers/issues?q=is%3Aopen+is%3Aissue+label%3A%22New+scheduler%22)
+Reference docs for the Diffusers core live under [`docs/source/en`](docs/source/en).
 
-Also, say 👋 in our public Discord channel <a href="https://discord.gg/G7tWnz98XR"><img alt="Join us on Discord" src="https://img.shields.io/discord/823813159592001537?color=5865F2&logo=discord&logoColor=white"></a>. We discuss the hottest trends about diffusion models, help each other with contributions, personal projects or just hang out ☕.
+## Design
 
+- `Object3D` is a structural protocol; anything with the right tensors is an object. Training authorization is
+  nominal and registry-based.
+- Diffusers owns model loading, scheduling, offloading, and pipeline lifecycle. `diffusers-3d` adds 3D contracts on
+  top rather than replacing them.
+- Model stages have separate recipes, objectives, component policies, and checkpoint manifests.
+- Optional CUDA and research-only dependencies are never imported or selected implicitly.
+- Every claim of parity names the upstream revision and the test that measured it.
 
-## Popular Tasks & Pipelines
+## Contributing
 
-<table>
-  <tr>
-    <th>Task</th>
-    <th>Pipeline</th>
-    <th>🤗 Hub</th>
-  </tr>
-  <tr style="border-top: 2px solid black">
-    <td>Unconditional Image Generation</td>
-    <td><a href="https://huggingface.co/docs/diffusers/api/pipelines/ddpm"> DDPM </a></td>
-    <td><a href="https://huggingface.co/google/ddpm-ema-church-256"> google/ddpm-ema-church-256 </a></td>
-  </tr>
-  <tr style="border-top: 2px solid black">
-    <td>Text-to-Image</td>
-    <td><a href="https://huggingface.co/docs/diffusers/api/pipelines/stable_diffusion/text2img">Stable Diffusion Text-to-Image</a></td>
-      <td><a href="https://huggingface.co/stable-diffusion-v1-5/stable-diffusion-v1-5"> stable-diffusion-v1-5/stable-diffusion-v1-5 </a></td>
-  </tr>
-  <tr>
-    <td>Text-to-Image</td>
-    <td><a href="https://huggingface.co/docs/diffusers/api/pipelines/stable_unclip">unCLIP</a></td>
-      <td><a href="https://huggingface.co/kakaobrain/karlo-v1-alpha"> kakaobrain/karlo-v1-alpha </a></td>
-  </tr>
-  <tr>
-    <td>Text-to-Image</td>
-    <td><a href="https://huggingface.co/docs/diffusers/api/pipelines/deepfloyd_if">DeepFloyd IF</a></td>
-      <td><a href="https://huggingface.co/DeepFloyd/IF-I-XL-v1.0"> DeepFloyd/IF-I-XL-v1.0 </a></td>
-  </tr>
-  <tr>
-    <td>Text-to-Image</td>
-    <td><a href="https://huggingface.co/docs/diffusers/api/pipelines/kandinsky">Kandinsky</a></td>
-      <td><a href="https://huggingface.co/kandinsky-community/kandinsky-2-2-decoder"> kandinsky-community/kandinsky-2-2-decoder </a></td>
-  </tr>
-  <tr style="border-top: 2px solid black">
-    <td>Text-guided Image-to-Image</td>
-    <td><a href="https://huggingface.co/docs/diffusers/api/pipelines/controlnet">ControlNet</a></td>
-      <td><a href="https://huggingface.co/lllyasviel/sd-controlnet-canny"> lllyasviel/sd-controlnet-canny </a></td>
-  </tr>
-  <tr>
-    <td>Text-guided Image-to-Image</td>
-    <td><a href="https://huggingface.co/docs/diffusers/api/pipelines/pix2pix">InstructPix2Pix</a></td>
-      <td><a href="https://huggingface.co/timbrooks/instruct-pix2pix"> timbrooks/instruct-pix2pix </a></td>
-  </tr>
-  <tr>
-    <td>Text-guided Image-to-Image</td>
-    <td><a href="https://huggingface.co/docs/diffusers/api/pipelines/stable_diffusion/img2img">Stable Diffusion Image-to-Image</a></td>
-      <td><a href="https://huggingface.co/stable-diffusion-v1-5/stable-diffusion-v1-5"> stable-diffusion-v1-5/stable-diffusion-v1-5 </a></td>
-  </tr>
-  <tr style="border-top: 2px solid black">
-    <td>Text-guided Image Inpainting</td>
-    <td><a href="https://huggingface.co/docs/diffusers/api/pipelines/stable_diffusion/inpaint">Stable Diffusion Inpainting</a></td>
-      <td><a href="https://huggingface.co/stable-diffusion-v1-5/stable-diffusion-inpainting"> stable-diffusion-v1-5/stable-diffusion-inpainting </a></td>
-  </tr>
-  <tr style="border-top: 2px solid black">
-    <td>Image Variation</td>
-    <td><a href="https://huggingface.co/docs/diffusers/api/pipelines/stable_diffusion/image_variation">Stable Diffusion Image Variation</a></td>
-      <td><a href="https://huggingface.co/lambdalabs/sd-image-variations-diffusers"> lambdalabs/sd-image-variations-diffusers </a></td>
-  </tr>
-  <tr style="border-top: 2px solid black">
-    <td>Super Resolution</td>
-    <td><a href="https://huggingface.co/docs/diffusers/api/pipelines/stable_diffusion/upscale">Stable Diffusion Upscale</a></td>
-      <td><a href="https://huggingface.co/stabilityai/stable-diffusion-x4-upscaler"> stabilityai/stable-diffusion-x4-upscaler </a></td>
-  </tr>
-  <tr>
-    <td>Super Resolution</td>
-    <td><a href="https://huggingface.co/docs/diffusers/api/pipelines/stable_diffusion/latent_upscale">Stable Diffusion Latent Upscale</a></td>
-      <td><a href="https://huggingface.co/stabilityai/sd-x2-latent-upscaler"> stabilityai/sd-x2-latent-upscaler </a></td>
-  </tr>
-</table>
+Integrations move through three levels: experimental Hub blocks using Modular Diffusers remote code, reviewed
+package families with exact registrations and parity tests, and stable primitives proposed upstream to Diffusers.
+Start with the [contribution guide](packages/diffusers-3d/CONTRIBUTING.md), the
+[lifecycle checklists](packages/diffusers-3d/docs/contributions.md), and the
+[templates](packages/diffusers-3d/templates/README.md). Run `make style` and `make quality` before opening a PR;
+`make test-3d` runs the `diffusers_3d` suite.
 
-## Popular libraries using 🧨 Diffusers
+## License
 
-- https://github.com/microsoft/TaskMatrix
-- https://github.com/invoke-ai/InvokeAI
-- https://github.com/InstantID/InstantID
-- https://github.com/apple/ml-stable-diffusion
-- https://github.com/Sanster/lama-cleaner
-- https://github.com/IDEA-Research/Grounded-Segment-Anything
-- https://github.com/ashawkey/stable-dreamfusion
-- https://github.com/deep-floyd/IF
-- https://github.com/bentoml/BentoML
-- https://github.com/bmaltais/kohya_ss
-- +14,000 other amazing GitHub repositories 💪
-
-Thank you for using us ❤️.
-
-## Credits
-
-This library concretizes previous work by many different authors and would not have been possible without their great research and implementations. We'd like to thank, in particular, the following implementations which have helped us in our development and without which the API could not have been as polished today:
-
-- @CompVis' latent diffusion models library, available [here](https://github.com/CompVis/latent-diffusion)
-- @hojonathanho original DDPM implementation, available [here](https://github.com/hojonathanho/diffusion) as well as the extremely useful translation into PyTorch by @pesser, available [here](https://github.com/pesser/pytorch_diffusion)
-- @ermongroup's DDIM implementation, available [here](https://github.com/ermongroup/ddim)
-- @yang-song's Score-VE and Score-VP implementations, available [here](https://github.com/yang-song/score_sde_pytorch)
-
-We also want to thank @heejkoo for the very helpful overview of papers, code and resources on diffusion models, available [here](https://github.com/heejkoo/Awesome-Diffusion-Models) as well as @crowsonkb and @rromb for useful discussions and insights.
-
-## Citation
-
-```bibtex
-@misc{von-platen-etal-2022-diffusers,
-  author = {Patrick von Platen and Suraj Patil and Anton Lozhkov and Pedro Cuenca and Nathan Lambert and Kashif Rasul and Mishig Davaadorj and Dhruv Nair and Sayak Paul and William Berman and Yiyi Xu and Steven Liu and Thomas Wolf},
-  title = {Diffusers: State-of-the-art diffusion models},
-  year = {2022},
-  publisher = {GitHub},
-  journal = {GitHub repository},
-  howpublished = {\url{https://github.com/huggingface/diffusers}}
-}
-```
+The Diffusers core is Apache-2.0. The `diffusers-3d` package uses an `Apache-2.0 AND MIT` aggregate: package-owned
+glue is Apache-2.0, while TRELLIS- and TRELLIS.2-derived family code retains its MIT terms. Model weights,
+DINOv3 conditioner weights, and research backends such as nvdiffrast carry their own licenses and are not
+redistributed.

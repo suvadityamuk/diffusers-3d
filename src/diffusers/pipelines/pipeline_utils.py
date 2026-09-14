@@ -50,8 +50,6 @@ from typing_extensions import Self
 
 from .. import __version__
 from ..configuration_utils import ConfigMixin
-from ..models import AutoencoderKL
-from ..models.attention_processor import FusedAttnProcessor2_0
 from ..models.modeling_utils import _LOW_CPU_MEM_USAGE_DEFAULT, ModelMixin
 from ..quantizers import PipelineQuantizationConfig
 from ..quantizers.bitsandbytes.utils import _check_bnb_status
@@ -100,7 +98,6 @@ from .pipeline_loading_utils import (
     _get_ignore_patterns,
     _get_pipeline_class,
     _identify_model_variants,
-    _maybe_raise_warning_for_inpainting,
     _maybe_warn_for_wrong_component_in_quant_config,
     _resolve_custom_pipeline_and_cls,
     _unwrap_model,
@@ -935,15 +932,6 @@ class DiffusionPipeline(ConfigMixin, PushToHubMixin):
 
         if device_map is not None and pipeline_class._load_connected_pipes:
             raise NotImplementedError("`device_map` is not yet supported for connected pipelines.")
-
-        # DEPRECATED: To be removed in 1.0.0
-        # we are deprecating the `StableDiffusionInpaintPipelineLegacy` pipeline which gets loaded
-        # when a user requests for a `StableDiffusionInpaintPipeline` with `diffusers` version being <= 0.5.1.
-        _maybe_raise_warning_for_inpainting(
-            pipeline_class=pipeline_class,
-            pretrained_model_name_or_path=pretrained_model_name_or_path,
-            config=config_dict,
-        )
 
         # 4. Define expected modules given pipeline signature
         # and define non-None initialized modules (=`init_kwargs`)
@@ -2256,86 +2244,3 @@ class DiffusionPipeline(ConfigMixin, PushToHubMixin):
                 pass
 
         return not is_device_type_map and isinstance(device_map, dict) and len(device_map) > 1
-
-
-class StableDiffusionMixin:
-    r"""
-    Helper for DiffusionPipeline with vae and unet.(mainly for LDM such as stable diffusion)
-    """
-
-    def enable_freeu(self, s1: float, s2: float, b1: float, b2: float):
-        r"""Enables the FreeU mechanism as in https://huggingface.co/papers/2309.11497.
-
-        The suffixes after the scaling factors represent the stages where they are being applied.
-
-        Please refer to the [official repository](https://github.com/ChenyangSi/FreeU) for combinations of the values
-        that are known to work well for different pipelines such as Stable Diffusion v1, v2, and Stable Diffusion XL.
-
-        Args:
-            s1 (`float`):
-                Scaling factor for stage 1 to attenuate the contributions of the skip features. This is done to
-                mitigate "oversmoothing effect" in the enhanced denoising process.
-            s2 (`float`):
-                Scaling factor for stage 2 to attenuate the contributions of the skip features. This is done to
-                mitigate "oversmoothing effect" in the enhanced denoising process.
-            b1 (`float`): Scaling factor for stage 1 to amplify the contributions of backbone features.
-            b2 (`float`): Scaling factor for stage 2 to amplify the contributions of backbone features.
-        """
-        if not hasattr(self, "unet"):
-            raise ValueError("The pipeline must have `unet` for using FreeU.")
-        self.unet.enable_freeu(s1=s1, s2=s2, b1=b1, b2=b2)
-
-    def disable_freeu(self):
-        """Disables the FreeU mechanism if enabled."""
-        self.unet.disable_freeu()
-
-    def fuse_qkv_projections(self, unet: bool = True, vae: bool = True):
-        """
-        Enables fused QKV projections. For self-attention modules, all projection matrices (i.e., query, key, value)
-        are fused. For cross-attention modules, key and value projection matrices are fused.
-
-        > [!WARNING] > This API is 🧪 experimental.
-
-        Args:
-            unet (`bool`, defaults to `True`): To apply fusion on the UNet.
-            vae (`bool`, defaults to `True`): To apply fusion on the VAE.
-        """
-        self.fusing_unet = False
-        self.fusing_vae = False
-
-        if unet:
-            self.fusing_unet = True
-            self.unet.fuse_qkv_projections()
-            self.unet.set_attn_processor(FusedAttnProcessor2_0())
-
-        if vae:
-            if not isinstance(self.vae, AutoencoderKL):
-                raise ValueError("`fuse_qkv_projections()` is only supported for the VAE of type `AutoencoderKL`.")
-
-            self.fusing_vae = True
-            self.vae.fuse_qkv_projections()
-            self.vae.set_attn_processor(FusedAttnProcessor2_0())
-
-    def unfuse_qkv_projections(self, unet: bool = True, vae: bool = True):
-        """Disable QKV projection fusion if enabled.
-
-        > [!WARNING] > This API is 🧪 experimental.
-
-        Args:
-            unet (`bool`, defaults to `True`): To apply fusion on the UNet.
-            vae (`bool`, defaults to `True`): To apply fusion on the VAE.
-
-        """
-        if unet:
-            if not self.fusing_unet:
-                logger.warning("The UNet was not initially fused for QKV projections. Doing nothing.")
-            else:
-                self.unet.unfuse_qkv_projections()
-                self.fusing_unet = False
-
-        if vae:
-            if not self.fusing_vae:
-                logger.warning("The VAE was not initially fused for QKV projections. Doing nothing.")
-            else:
-                self.vae.unfuse_qkv_projections()
-                self.fusing_vae = False

@@ -1,9 +1,9 @@
-.PHONY: deps_table_update modified_only_fixup extra_style_checks quality style fixup fix-copies test test-examples
+.PHONY: deps_table_update modified_only_fixup extra_style_checks quality style fixup fix-copies test test-3d
 
 # make sure to test the local checkout in scripts and not the pre-installed one (don't use quotes!)
 export PYTHONPATH = src
 
-check_dirs := examples scripts src tests utils benchmarks
+check_dirs := src tests utils packages
 
 modified_only_fixup:
 	$(eval modified_py_files := $(shell python utils/get_modified_files.py $(check_dirs)))
@@ -85,10 +85,10 @@ check-forward-call-docstrings:
 test:
 	python -m pytest -n auto --dist=loadfile -s -v ./tests/
 
-# Run tests for examples
+# Run tests for the diffusers-3d companion package
 
-test-examples:
-	python -m pytest -n auto --dist=loadfile -s -v ./examples/
+test-3d:
+	python -m pytest -n auto --dist=loadfile -s -v ./packages/diffusers-3d/tests/
 
 
 # Release stuff
