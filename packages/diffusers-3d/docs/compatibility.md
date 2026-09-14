@@ -8,7 +8,7 @@ versions and side-effect-free `BACKEND_REGISTRY` discovery status of a particula
 | Component | Declared compatibility | CI/verification status |
 |---|---|---|
 | `diffusers-3d` | `0.1.0.dev0` | Source tests plus wheel and sdist verification |
-| Diffusers | `>=0.40.0.dev0,<0.41` | Local repository checkout, current `0.40` development minor |
+| Diffusers | `>=0.40.0.dev0,<0.42` | Local repository checkout, current `0.40` and `0.41` development minors |
 | Accelerate | `>=1.1.0` | Exact minimum safety lane plus latest-resolved CPU lanes |
 | Transformers | `>=5.5.0` | Exact 5.5.0 minimum lane plus latest-resolved CPU lanes |
 | Python | `>=3.10` | Core CPU matrix: 3.10, 3.11, 3.12 |
@@ -16,7 +16,8 @@ versions and side-effect-free `BACKEND_REGISTRY` discovery status of a particula
 
 The verification environment recorded on 2026-08-24 used Python 3.12.3, Diffusers 0.40.0.dev0,
 diffusers-3d 0.1.0.dev0, and PyTorch 2.13.0+cu130. That run was CPU-only despite the CUDA-enabled PyTorch build.
-The workflow installs the local Diffusers checkout exactly once and installs the diffusers-3d wheel with `--no-deps`,
+CI also verifies the repository's current 0.41 development checkout. The workflow installs the local Diffusers
+checkout exactly once and installs the diffusers-3d wheel with `--no-deps`,
 avoiding competing editable and released Diffusers installations.
 
 DINOv3 classes first shipped in Transformers 4.56.0. That line requires
