@@ -168,3 +168,50 @@ def test_base_output_is_a_pytree_node(mesh):
     rebuilt = torch.utils._pytree.tree_unflatten(leaves, tree_spec)
     assert isinstance(rebuilt, MeshAsset)
     assert torch.equal(rebuilt.faces, mesh.faces)
+
+
+def test_mesh_to_coordinate_system_matches_trellis_z_up_to_y_up_and_flips_winding_on_reflection():
+    from diffusers_3d import changes_handedness, coordinate_change_matrix
+
+    vertices = torch.tensor([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]])
+    faces = torch.tensor([[0, 1, 2], [0, 2, 3]])
+    normals = torch.nn.functional.normalize(vertices + 0.5, dim=-1)
+    transform = torch.eye(4)
+    transform[:3, 3] = torch.tensor([1.0, 2.0, 3.0])
+    mesh = MeshAsset(
+        vertices=vertices,
+        faces=faces,
+        normals=normals,
+        transform=transform,
+        coordinate_system=CoordinateSystem.RIGHT_HANDED_Z_UP,
+        metadata={"family": "trellis"},
+    )
+
+    y_up = mesh.to_coordinate_system(CoordinateSystem.RIGHT_HANDED_Y_UP)
+    # TRELLIS ``to_glb``: vertices @ [[1, 0, 0], [0, 0, -1], [0, 1, 0]] -> (x, z, -y).
+    torch.testing.assert_close(y_up.vertices, vertices @ torch.tensor([[1.0, 0, 0], [0, 0, -1], [0, 1, 0]]))
+    torch.testing.assert_close(y_up.normals, normals @ torch.tensor([[1.0, 0, 0], [0, 0, -1], [0, 1, 0]]))
+    torch.testing.assert_close(y_up.transform[:3, 3], torch.tensor([1.0, 3.0, -2.0]))
+    assert torch.equal(y_up.faces, faces)
+    assert y_up.coordinate_system is CoordinateSystem.RIGHT_HANDED_Y_UP
+    assert y_up.metadata == mesh.metadata
+    assert mesh.to_coordinate_system("right_handed_z_up") is mesh
+    round_trip = y_up.to_coordinate_system(CoordinateSystem.RIGHT_HANDED_Z_UP)
+    torch.testing.assert_close(round_trip.vertices, vertices)
+    torch.testing.assert_close(round_trip.transform, transform)
+
+    # World-space points agree whichever frame the object is expressed in.
+    matrix = coordinate_change_matrix(CoordinateSystem.RIGHT_HANDED_Z_UP, CoordinateSystem.RIGHT_HANDED_Y_UP)
+    homogeneous = torch.cat([vertices, torch.ones(4, 1)], dim=1)
+    world_z_up = (homogeneous @ transform.T)[:, :3]
+    world_y_up = (torch.cat([y_up.vertices, torch.ones(4, 1)], dim=1) @ y_up.transform.T)[:, :3]
+    torch.testing.assert_close(world_y_up, world_z_up @ matrix.T)
+
+    left = y_up.to_coordinate_system(CoordinateSystem.LEFT_HANDED_Y_UP)
+    assert changes_handedness(CoordinateSystem.RIGHT_HANDED_Y_UP, CoordinateSystem.LEFT_HANDED_Y_UP)
+    torch.testing.assert_close(left.vertices, y_up.vertices * torch.tensor([1.0, 1.0, -1.0]))
+    assert torch.equal(left.faces, faces[:, [0, 2, 1]])
+    for system in CoordinateSystem:
+        matrix = coordinate_change_matrix(CoordinateSystem.RIGHT_HANDED_Y_UP, system, dtype=torch.float64)
+        torch.testing.assert_close(matrix @ matrix.T, torch.eye(3, dtype=torch.float64))
+        assert abs(float(torch.det(matrix))) == 1.0

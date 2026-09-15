@@ -7,19 +7,22 @@ def trellis_execution_registrations(
     model_registration_type: type[Any],
     pipeline_registration_type: type[Any],
 ) -> tuple[tuple[Any, ...], tuple[Any, ...]]:
-    """Register the schema-v2 pipeline and every reviewed component (sparse structure, SLAT, Gaussian)."""
+    """Register the image and text pipelines and every reviewed component (sparse structure, SLAT, Gaussian, mesh)."""
 
     from .conditioner import TrellisDinov2Conditioner
-    from .decoders import TrellisSLatGaussianDecoder, TrellisSparseStructureDecoder
+    from .decoders import TrellisSLatGaussianDecoder, TrellisSLatMeshDecoder, TrellisSparseStructureDecoder
     from .models import TrellisSLatFlowModel, TrellisSparseStructureFlowModel
-    from .pipeline import TrellisImageTo3DPipeline
+    from .pipeline import TrellisImageTo3DPipeline, TrellisTextTo3DPipeline
+    from .text_conditioner import TrellisClipTextConditioner
 
     models = (
         TrellisSparseStructureFlowModel,
         TrellisSparseStructureDecoder,
         TrellisSLatFlowModel,
         TrellisSLatGaussianDecoder,
+        TrellisSLatMeshDecoder,
         TrellisDinov2Conditioner,
+        TrellisClipTextConditioner,
     )
     return (
         tuple(model_registration_type(model_type, model_type.object3d_metadata()) for model_type in models),
@@ -28,18 +31,21 @@ def trellis_execution_registrations(
                 TrellisImageTo3DPipeline,
                 TrellisImageTo3DPipeline.object3d_model_index(),
             ),
+            pipeline_registration_type(
+                TrellisTextTo3DPipeline,
+                TrellisTextTo3DPipeline.object3d_model_index(),
+            ),
         ),
     )
 
 
 def trellis_training_registrations(training_registration_type: type[Any]) -> tuple[Any, ...]:
-    """Register the released-evidence FULL-only dense sparse-structure recipe."""
+    """Register the FULL-only sparse-structure and SLAT flow recipes."""
 
     from ...execution.metadata import ReviewStatus
-    from .training import TrellisSparseStructureFlowRecipe
+    from .training import TrellisSLatFlowRecipe, TrellisSparseStructureFlowRecipe
 
-    recipe = TrellisSparseStructureFlowRecipe
-    return (
+    return tuple(
         training_registration_type(
             recipe_type=recipe,
             target_type=recipe.target_type,
@@ -51,7 +57,8 @@ def trellis_training_registrations(training_registration_type: type[Any]) -> tup
             component_policies=recipe.component_policies,
             review_status=ReviewStatus.REVIEWED,
             frozen_component_policies=recipe.frozen_component_policies,
-        ),
+        )
+        for recipe in (TrellisSparseStructureFlowRecipe, TrellisSLatFlowRecipe)
     )
 
 

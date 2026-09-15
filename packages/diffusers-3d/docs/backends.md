@@ -62,8 +62,9 @@ The TRELLIS.2 adapters intentionally expose only reviewed narrow API surfaces:
 - `Trellis2PBRPostprocessFacade` gates the combined O-Voxel, CuMesh, FlexGEMM, and nvdiffrast path. It never runs
   during ordinary pipeline output or backend discovery.
 
-These native TRELLIS.2 paths are adapter/API tested with CPU fakes. A production CUDA mesh, render, or GLB quality
-run has not been performed and is not claimed.
+These native TRELLIS.2 paths are adapter/API tested with CPU fakes in CI. They were also run once by hand on an A100
+with the pinned revisions compiled from source (see [compatibility.md](compatibility.md)); render or GLB quality
+beyond "recognizable" is not claimed.
 
 `utils3d` means the EasternJournalist repository used by TRELLIS, not the unrelated PyPI distribution. It must be
 installed from an audited pinned revision.

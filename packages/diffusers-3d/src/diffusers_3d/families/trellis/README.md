@@ -1,10 +1,12 @@
-# TRELLIS image-to-3D
+# TRELLIS image-to-3D and text-to-3D
 
 This family integrates the MIT-licensed Microsoft TRELLIS implementation at
 revision `442aa1e1afb9014e80681d3bf604e8d728a86ee7`. The sparse-structure
-stage, the SLAT flow, and the Gaussian decoder run in plain PyTorch on any
-device; rendering the resulting splats delegates to the optional gsplat
-backend.
+stage, the SLAT flow, the Gaussian decoder, and the FlexiCubes mesh decoder
+run in plain PyTorch on any device; rendering the resulting splats delegates
+to the optional gsplat backend. `TrellisImageTo3DPipeline` conditions on
+DINOv2 image tokens and `TrellisTextTo3DPipeline` on CLIP text tokens; both
+share the same two flow stages and decoders.
 
 ## Reviewed sparse-structure path
 
@@ -36,14 +38,16 @@ backend.
 The converter consumes local upstream component `.json`/`.safetensors` pairs
 and `pipeline.json`, then writes ordinary Diffusers component folders and
 object-3D metadata. It converts the sparse-structure components, the SLAT
-flow model, and the Gaussian decoder. `--conditioner-path` takes either a
-saved `TrellisDinov2Conditioner` folder or the Transformers
-`dinov2_with_registers` checkpoint of the released `dinov2_vitl14_reg`
-(`facebook/dinov2-with-registers-large`); the register tokens fold into the
-conditioner and the token outputs match exactly. Conversion from the
-original Torch Hub state layout is not claimed.
+flow model, and the Gaussian and mesh decoders. For image pipelines
+`--conditioner-path` takes either a saved `TrellisDinov2Conditioner` folder or
+the Transformers `dinov2_with_registers` checkpoint of the released
+`dinov2_vitl14_reg` (`facebook/dinov2-with-registers-large`); the register
+tokens fold into the conditioner and the token outputs match exactly. For text
+pipelines it takes the released `openai/clip-vit-large-patch14` folder, whose
+text tower and tokenizer become a `TrellisClipTextConditioner`. Conversion
+from the original Torch Hub state layout is not claimed.
 
-## SLAT flow and Gaussian decoder
+## SLAT flow, Gaussian decoder, and mesh decoder
 
 `TrellisSparseTensor` is an immutable package bridge over `[batch, x, y, z]`
 coordinates and features. It losslessly round-trips `SparseVoxelAsset`
@@ -59,15 +63,22 @@ layout. Sparse convolution, pooling, and window partitioning come from
 plain PyTorch. The pooling reproduces upstream's `scatter_reduce(...,
 include_self=True)` mean, because the released weights were trained with it.
 
-Tiny outputs of both models match the pinned upstream code with `spconv` and
-`xformers` shimmed to dense PyTorch, and released state-dict layouts are
-checked against the published safetensors headers. The SLAT flow training
-objective is implemented and tested, but the recipe is not registered yet.
+`TrellisSLatMeshDecoder` is the released mesh decoder: the same swin torso,
+two sparse subdivide blocks (64³ to 256³), and per-cube FlexiCubes features
+(`sdf`, `deform`, `weights`, and six colour channels). Iso-surface extraction
+is a pure-PyTorch port of the Apache-2.0 FlexiCubes fork TRELLIS pins
+([`flexicubes.py`](flexicubes.py)); it builds the grid sparsely around the
+active voxels instead of materializing the dense 256³ grid and returns a Z-up
+`MeshAsset` with vertex `colors` and the predicted normal map in
+`extras["normal_map"]`. `formats=("mesh",)` selects it in both pipelines.
+
+Tiny outputs of all three models match the pinned upstream code with `spconv`
+and `xformers` shimmed to dense PyTorch (the mesh decoder additionally against
+the pinned FlexiCubes submodule, up to vertex order), and released state-dict
+layouts are checked against the published safetensors headers.
 
 Not ported:
 
-- The TRELLIS sparse mesh-field network, so no mesh decoder, component, or
-  pipeline format is shipped.
 - `TrellisSLatRadianceFieldDecoder`, because the package has no native
   radiance-field `Object3D` type.
 
@@ -83,8 +94,10 @@ Not ported:
   research-only dependencies. Their facades perform side-effect-free status
   checks and require explicit license acknowledgement; they never import or
   select those renderers silently.
-- The restricted TRELLIS modified FlexiCubes submodule and all restricted
-  renderer source are excluded.
+- The FlexiCubes fork TRELLIS pins (`MaxtirError/FlexiCubes`, revision
+  `815e075a`) is Apache-2.0; its lookup tables and extraction logic are ported
+  into this family with attribution. All restricted renderer source is
+  excluded.
 - `utils3d` is not used by this family. The common registry's optional
   compatibility entry accepts only the pinned EasternJournalist source and
   rejects an unverified colliding distribution.
@@ -102,10 +115,14 @@ with precomputed dense sparse-structure latents:
 target `(1-sigma_min)noise-x0`, model timestep `t*1000`, and conditioning
 dropout probability 0.1.
 
-The conditioner and decoder remain frozen. LoRA is not registered because the
+`TrellisSLatFlowRecipe` is registered with the same objective over
+precomputed SLAT latents (`TrellisSLatExample`), training the SLAT flow model
+alone.
+
+The conditioner and decoders remain frozen. LoRA is not registered because the
 released project provides no LoRA target evidence. Tests cover the exact
 objective, frozen components, a full optimizer step, and checkpoint
-restoration. Training examples accept unit-range typed image conditions.
+restoration for both recipes. Training examples accept unit-range typed image conditions.
 Recipe collation separately follows the pinned dataset transform exactly once:
 the bbox includes every nonzero alpha pixel, applies 1.2 to the floating
 half-size before integer truncation, resizes RGBA with LANCZOS, and multiplies
@@ -113,9 +130,10 @@ the resized RGB and alpha tensors. Separate masks participate in alpha.
 
 ## Explicit limitations
 
-- No official full checkpoint, production-resolution GPU, render-quality, or
-  end-to-end two-stage parity run was performed in this package's test matrix.
-- Mesh decoding, radiance-field decoding, rendering, texture quality, and
+- No production-resolution GPU or end-to-end two-stage parity run is part of
+  this package's test matrix; the released checkpoints were run by hand on an
+  A100 (see `docs/compatibility.md`) and render quality is not claimed.
+- Radiance-field decoding, rendering quality, texture quality, and
   background removal are not claimed.
 - CI and conversion tests are offline CPU tests and download no model weights.
 
@@ -127,5 +145,5 @@ diffusers-3d-convert-trellis source/ output/ \
 ```
 
 The converter writes the conditioner, sparse-structure flow and decoder, SLAT
-flow, and Gaussian decoder; the radiance-field and mesh decoders in the release
-are skipped.
+flow, and the Gaussian and mesh decoders; the radiance-field decoder in the
+release is skipped.

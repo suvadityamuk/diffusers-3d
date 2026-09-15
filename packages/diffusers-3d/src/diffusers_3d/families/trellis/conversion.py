@@ -14,10 +14,11 @@ from diffusers import __version__ as diffusers_version
 from safetensors.torch import load_file
 
 from .conditioner import TrellisDinov2Conditioner
-from .decoders import TrellisSLatGaussianDecoder, TrellisSparseStructureDecoder
+from .decoders import TrellisSLatGaussianDecoder, TrellisSLatMeshDecoder, TrellisSparseStructureDecoder
 from .models import TrellisSLatFlowModel, TrellisSparseStructureFlowModel
-from .pipeline import TrellisImageTo3DPipeline
+from .pipeline import TrellisImageTo3DPipeline, TrellisTextTo3DPipeline
 from .scheduler import TrellisFlowEulerScheduler
+from .text_conditioner import TrellisClipTextConditioner
 
 TRELLIS_REFERENCE_REVISION = "442aa1e1afb9014e80681d3bf604e8d728a86ee7"
 
@@ -36,15 +37,18 @@ _COMPONENT_TYPES = {
         "SLatGaussianDecoder": TrellisSLatGaussianDecoder,
         "ElasticSLatGaussianDecoder": TrellisSLatGaussianDecoder,
     },
+    "slat_decoder_mesh": {
+        "SLatMeshDecoder": TrellisSLatMeshDecoder,
+        "ElasticSLatMeshDecoder": TrellisSLatMeshDecoder,
+    },
 }
-_UNSUPPORTED_COMPONENTS = {"slat_decoder_mesh", "slat_decoder_rf"}
+_UNSUPPORTED_COMPONENTS = {"slat_decoder_rf"}
 _UPSTREAM_COMPONENTS = set(_COMPONENT_TYPES) | _UNSUPPORTED_COMPONENTS
-_PIPELINE_ARGUMENTS = {
-    "image_cond_model",
-    "models",
-    "slat_normalization",
-    "slat_sampler",
-    "sparse_structure_sampler",
+_SHARED_PIPELINE_ARGUMENTS = {"models", "slat_normalization", "slat_sampler", "sparse_structure_sampler"}
+# Upstream pipeline name -> (package pipeline, conditioner argument, released conditioner id)
+_PIPELINES = {
+    "TrellisImageTo3DPipeline": (TrellisImageTo3DPipeline, "image_cond_model", "dinov2_vitl14_reg"),
+    "TrellisTextTo3DPipeline": (TrellisTextTo3DPipeline, "text_cond_model", "openai/clip-vit-large-patch14"),
 }
 
 
@@ -168,10 +172,20 @@ def _validate_normalization(value: object) -> tuple[list[float], list[float]]:
     return mean, std
 
 
-def _load_conditioner(path: Path) -> TrellisDinov2Conditioner:
-    """Accept a saved ``TrellisDinov2Conditioner`` folder or a Transformers ``dinov2_with_registers`` checkpoint."""
+def _load_conditioner(path: Path, pipeline_type: type[Any]) -> TrellisDinov2Conditioner | TrellisClipTextConditioner:
+    """Accept a saved package conditioner folder or the matching raw Transformers checkpoint.
 
-    if _load_json(path / "config.json").get("model_type") == "dinov2_with_registers":
+    Image pipelines take a ``TrellisDinov2Conditioner`` folder or a ``dinov2_with_registers`` checkpoint; text
+    pipelines take a ``TrellisClipTextConditioner`` folder or a CLIP checkpoint such as
+    ``openai/clip-vit-large-patch14`` (which also provides the tokenizer).
+    """
+
+    model_type = _load_json(path / "config.json").get("model_type")
+    if pipeline_type is TrellisTextTo3DPipeline:
+        if model_type in {"clip", "clip_text_model"}:
+            return TrellisClipTextConditioner.from_clip_pretrained(str(path), local_files_only=True)
+        return TrellisClipTextConditioner.from_pretrained(path, local_files_only=True)
+    if model_type == "dinov2_with_registers":
         return TrellisDinov2Conditioner.from_dinov2_with_registers_pretrained(str(path), local_files_only=True)
     return TrellisDinov2Conditioner.from_pretrained(path, local_files_only=True)
 
@@ -183,10 +197,12 @@ def convert_trellis_checkpoint(
     conditioner_path: str | Path,
     safe_serialization: bool = True,
 ) -> Path:
-    """Convert a local upstream pipeline without importing TRELLIS at runtime.
+    """Convert a local upstream image or text pipeline without importing TRELLIS at runtime.
 
-    The sparse-structure components, the SLAT flow model, and the Gaussian decoder are converted; the released
-    mesh and radiance-field decoders have no object-native counterpart yet and are recorded as skipped.
+    ``pipeline.json`` selects the target: ``TrellisImageTo3DPipeline`` (DINOv2 conditioner) or
+    ``TrellisTextTo3DPipeline`` (CLIP conditioner). The sparse-structure components, the SLAT flow model, and
+    the Gaussian and mesh decoders are converted; the released radiance-field decoder has no object-native
+    counterpart and is recorded as skipped.
     """
 
     source = Path(source_directory)
@@ -194,15 +210,22 @@ def convert_trellis_checkpoint(
     pipeline_config = _load_json(pipeline_path)
     if set(pipeline_config) != {"name", "args"}:
         raise ValueError("pipeline.json must contain exactly 'name' and 'args'")
-    if pipeline_config["name"] != "TrellisImageTo3DPipeline":
-        raise ValueError("pipeline.json must describe TrellisImageTo3DPipeline")
+    if pipeline_config["name"] not in _PIPELINES:
+        raise ValueError(f"pipeline.json must describe one of {sorted(_PIPELINES)}")
+    pipeline_type, conditioner_argument, released_conditioner = _PIPELINES[pipeline_config["name"]]
     args = pipeline_config["args"]
     if not isinstance(args, Mapping):
         raise ValueError("pipeline args must be a mapping")
-    if set(args) != _PIPELINE_ARGUMENTS:
-        raise ValueError(f"pipeline args must contain exactly {sorted(_PIPELINE_ARGUMENTS)}")
-    if args["image_cond_model"] != "dinov2_vitl14_reg":
-        raise ValueError("only the released dinov2_vitl14_reg image conditioner is supported")
+    # The released microsoft/TRELLIS-text-large pipeline.json omits ``text_cond_model``; upstream hard-codes CLIP.
+    optional_conditioner = pipeline_type is TrellisTextTo3DPipeline
+    if set(args) - {conditioner_argument} != _SHARED_PIPELINE_ARGUMENTS or (
+        conditioner_argument not in args and not optional_conditioner
+    ):
+        raise ValueError(
+            f"pipeline args must contain exactly {sorted(_SHARED_PIPELINE_ARGUMENTS | {conditioner_argument})}"
+        )
+    if args.get(conditioner_argument, released_conditioner) != released_conditioner:
+        raise ValueError(f"only the released {released_conditioner!r} conditioner is supported")
     models = args.get("models")
     if not isinstance(models, Mapping):
         raise ValueError("pipeline args.models must be a mapping")
@@ -221,6 +244,7 @@ def convert_trellis_checkpoint(
         "sparse_structure_decoder": "sparse_structure_decoder",
         "slat_flow_model": "slat_flow_model",
         "slat_decoder_gs": "gaussian_decoder",
+        "slat_decoder_mesh": "mesh_decoder",
     }
     for component_key, reference in models.items():
         if not isinstance(reference, str) or not reference:
@@ -244,9 +268,9 @@ def convert_trellis_checkpoint(
             "config": model_config,
         }
 
-    conditioner = _load_conditioner(Path(conditioner_path))
+    conditioner = _load_conditioner(Path(conditioner_path), pipeline_type)
     conditioner.save_pretrained(destination / "conditioner", safe_serialization=safe_serialization)
-    component_index["conditioner"] = [TrellisDinov2Conditioner.__module__, TrellisDinov2Conditioner.__name__]
+    component_index["conditioner"] = [type(conditioner).__module__, type(conditioner).__name__]
 
     sigma_min, sparse_sampler_params = _validate_sampler(
         args["sparse_structure_sampler"],
@@ -271,8 +295,9 @@ def convert_trellis_checkpoint(
     else:
         component_index["slat_flow_model"] = [None, None]
         component_index["slat_scheduler"] = [None, None]
-    if "gaussian_decoder" not in component_index:
-        component_index["gaussian_decoder"] = [None, None]
+    for decoder_name in ("gaussian_decoder", "mesh_decoder"):
+        if decoder_name not in component_index:
+            component_index[decoder_name] = [None, None]
 
     normalization_mean, normalization_std = _validate_normalization(args["slat_normalization"])
     if converted_slat:
@@ -286,7 +311,7 @@ def convert_trellis_checkpoint(
         slat_std = None
 
     model_index: dict[str, Any] = {
-        "_class_name": TrellisImageTo3DPipeline.__name__,
+        "_class_name": pipeline_type.__name__,
         "_diffusers_version": diffusers_version,
         **component_index,
         "slat_mean": slat_mean,
@@ -296,10 +321,10 @@ def convert_trellis_checkpoint(
         json.dumps(model_index, indent=2, sort_keys=True) + "\n",
         encoding="utf-8",
     )
-    metadata = TrellisImageTo3DPipeline.object3d_model_index()
+    metadata = pipeline_type.object3d_model_index()
     metadata.validate_diffusers_model_index(
         destination / "model_index.json",
-        pipeline_class_name=TrellisImageTo3DPipeline.__name__,
+        pipeline_class_name=pipeline_type.__name__,
         enforce_loading_eligibility=False,
     )
     metadata.save_pretrained(destination)

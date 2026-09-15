@@ -6,6 +6,7 @@ from ._validation import (
     TensorShapeError,
 )
 from .camera import CameraRig
+from .coordinates import changes_handedness, coordinate_change_matrix
 from .gaussian import GaussianSplatAsset
 from .material import PBRMaterial
 from .mesh import MeshAsset
@@ -33,4 +34,6 @@ __all__ = [
     "TensorDTypeError",
     "TensorDeviceError",
     "TensorShapeError",
+    "changes_handedness",
+    "coordinate_change_matrix",
 ]

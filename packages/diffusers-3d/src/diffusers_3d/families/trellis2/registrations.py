@@ -34,13 +34,16 @@ def trellis2_execution_registrations(
 
 
 def trellis2_training_registrations(training_registration_type: type[Any]) -> tuple[Any, ...]:
-    """Register the released-evidence FULL-only sparse-structure flow recipe."""
+    """Register the FULL-only sparse-structure, shape-SLAT, and texture-SLAT flow recipes."""
 
     from ...execution.metadata import ReviewStatus
-    from .training import Trellis2SparseStructureFlowRecipe
+    from .training import (
+        Trellis2ShapeSLatFlowRecipe,
+        Trellis2SparseStructureFlowRecipe,
+        Trellis2TextureSLatFlowRecipe,
+    )
 
-    recipe = Trellis2SparseStructureFlowRecipe
-    return (
+    return tuple(
         training_registration_type(
             recipe_type=recipe,
             target_type=recipe.target_type,
@@ -52,7 +55,8 @@ def trellis2_training_registrations(training_registration_type: type[Any]) -> tu
             component_policies=recipe.component_policies,
             review_status=ReviewStatus.REVIEWED,
             frozen_component_policies=recipe.frozen_component_policies,
-        ),
+        )
+        for recipe in (Trellis2SparseStructureFlowRecipe, Trellis2ShapeSLatFlowRecipe, Trellis2TextureSLatFlowRecipe)
     )
 
 

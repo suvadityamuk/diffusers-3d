@@ -213,6 +213,66 @@
         "target_format": "diffusers-safetensors",
         "test": "tests/families/trellis/test_conversion.py::test_synthetic_conversion_converts_slat_components_and_auto_loads"
       },
+      "class_name": "diffusers_3d.families.trellis.models.TrellisSLatFlowModel",
+      "parity": [
+        {
+          "atol": 1e-06,
+          "kind": "inference",
+          "passed": true,
+          "reference": "Pinned TRELLIS SLatFlowModel with sparse-convolution IO res blocks, average-pool downsampling (upstream n+1 mean), skip connections, and full attention; forward features and input gradients on a two-batch tiny CPU float32 configuration, with spconv and xformers replaced by dense conv3d and per-sequence SDPA references.",
+          "rtol": 1e-05,
+          "test": "tests/families/trellis/test_reference_parity.py::test_slat_flow_io_stages_match_pinned_reference"
+        }
+      ],
+      "role": "slat-denoiser"
+    },
+    {
+      "checkpoint_conversion": {
+        "converter": "diffusers_3d.families.trellis.conversion.convert_trellis_checkpoint",
+        "source_format": "upstream-component-json-safetensors",
+        "target_format": "diffusers-safetensors",
+        "test": "tests/families/trellis/test_conversion.py::test_synthetic_conversion_converts_slat_components_and_auto_loads"
+      },
+      "class_name": "diffusers_3d.families.trellis.decoders.TrellisSLatGaussianDecoder",
+      "parity": [
+        {
+          "atol": 1e-06,
+          "kind": "inference",
+          "passed": true,
+          "reference": "Pinned TRELLIS SLatGaussianDecoder with shifted-window (swin) attention and the attribute-grouped Gaussian head layout: positions, DC colour, and raw scaling / rotation / opacity per Gaussian on a tiny CPU float32 configuration.",
+          "rtol": 1e-05,
+          "test": "tests/families/trellis/test_reference_parity.py::test_swin_gaussian_decoder_matches_pinned_reference"
+        }
+      ],
+      "role": "slat-gaussian-decoder"
+    },
+    {
+      "checkpoint_conversion": {
+        "converter": "diffusers_3d.families.trellis.conversion.convert_trellis_checkpoint",
+        "source_format": "upstream-component-json-safetensors",
+        "target_format": "diffusers-safetensors",
+        "test": "tests/families/trellis/test_conversion.py::test_synthetic_conversion_converts_slat_components_and_auto_loads"
+      },
+      "class_name": "diffusers_3d.families.trellis.decoders.TrellisSLatMeshDecoder",
+      "parity": [
+        {
+          "atol": 1e-06,
+          "kind": "inference",
+          "passed": true,
+          "reference": "Pinned TRELLIS SLatMeshDecoder (swin attention, two sparse subdivide blocks) followed by the pinned FlexiCubes extractor: vertices, faces, and the six vertex colour / normal-map channels match up to vertex order on a tiny CPU float32 configuration.",
+          "rtol": 1e-05,
+          "test": "tests/families/trellis/test_reference_parity.py::test_swin_mesh_decoder_matches_pinned_reference"
+        }
+      ],
+      "role": "slat-mesh-decoder"
+    },
+    {
+      "checkpoint_conversion": {
+        "converter": "diffusers_3d.families.trellis.conversion.convert_trellis_checkpoint",
+        "source_format": "upstream-component-json-safetensors",
+        "target_format": "diffusers-safetensors",
+        "test": "tests/families/trellis/test_conversion.py::test_synthetic_conversion_converts_slat_components_and_auto_loads"
+      },
       "class_name": "diffusers_3d.families.trellis.decoders.TrellisSparseStructureDecoder",
       "parity": [
         {
@@ -249,42 +309,42 @@
     {
       "checkpoint_conversion": {
         "converter": "diffusers_3d.families.trellis.conversion.convert_trellis_checkpoint",
-        "source_format": "upstream-component-json-safetensors",
+        "source_format": "transformers-clip-text-checkpoint",
         "target_format": "diffusers-safetensors",
-        "test": "tests/families/trellis/test_conversion.py::test_synthetic_conversion_converts_slat_components_and_auto_loads"
+        "test": "tests/families/trellis/test_text_pipeline.py::test_synthetic_text_conversion_from_a_clip_folder_auto_loads"
       },
-      "class_name": "diffusers_3d.families.trellis.models.TrellisSLatFlowModel",
+      "class_name": "diffusers_3d.families.trellis.text_conditioner.TrellisClipTextConditioner",
       "parity": [
         {
-          "atol": 1e-06,
+          "atol": 0.0,
           "kind": "inference",
           "passed": true,
-          "reference": "Pinned TRELLIS SLatFlowModel with sparse-convolution IO res blocks, average-pool downsampling (upstream n+1 mean), skip connections, and full attention; forward features and input gradients on a two-batch tiny CPU float32 configuration, with spconv and xformers replaced by dense conv3d and per-sequence SDPA references.",
-          "rtol": 1e-05,
-          "test": "tests/families/trellis/test_reference_parity.py::test_slat_flow_io_stages_match_pinned_reference"
+          "reference": "Released encode_text semantics: CLIP tokenization padded and truncated to max_length, last_hidden_state token embeddings, and the empty-prompt unconditional embedding on a tiny CPU model.",
+          "rtol": 0.0,
+          "test": "tests/families/trellis/test_text_conditioner.py::test_clip_text_conditioner_matches_released_encode_text_semantics"
         }
       ],
-      "role": "slat-denoiser"
+      "role": "text-conditioner"
     },
     {
       "checkpoint_conversion": {
         "converter": "diffusers_3d.families.trellis.conversion.convert_trellis_checkpoint",
         "source_format": "upstream-component-json-safetensors",
-        "target_format": "diffusers-safetensors",
-        "test": "tests/families/trellis/test_conversion.py::test_synthetic_conversion_converts_slat_components_and_auto_loads"
+        "target_format": "diffusers-pipeline-object3d-v2",
+        "test": "tests/families/trellis/test_text_pipeline.py::test_synthetic_text_conversion_from_a_clip_folder_auto_loads"
       },
-      "class_name": "diffusers_3d.families.trellis.decoders.TrellisSLatGaussianDecoder",
+      "class_name": "diffusers_3d.families.trellis.pipeline.TrellisTextTo3DPipeline",
       "parity": [
         {
-          "atol": 1e-06,
+          "atol": 0.0,
           "kind": "inference",
           "passed": true,
-          "reference": "Pinned TRELLIS SLatGaussianDecoder with shifted-window (swin) attention and the attribute-grouped Gaussian head layout: positions, DC colour, and raw scaling / rotation / opacity per Gaussian on a tiny CPU float32 configuration.",
-          "rtol": 1e-05,
-          "test": "tests/families/trellis/test_reference_parity.py::test_swin_gaussian_decoder_matches_pinned_reference"
+          "reference": "Deterministic tiny CPU composition of CLIP text conditioning with the released two-stage Flow Euler sampling into sparse-structure, SLAT, and Gaussian outputs; negative prompts replace the empty-prompt unconditional embedding.",
+          "rtol": 0.0,
+          "test": "tests/families/trellis/test_text_pipeline.py::test_text_pipeline_is_deterministic_and_conditions_both_stages"
         }
       ],
-      "role": "slat-gaussian-decoder"
+      "role": "text-pipeline"
     }
   ],
   "integration_id": "trellis",
@@ -363,19 +423,65 @@
     "target_class": "diffusers_3d.families.trellis.pipeline.TrellisImageTo3DPipeline",
     "trainer_registration": "diffusers_3d.families.trellis.registrations.trellis_training_registrations"
   },
+  "training_recipes": [
+    {
+      "backward_parity": {
+        "atol": 1e-06,
+        "kind": "backward",
+        "passed": true,
+        "reference": "Pinned upstream SLatFlowModel output and input-latent gradients with identical small CPU float32 state, spconv and xformers replaced by dense PyTorch references.",
+        "rtol": 1e-05,
+        "test": "tests/families/trellis/test_reference_parity.py::test_slat_flow_io_stages_match_pinned_reference"
+      },
+      "batch_class": "diffusers_3d.families.trellis.training.TrellisSLatBatch",
+      "checkpoint_parity": {
+        "atol": 0.0,
+        "kind": "checkpoint",
+        "passed": true,
+        "reference": "Exact package full SLAT flow save/load restoration with a validated training checkpoint identity manifest.",
+        "rtol": 0.0,
+        "test": "tests/families/trellis/test_training.py::test_slat_flow_recipe_registration_full_step_and_checkpoint"
+      },
+      "components": [
+        "slat_flow_model"
+      ],
+      "example_class": "diffusers_3d.families.trellis.training.TrellisSLatExample",
+      "objective_parity": {
+        "atol": 0.0,
+        "kind": "objective",
+        "passed": true,
+        "reference": "Released per-voxel x_t=(1-t)x0+(sigma_min+(1-sigma_min)t)noise, target=(1-sigma_min)noise-x0, and t*1000 equations on a sparse batch with deterministic tensors.",
+        "rtol": 0.0,
+        "test": "tests/families/trellis/test_training.py::test_slat_flow_objective_matches_released_sparse_equation"
+      },
+      "recipe_class": "diffusers_3d.families.trellis.training.TrellisSLatFlowRecipe",
+      "recipe_id": "trellis-slat-flow",
+      "recipe_version": "1.0",
+      "strategies": [
+        "full"
+      ],
+      "target_class": "diffusers_3d.families.trellis.pipeline.TrellisImageTo3DPipeline",
+      "trainer_registration": "diffusers_3d.families.trellis.registrations.trellis_training_registrations"
+    }
+  ],
   "upstream": {
     "repository": "https://github.com/microsoft/TRELLIS",
     "revision": "442aa1e1afb9014e80681d3bf604e8d728a86ee7"
   },
   "workflow": {
     "input_representations": [
-      "image"
+      "image",
+      "text"
     ],
     "output_representations": [
+      "gaussian-splat",
+      "mesh",
+      "slat",
       "sparse-structure"
     ],
     "task_ids": [
-      "image-to-3d"
+      "image-to-3d",
+      "text-to-3d"
     ],
     "workflow": "standard-pipeline"
   }

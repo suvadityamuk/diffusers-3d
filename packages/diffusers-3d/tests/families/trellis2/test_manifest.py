@@ -108,12 +108,15 @@ def test_manifest_matches_only_reviewed_trellis2_registrations_and_training():
         Trellis2PBRSparseDecoder,
     }
     assert {registration.pipeline_class for registration in pipeline_registrations} == {Trellis2ImageTo3DPipeline}
-    assert {registration.recipe_type for registration in recipe_registrations} == {Trellis2SparseStructureFlowRecipe}
-
-    # SLAT fine-tuning has no released-evidence recipes yet, so they stay unregistered.
-    registered_recipes = {registration.recipe_type for registration in _TRAINING_RECIPE_REGISTRY}
-    for recipe in (Trellis2ShapeSLatFlowRecipe, Trellis2TextureSLatFlowRecipe):
-        assert recipe not in registered_recipes
+    assert {registration.recipe_type for registration in recipe_registrations} == {
+        Trellis2SparseStructureFlowRecipe,
+        Trellis2ShapeSLatFlowRecipe,
+        Trellis2TextureSLatFlowRecipe,
+    }
+    assert {recipe.recipe_id for recipe in manifest.training_recipes} == {
+        Trellis2ShapeSLatFlowRecipe.recipe_id,
+        Trellis2TextureSLatFlowRecipe.recipe_id,
+    }
 
     for registration in model_registrations:
         assert components[registration.metadata.component_role] == registration.metadata.model_class

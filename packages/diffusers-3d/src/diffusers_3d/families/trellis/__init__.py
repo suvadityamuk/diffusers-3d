@@ -1,4 +1,4 @@
-"""Microsoft TRELLIS components: sparse-structure stage, SLAT flow, Gaussian decoder, and pipeline."""
+"""Microsoft TRELLIS components: sparse-structure stage, SLAT flow, Gaussian decoder, image and text pipelines."""
 
 from importlib import import_module
 
@@ -6,18 +6,21 @@ _EXPORT_MODULES = {
     "TRELLIS_REFERENCE_REVISION": ".conversion",
     "TRELLIS_SLAT_FLOW_POLICY": ".training",
     "TRELLIS_SPARSE_STRUCTURE_FLOW_POLICY": ".training",
+    "TrellisClipTextConditioner": ".text_conditioner",
     "TrellisConditionerOutput": ".conditioner",
     "TrellisDinov2Conditioner": ".conditioner",
     "TrellisFlowEulerScheduler": ".scheduler",
     "TrellisFlowEulerSchedulerOutput": ".scheduler",
     "TrellisGaussianDecoderOutput": ".decoders",
     "TrellisImageTo3DPipeline": ".pipeline",
+    "TrellisMeshDecoderOutput": ".decoders",
     "TrellisSLatBatch": ".training",
     "TrellisSLatExample": ".training",
     "TrellisSLatFlowModel": ".models",
     "TrellisSLatFlowOutput": ".models",
     "TrellisSLatFlowRecipe": ".training",
     "TrellisSLatGaussianDecoder": ".decoders",
+    "TrellisSLatMeshDecoder": ".decoders",
     "TrellisSLatRadianceFieldDecoder": ".decoders",
     "TrellisSparseStructureBatch": ".training",
     "TrellisSparseStructureDecoder": ".decoders",
@@ -27,6 +30,8 @@ _EXPORT_MODULES = {
     "TrellisSparseStructureFlowOutput": ".models",
     "TrellisSparseStructureFlowRecipe": ".training",
     "TrellisSparseTensor": ".sparse",
+    "TrellisTextConditionerOutput": ".text_conditioner",
+    "TrellisTextTo3DPipeline": ".pipeline",
     "convert_trellis_checkpoint": ".conversion",
     "trellis_grid_transform": ".sparse",
 }

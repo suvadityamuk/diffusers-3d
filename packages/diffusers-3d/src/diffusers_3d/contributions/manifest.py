@@ -727,6 +727,7 @@ class IntegrationManifest3D:
     backends: tuple[BackendRequirement3D, ...]
     licenses: LicenseDeclarations3D | None
     training: TrainingRecipeQualification3D | None
+    training_recipes: tuple[TrainingRecipeQualification3D, ...] = ()
 
     def __post_init__(self) -> None:
         if self.schema != INTEGRATION_MANIFEST_SCHEMA:
@@ -761,6 +762,19 @@ class IntegrationManifest3D:
             raise IntegrationManifestError("licenses must be a LicenseDeclarations3D or None")
         if self.training is not None and not isinstance(self.training, TrainingRecipeQualification3D):
             raise IntegrationManifestError("training must be a TrainingRecipeQualification3D or None")
+        recipes = _record_tuple(self.training_recipes, TrainingRecipeQualification3D, field_name="training_recipes")
+        recipe_ids = [recipe.recipe_id for recipe in recipes] + (
+            [] if self.training is None else [self.training.recipe_id]
+        )
+        if len(set(recipe_ids)) != len(recipe_ids):
+            raise IntegrationManifestError("training and training_recipes must not repeat a recipe_id")
+        object.__setattr__(self, "training_recipes", tuple(sorted(recipes, key=lambda item: item.recipe_id)))
+
+    @property
+    def all_training(self) -> tuple[TrainingRecipeQualification3D, ...]:
+        """The primary ``training`` qualification followed by every additional registered recipe."""
+
+        return (() if self.training is None else (self.training,)) + self.training_recipes
 
     @classmethod
     def create(
@@ -774,6 +788,7 @@ class IntegrationManifest3D:
         backends: tuple[BackendRequirement3D, ...],
         licenses: LicenseDeclarations3D | None,
         training: TrainingRecipeQualification3D | None = None,
+        training_recipes: tuple[TrainingRecipeQualification3D, ...] = (),
     ) -> IntegrationManifest3D:
         return cls(
             schema=INTEGRATION_MANIFEST_SCHEMA,
@@ -786,6 +801,7 @@ class IntegrationManifest3D:
             backends=backends,
             licenses=licenses,
             training=training,
+            training_recipes=training_recipes,
         )
 
     def to_dict(self) -> dict[str, object]:
@@ -798,14 +814,20 @@ class IntegrationManifest3D:
             "schema": self.schema,
             "schema_version": self.schema_version,
             "training": None if self.training is None else self.training.to_dict(),
+            "training_recipes": [recipe.to_dict() for recipe in self.training_recipes],
             "upstream": self.upstream.to_dict(),
             "workflow": self.workflow.to_dict(),
         }
 
     @classmethod
     def from_dict(cls, value: object) -> IntegrationManifest3D:
+        # ``training_recipes`` was added after the first manifests shipped; treat a missing key as empty.
+        raw = dict(_as_object(value, context="integration manifest"))
+        training_recipes = raw.pop("training_recipes", [])
+        if not isinstance(training_recipes, (list, tuple)):
+            raise IntegrationManifestError("training_recipes must be a JSON array")
         data = _strict_fields(
-            value,
+            raw,
             {
                 "backends",
                 "components",
@@ -839,6 +861,7 @@ class IntegrationManifest3D:
             backends=tuple(BackendRequirement3D.from_dict(item) for item in backends),
             licenses=None if licenses is None else LicenseDeclarations3D.from_dict(licenses),
             training=(None if training is None else TrainingRecipeQualification3D.from_dict(training)),
+            training_recipes=tuple(TrainingRecipeQualification3D.from_dict(recipe) for recipe in training_recipes),
         )
 
     @classmethod

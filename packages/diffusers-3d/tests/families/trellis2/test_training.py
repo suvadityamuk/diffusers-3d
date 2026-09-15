@@ -219,7 +219,7 @@ def test_sparse_structure_recipe_registration_collation_full_step_and_checkpoint
     )
 
 
-def test_experimental_shape_and_texture_uniform_t_objectives_are_unregistered(tiny_trellis2_full_pipeline):
+def test_shape_and_texture_uniform_t_objectives_are_finite_and_registered(tiny_trellis2_full_pipeline):
     pipeline = tiny_trellis2_full_pipeline
     coordinates = torch.tensor([[0, 0, 0, 0], [0, 1, 1, 1], [1, 2, 2, 2]], dtype=torch.int64)
     clean = torch.tensor([[-1.0, -0.5, 0.0, 0.5], [1.0, 0.5, 0.0, -0.5], [0.25, 0.5, 0.75, 1.0]])
@@ -248,5 +248,106 @@ def test_experimental_shape_and_texture_uniform_t_objectives_are_unregistered(ti
     texture_output = texture_recipe.compute_loss(texture_batch)
     assert torch.isfinite(texture_output.loss)
     registered = {registration.recipe_type for registration in _TRAINING_RECIPE_REGISTRY}
-    assert Trellis2ShapeSLatFlowRecipe not in registered
-    assert Trellis2TextureSLatFlowRecipe not in registered
+    assert Trellis2ShapeSLatFlowRecipe in registered
+    assert Trellis2TextureSLatFlowRecipe in registered
+
+
+def _slat_asset(index: int, channels: int) -> SparseVoxelAsset:
+    coordinates = (
+        torch.tensor([[0, 0, 0], [1, 2, 3], [3, 3, 3]], dtype=torch.int64)
+        if index
+        else torch.tensor([[0, 1, 0], [2, 2, 2]], dtype=torch.int64)
+    )
+    features = torch.linspace(-1.0 + 0.1 * index, 1.0, coordinates.shape[0] * channels).reshape(-1, channels)
+    return SparseVoxelAsset(coordinates=coordinates, features=features, voxel_size=1.0)
+
+
+class _TinyShapeSLatDataset:
+    def __init__(self, channels: int) -> None:
+        self.channels = channels
+
+    def __len__(self) -> int:
+        return 2
+
+    def __getitem__(self, index: int) -> Trellis2SLatExample:
+        if not 0 <= index < 2:
+            raise IndexError(index)
+        return Trellis2SLatExample(
+            condition=ImageCondition(image=torch.linspace(0.0, 1.0, 3 * 8 * 8).reshape(3, 8, 8)),
+            normalized_slat=_slat_asset(index, self.channels),
+            example_id=f"tiny-shape-slat-{index}",
+        )
+
+
+class _TinyTextureSLatDataset:
+    def __init__(self, channels: int) -> None:
+        self.channels = channels
+
+    def __len__(self) -> int:
+        return 2
+
+    def __getitem__(self, index: int) -> Trellis2TextureSLatExample:
+        if not 0 <= index < 2:
+            raise IndexError(index)
+        return Trellis2TextureSLatExample(
+            condition=ImageCondition(image=torch.linspace(0.0, 1.0, 3 * 8 * 8).reshape(3, 8, 8)),
+            normalized_texture_slat=_slat_asset(index, self.channels),
+            normalized_shape_slat=_slat_asset(index, self.channels),
+            example_id=f"tiny-texture-slat-{index}",
+        )
+
+
+@pytest.mark.parametrize(
+    ("recipe_type", "component", "dataset_type"),
+    [
+        (Trellis2ShapeSLatFlowRecipe, "shape_slat_flow_model", _TinyShapeSLatDataset),
+        (Trellis2TextureSLatFlowRecipe, "texture_slat_flow_model", _TinyTextureSLatDataset),
+    ],
+)
+def test_slat_recipes_registration_full_step_and_checkpoint(
+    tmp_path, tiny_trellis2_full_pipeline, recipe_type, component, dataset_type
+):
+    pipeline = tiny_trellis2_full_pipeline
+    recipe = recipe_type(pipeline)
+    registration = _TRAINING_RECIPE_REGISTRY.validate(recipe)
+    assert registration.recipe_type is recipe_type
+    flow_model = getattr(pipeline, component)
+    dataset = dataset_type(flow_model.config.out_channels)
+    recipe.collate(tuple(dataset[index] for index in range(2)))
+
+    trainer = Object3DTrainer(
+        recipe,
+        dataset,
+        FullFineTune((component,)),
+        TrainingConfig3D(
+            base_model="tests/tiny-trellis2",
+            revision="tiny-reference",
+            dataset_fingerprint=f"tests/tiny-trellis2-{component}-v1",
+            output_dir=tmp_path,
+            train_batch_size=2,
+            max_train_steps=1,
+            learning_rate=1e-3,
+            shuffle=False,
+            seed=7,
+            cpu=True,
+        ),
+    ).prepare()
+    assert all(name.startswith(f"{component}.") for name in trainer.trainable_parameter_names)
+    frozen = [
+        name
+        for name, _ in pipeline.components.items()
+        if name != component and hasattr(getattr(pipeline, name), "parameters")
+    ]
+    for name in frozen:
+        assert not any(parameter.requires_grad for parameter in getattr(pipeline, name).parameters())
+    summary = trainer.train()
+    assert summary.final_loss is not None and torch.isfinite(torch.tensor(summary.final_loss))
+    assert trainer.save_checkpoint().is_file()
+    assert TrainingManifest3D.load(tmp_path) == trainer.manifest
+
+    weight = next(flow_model.parameters())
+    saved = weight.detach().clone()
+    with torch.no_grad():
+        weight.add_(10.0)
+    trainer.load_checkpoint(tmp_path)
+    torch.testing.assert_close(weight, saved, atol=0.0, rtol=0.0)

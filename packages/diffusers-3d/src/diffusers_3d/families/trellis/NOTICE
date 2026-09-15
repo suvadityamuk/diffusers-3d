@@ -17,10 +17,17 @@ Those portions are provided under the accompanying MIT License:
 All ported source files carry a prominent modification notice. Independently
 written diffusers-3d package glue remains under the package Apache-2.0 license.
 
+flexicubes.py and flexicubes_tables.py port iso-surface extraction from the
+FlexiCubes fork pinned by TRELLIS (https://github.com/MaxtirError/FlexiCubes,
+revision 815e075a2a400d06c48d94c347674344ed6ae5c5):
+
+  Copyright (c) 2025 NVIDIA CORPORATION & AFFILIATES.
+  Licensed under the Apache License, Version 2.0.
+
 No source from Graphdeco diff-gaussian-rasterization, diffoctreerast,
-nvdiffrast, mip-splatting, or the restricted TRELLIS modified FlexiCubes
-submodule is included. Their registry entries are policy metadata only and
-their research-only facades never import or select them implicitly.
+nvdiffrast, or mip-splatting is included. Their registry entries are policy
+metadata only and their research-only facades never import or select them
+implicitly.
 
 The optional Kaolin adapter accepts only the Apache-2.0
 kaolin.ops.conversions.FlexiCubes implementation and rejects

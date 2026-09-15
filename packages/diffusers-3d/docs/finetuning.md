@@ -26,14 +26,15 @@ dataset for actual training.
 | Recipe | Family | Trains | Frozen | Strategies | Example type |
 |---|---|---|---|---|---|
 | `Trellis2SparseStructureFlowRecipe` | TRELLIS.2 | `sparse_structure_flow_model` | conditioner, decoder | full | `Trellis2SparseStructureExample` |
+| `Trellis2ShapeSLatFlowRecipe` | TRELLIS.2 | `shape_slat_flow_model` | conditioner | full | `Trellis2SLatExample` |
+| `Trellis2TextureSLatFlowRecipe` | TRELLIS.2 | `texture_slat_flow_model` | conditioner | full | `Trellis2TextureSLatExample` |
 | `TrellisSparseStructureFlowRecipe` | TRELLIS | `sparse_structure_flow_model` | conditioner, decoder | full | `TrellisSparseStructureExample` |
+| `TrellisSLatFlowRecipe` | TRELLIS | `slat_flow_model` | conditioner | full | `TrellisSLatExample` |
 
-Both reviewed recipes train the image-to-sparse-structure flow model on precomputed dense latents. The SLAT recipes
-(`TrellisSLatFlowRecipe`, `Trellis2ShapeSLatFlowRecipe`, `Trellis2TextureSLatFlowRecipe`) run against the ported SLAT
-flow models and are covered by unit tests, but they are not registered yet, so `Object3DTrainer` rejects them until
-they go through review. No LoRA recipe is registered yet; passing `LoRAFineTune`
-to either reviewed recipe raises `TrainingPolicyError`. The authoritative list is each family's
-`registrations.py` (`trellis_training_registrations`, `trellis2_training_registrations`).
+The sparse-structure recipes train the first-stage flow model on precomputed dense latents; the SLAT recipes train
+the second-stage flow models on precomputed sparse latents (`TrellisSparseTensor` coordinates and features). No LoRA
+recipe is registered yet; passing `LoRAFineTune` to any recipe raises `TrainingPolicyError`. The authoritative list is
+each family's `registrations.py` (`trellis_training_registrations`, `trellis2_training_registrations`).
 
 ## 1. Prepare data
 

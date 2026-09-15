@@ -96,12 +96,6 @@ if __name__ == "__main__":
                 lambda c: c == "LayerNorm"
             ],
         },
-        "LoRA Mixins": {
-            "doc_path": "docs/source/en/api/loaders/lora.md",
-            "src_path": "src/diffusers/loaders/lora_pipeline.py",
-            "doc_regex": r"\[\[autodoc\]\]\s([^\n]+)",
-            "src_regex": r"class\s+(\w+LoraLoaderMixin(?:\d*_?\d*))[:(]",
-        },
     }
 
     missing_items = {}

@@ -42,14 +42,14 @@ shape, dtype, policy, and error behavior; it is not compiled-backend or numerica
 | trimesh | portable / permissive | Real optional package, I/O and round trips | N/A | N/A |
 | scikit-image | portable / permissive | Real optional package, marching cubes | N/A | N/A |
 | xatlas | portable / permissive | Real optional package, UV remapping | N/A | N/A |
-| utils3d | research-only / permissive | Registry, provenance, and selection policy only | Not run | N/A |
-| gsplat | accelerated / permissive | CPU API adapter test | Not run | None |
-| spconv | accelerated / permissive | CPU API sparse-tensor test | Not run | None |
-| FlexGEMM | accelerated / permissive | CPU API plus PEP 610 source verification; CUDA device type only (including PyTorch HIP builds) | Not run | None |
-| CuMesh | accelerated / permissive | CPU API geometry/BVH operations plus PEP 610 source verification | Not run | None |
+| utils3d | research-only / permissive | Registry, provenance, and selection policy only | Manual run only, not CI: built from the pinned revision on one A100 80GB (2026-09-15) and exercised on real `microsoft/TRELLIS.2-4B` / `microsoft/TRELLIS-image-large` outputs; provenance verified, used by the PBR facade | N/A |
+| gsplat | accelerated / permissive | CPU API adapter test | Manual run only, not CI: built from the pinned revision on one A100 80GB (2026-09-15) and exercised on real `microsoft/TRELLIS.2-4B` / `microsoft/TRELLIS-image-large` outputs: rasterized 300k-500k TRELLIS splats from four 512x512 turntable views in 0.4-0.6 s (recognizable renders) | None |
+| spconv | accelerated / permissive | CPU API sparse-tensor test | Not run (the pipelines no longer need it) | None |
+| FlexGEMM | accelerated / permissive | CPU API plus PEP 610 source verification; CUDA device type only (including PyTorch HIP builds) | Manual run only, not CI: built from the pinned revision on one A100 80GB (2026-09-15) and exercised on real `microsoft/TRELLIS.2-4B` / `microsoft/TRELLIS-image-large` outputs; used by the PBR facade | None |
+| CuMesh | accelerated / permissive | CPU API geometry/BVH operations plus PEP 610 source verification | Manual run only, not CI: built from the pinned revision on one A100 80GB (2026-09-15) and exercised on real `microsoft/TRELLIS.2-4B` / `microsoft/TRELLIS-image-large` outputs: repaired and simplified a 2.5M-face O-Voxel mesh to 100k faces in 0.6 s | None |
 | Kaolin | accelerated / permissive subset only | CPU API FlexiCubes test; non-commercial module rejected | Not run | None |
-| O-Voxel | accelerated / permissive | Real mixed uint8/float NPZ codec; native API fake | Not run | None |
-| nvdiffrast | research-only / restricted | License gate/facade only | Not run | None |
+| O-Voxel | accelerated / permissive | Real mixed uint8/float NPZ codec; native API fake | Manual run only, not CI: built from the pinned revision on one A100 80GB (2026-09-15) and exercised on real `microsoft/TRELLIS.2-4B` / `microsoft/TRELLIS-image-large` outputs: `to_mesh` on 1.1M-cell 512 O-Voxels in 12 ms; `render_voxels` 512x512 base-color views | None |
+| nvdiffrast | research-only / restricted | License gate/facade only | Manual run only, not CI: built from the pinned revision on one A100 80GB (2026-09-15) and exercised on real `microsoft/TRELLIS.2-4B` / `microsoft/TRELLIS-image-large` outputs: `Trellis2PBRPostprocessFacade.to_glb` baked 2048x2048 base-color and metallic-roughness textures onto ~285k-face GLBs in 24-25 s at 16 GB peak (license acknowledged explicitly) | None |
 | nvdiffrec render | research-only / restricted | Registry metadata only | Not run | None |
 | diffoctreerast | research-only / restricted | License gate/facade only | Not run | None |
 | mip-Gaussian rasterizer | research-only / restricted | License gate/facade only | Not run | None |
@@ -63,7 +63,7 @@ The shipped reviewed families are TRELLIS and TRELLIS.2.
 
 | Family | License boundary | Tiny CPU evidence | Pinned-source parity | Production GPU / real checkpoint |
 |---|---|---|---|---|
-| TRELLIS | MIT upstream; Apache-2.0 glue; restricted renderers separate | Sparse structure, SLAT flow, Gaussian decoder, conversion, training, save/load | Sparse-structure flow/decoder, SLAT flow, and swin Gaussian decoder forward (spconv/xformers shimmed to dense PyTorch) | Manual run only, not CI: `microsoft/TRELLIS-image-large` (conditioner from `facebook/dinov2-with-registers-large`) converted and run on one A100 80GB in float16 (2026-09-14); returned recognizable 300k-500k Gaussian splats for two example images in about 6 s at 3.7 GB peak |
+| TRELLIS | MIT upstream; Apache-2.0 FlexiCubes port and glue; restricted renderers separate | Sparse structure, SLAT flow, Gaussian and mesh decoders, CLIP text conditioner, image and text pipelines, conversion, training, save/load | Sparse-structure flow/decoder, SLAT flow, swin Gaussian decoder, and swin mesh decoder + FlexiCubes forward (spconv/xformers shimmed to dense PyTorch) | Manual run only, not CI: `microsoft/TRELLIS-image-large` (conditioner from `facebook/dinov2-with-registers-large`) converted and run on one A100 80GB in float16 (2026-09-14); returned recognizable 300k-500k Gaussian splats for two example images in about 6 s at 3.7 GB peak; on 2026-09-15 in bfloat16 the mesh decoder returned a 345k-vertex / 688k-face FlexiCubes mesh for the same image and `microsoft/TRELLIS-text-large` returned recognizable splats for two prompts in about 5 s at 3 GB peak |
 | TRELLIS.2 | MIT upstream; DINOv3 and nvdiffrast separately restricted | Sparse structure, 512/1024 SLAT flows, shape and PBR decoders, conversion, training, save/load | Sparse-structure flow/decoder, SLAT flow, and shape/PBR decoder forward (FlexGEMM/xformers shimmed to dense PyTorch) | Manual run only, not CI: `microsoft/TRELLIS.2-4B` converted and run on one A100 80GB in bfloat16 (2026-09-14); `512` and `1024_cascade` returned recognizable O-Voxel objects for two example images in 7 s / 26 s at 18 GB / 32 GB peak |
 
 All converter tests use synthetic tiny state dictionaries. Pinned-source

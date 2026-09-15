@@ -20,14 +20,17 @@ from diffusers_3d import (
     Trellis2SLatFlowModel,
     Trellis2SparseStructureDecoder,
     Trellis2SparseStructureFlowModel,
+    TrellisClipTextConditioner,
     TrellisDinov2Conditioner,
     TrellisFlowEulerScheduler,
     TrellisImageTo3DPipeline,
     TrellisSLatFlowModel,
     TrellisSLatGaussianDecoder,
+    TrellisSLatMeshDecoder,
     TrellisSparseStructureDecoder,
     TrellisSparseStructureFlowModel,
     TrellisSparseTensor,
+    TrellisTextTo3DPipeline,
 )
 from diffusers_3d.families.registrations import production_execution_registrations
 
@@ -74,6 +77,13 @@ def _invoke_conditioner(model: torch.nn.Module, batch_size: int, return_dict: bo
         dtype=dtype,
     ).reshape(batch_size, 3, 8, 8)
     return _output_tensor(model(images, return_dict=return_dict), return_dict=return_dict)
+
+
+def _invoke_text_conditioner(model: TrellisClipTextConditioner, batch_size: int, return_dict: bool) -> torch.Tensor:
+    # Pre-tokenized ids: the tiny model carries no tokenizer, and the pipeline passes ids the same way.
+    vocab_size = model.model.config.vocab_size
+    input_ids = torch.arange(batch_size * model.max_length).reshape(batch_size, model.max_length) % vocab_size
+    return _output_tensor(model(input_ids, return_dict=return_dict), return_dict=return_dict)
 
 
 def _invoke_trellis_flow(model: torch.nn.Module, batch_size: int, return_dict: bool) -> torch.Tensor:
@@ -173,6 +183,17 @@ def _invoke_gaussian_decoder(model: torch.nn.Module, batch_size: int, return_dic
     return torch.stack([torch.cat([asset.means, asset.log_scales, asset.opacity_logits], dim=1) for asset in assets])
 
 
+def _invoke_mesh_decoder(model: torch.nn.Module, batch_size: int, return_dict: bool) -> torch.Tensor:
+    assets = _assets(
+        model(_sparse_latents(model, batch_size, model.latent_channels), return_dict=return_dict),
+        return_dict=return_dict,
+    )
+    # Vertex counts are data-dependent, so summarize each mesh by the per-channel mean over its vertices.
+    return torch.stack(
+        [torch.cat([asset.vertices, asset.colors, asset.extras["normal_map"]], dim=1).mean(dim=0) for asset in assets]
+    )
+
+
 def _select_all_children(model: torch.nn.Module) -> None:
     # Untrained subdivision heads sit at zero; bias them so every stage keeps all eight children and
     # each batch item decodes to the same number of voxels.
@@ -211,7 +232,9 @@ MODEL_CONTRACTS = (
     ModelContract(TrellisSparseStructureDecoder, _invoke_sparse_decoder),
     ModelContract(TrellisSLatFlowModel, _invoke_slat_flow),
     ModelContract(TrellisSLatGaussianDecoder, _invoke_gaussian_decoder),
+    ModelContract(TrellisSLatMeshDecoder, _invoke_mesh_decoder),
     ModelContract(TrellisDinov2Conditioner, _invoke_conditioner),
+    ModelContract(TrellisClipTextConditioner, _invoke_text_conditioner),
     ModelContract(Trellis2SparseStructureFlowModel, _invoke_trellis_flow),
     ModelContract(Trellis2SparseStructureDecoder, _invoke_sparse_decoder),
     ModelContract(Trellis2SLatFlowModel, _invoke_texture_slat_flow),
@@ -224,6 +247,7 @@ MODEL_CONTRACTS = (
 SPARSE_MODEL_TYPES = {
     TrellisSLatFlowModel,
     TrellisSLatGaussianDecoder,
+    TrellisSLatMeshDecoder,
     Trellis2SLatFlowModel,
     Trellis2ShapeDualGridDecoder,
     Trellis2PBRSparseDecoder,
@@ -365,6 +389,7 @@ def test_reviewed_attention_models_support_processor_and_native_backend_hooks():
         Trellis2SparseStructureFlowModel,
         TrellisSLatFlowModel,
         TrellisSLatGaussianDecoder,
+        TrellisSLatMeshDecoder,
         Trellis2SLatFlowModel,
     }
     found = set()
@@ -388,20 +413,34 @@ def test_reviewed_attention_models_support_processor_and_native_backend_hooks():
     assert found == expected
 
 
-def _trellis_pipeline():
+def _trellis_sparse_structure_components():
     decoder = TrellisSparseStructureDecoder(**TrellisSparseStructureDecoder.tiny_config())
     with torch.no_grad():
         decoder.out_layer[-1].weight.zero_()
         decoder.out_layer[-1].bias.fill_(1.0)
+    return {
+        "sparse_structure_flow_model": TrellisSparseStructureFlowModel(
+            **TrellisSparseStructureFlowModel.tiny_config()
+        ),
+        "sparse_structure_decoder": decoder,
+        "sparse_structure_scheduler": TrellisFlowEulerScheduler(),
+    }
+
+
+def _trellis_pipeline(request=None):
     return TrellisImageTo3DPipeline(
         conditioner=TrellisDinov2Conditioner(**TrellisDinov2Conditioner.tiny_config()),
-        sparse_structure_flow_model=TrellisSparseStructureFlowModel(**TrellisSparseStructureFlowModel.tiny_config()),
-        sparse_structure_decoder=decoder,
-        sparse_structure_scheduler=TrellisFlowEulerScheduler(),
+        **_trellis_sparse_structure_components(),
     )
 
 
-def _trellis2_pipeline():
+def _trellis_text_pipeline(request):
+    conditioner = TrellisClipTextConditioner(**TrellisClipTextConditioner.tiny_config())
+    conditioner.tokenizer = request.getfixturevalue("tiny_clip_tokenizer")
+    return TrellisTextTo3DPipeline(conditioner=conditioner, **_trellis_sparse_structure_components())
+
+
+def _trellis2_pipeline(request=None):
     decoder = Trellis2SparseStructureDecoder(**Trellis2SparseStructureDecoder.tiny_config())
     with torch.no_grad():
         decoder.out_layer[-1].weight.zero_()
@@ -417,6 +456,7 @@ def _trellis2_pipeline():
 
 PIPELINE_FACTORIES = (
     pytest.param(_trellis_pipeline, id="TrellisImageTo3DPipeline"),
+    pytest.param(_trellis_text_pipeline, id="TrellisTextTo3DPipeline"),
     pytest.param(_trellis2_pipeline, id="Trellis2ImageTo3DPipeline"),
 )
 
@@ -424,6 +464,7 @@ PIPELINE_FACTORIES = (
 def _invoke_pipeline(pipeline, *, return_dict: bool):
     _, dtype = _parameter_properties(pipeline)
     images = torch.linspace(0.0, 1.0, 2 * 3 * 8 * 8, dtype=dtype).reshape(2, 3, 8, 8)
+    conditioning = ["a red chair", "a chair"] if isinstance(pipeline, TrellisTextTo3DPipeline) else images
     if isinstance(pipeline, Trellis2ImageTo3DPipeline):
         latents = torch.linspace(-1.0, 1.0, 2 * 2 * 2 * 2 * 2, dtype=dtype).reshape(2, 2, 2, 2, 2)
         return pipeline(
@@ -434,7 +475,7 @@ def _invoke_pipeline(pipeline, *, return_dict: bool):
         )
     latents = torch.linspace(-1.0, 1.0, 2 * 2 * 4 * 4 * 4, dtype=dtype).reshape(2, 2, 4, 4, 4)
     return pipeline(
-        images,
+        conditioning,
         sparse_structure_latents=latents,
         sparse_structure_num_inference_steps=2,
         return_dict=return_dict,
@@ -447,8 +488,8 @@ def _asset_tensor(asset) -> torch.Tensor:
 
 @pytest.mark.integration
 @pytest.mark.parametrize("pipeline_factory", PIPELINE_FACTORIES)
-def test_reviewed_pipeline_batch_dtype_device_and_tuple_contract(pipeline_factory):
-    pipeline = pipeline_factory().to(device="cpu", dtype=torch.float64)
+def test_reviewed_pipeline_batch_dtype_device_and_tuple_contract(pipeline_factory, request):
+    pipeline = pipeline_factory(request).to(device="cpu", dtype=torch.float64)
     output = _invoke_pipeline(pipeline, return_dict=True)
     tuple_output = _invoke_pipeline(pipeline, return_dict=False)
 
@@ -470,6 +511,6 @@ def test_pipeline_contracts_cover_every_reviewed_registration():
         Object3DModelRegistration,
         Object3DPipelineRegistration,
     )
-    assert {factory().__class__ for factory in (_trellis_pipeline, _trellis2_pipeline)} == {
+    assert {TrellisImageTo3DPipeline, TrellisTextTo3DPipeline, Trellis2ImageTo3DPipeline} == {
         registration.pipeline_class for registration in pipeline_registrations
     }

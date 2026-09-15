@@ -65,7 +65,7 @@ def test_pipeline_save_load_auto_and_optional_components(tmp_path, tiny_trellis_
     assert loaded.slat_flow_model is None
     assert loaded.slat_scheduler is None
     assert loaded.gaussian_decoder is None
-    assert not hasattr(loaded, "mesh_decoder")
+    assert loaded.mesh_decoder is None
     assert loaded.config.slat_mean is None
     assert automatic.config.slat_std is None
 
@@ -95,5 +95,7 @@ def test_pipeline_rejects_unavailable_requested_formats(tiny_trellis_pipeline):
         tiny_trellis_pipeline(torch.zeros(3, 8, 8), formats=("slat",))
     with pytest.raises(ValueError, match="unique"):
         tiny_trellis_pipeline(torch.zeros(3, 8, 8), formats=("sparse_structure", "sparse_structure"))
-    with pytest.raises(ValueError, match="unique"):
+    with pytest.raises(RuntimeError, match="SLAT"):
         tiny_trellis_pipeline(torch.zeros(3, 8, 8), formats=("mesh",))
+    with pytest.raises(ValueError, match="unique"):
+        tiny_trellis_pipeline(torch.zeros(3, 8, 8), formats=("radiance_field",))

@@ -392,7 +392,8 @@ class TrimeshBackend:
     def _validate_export_channels(self, mesh: MeshAsset, file_type: str) -> None:
         if mesh.coordinate_system is not CoordinateSystem.RIGHT_HANDED_Y_UP:
             raise ValueError(
-                f"{file_type.upper()} export cannot preserve coordinate system {mesh.coordinate_system.value!r}"
+                f"{file_type.upper()} export cannot preserve coordinate system {mesh.coordinate_system.value!r}; "
+                "convert with mesh.to_coordinate_system(CoordinateSystem.RIGHT_HANDED_Y_UP) first"
             )
         if file_type != "glb" and not torch.allclose(
             mesh.transform,
@@ -400,7 +401,10 @@ class TrimeshBackend:
         ):
             raise ValueError(f"{file_type.upper()} export cannot preserve a non-identity object transform")
         if mesh.extras:
-            raise ValueError(f"{file_type.upper()} export cannot preserve package mesh extras")
+            raise ValueError(
+                f"{file_type.upper()} export cannot preserve package mesh extras {sorted(mesh.extras)}; drop them "
+                "first, for example with dataclasses.replace(mesh, extras={})"
+            )
         if any(material.base_color.shape[-1] == 4 and material.opacity is not None for material in mesh.materials):
             raise ValueError(
                 f"{file_type.upper()} export cannot preserve separate base color alpha and opacity channels"

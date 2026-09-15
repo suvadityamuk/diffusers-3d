@@ -342,10 +342,10 @@ TRELLIS_SLAT_FROZEN_COMPONENT_POLICIES = (
 
 
 class TrellisSLatFlowRecipe(TrainingRecipe3D[TrellisImageTo3DPipeline, TrellisSLatExample, TrellisSLatBatch]):
-    """FULL-only SLAT flow objective. Runs against the released layout but is not registered yet."""
+    """FULL-only SLAT flow objective: the released flow-matching equations applied per voxel of a SLAT batch."""
 
-    recipe_id = "trellis-slat-flow-experimental"
-    recipe_version = "0.1"
+    recipe_id = "trellis-slat-flow"
+    recipe_version = "1.0"
     family_id = "trellis"
     target_type = TrellisImageTo3DPipeline
     example_type = TrellisSLatExample

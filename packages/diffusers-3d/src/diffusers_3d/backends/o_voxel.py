@@ -726,6 +726,14 @@ class OVoxelBackend:
         image_size: int,
         attribute: str = "base_color",
     ) -> Mapping[str, torch.Tensor]:
+        """Rasterize one voxel attribute with the pinned O-Voxel CUDA renderer.
+
+        ``extrinsics`` is an OpenCV world-to-camera matrix and ``intrinsics`` a pixel-unit pinhole matrix for the
+        square ``image_size`` output, the same convention as :class:`CameraRig` and :class:`GsplatBackend`. The
+        pinned rasterizer wants intrinsics normalized by the image size, so they are rescaled here. Returns
+        ``attr`` ``(C, H, W)``, ``depth`` ``(H, W)`` and ``alpha`` ``(H, W)``.
+        """
+
         if not isinstance(image_size, int) or isinstance(image_size, bool) or image_size <= 0:
             raise ValueError("image_size must be a positive integer")
         if not isinstance(extrinsics, torch.Tensor) or extrinsics.shape != (4, 4):
@@ -781,12 +789,14 @@ class OVoxelBackend:
         # The pinned CUDA rasterizer reads every floating input through
         # data_ptr<float>(), independently of the model/asset dtype.
         render_dtype = torch.float32
+        normalized_intrinsics = intrinsics.to(device=self.device, dtype=render_dtype).clone()
+        normalized_intrinsics[:2] /= image_size
         result = renderer.render(
             position=position.to(device=self.device, dtype=render_dtype),
             attrs=values.to(device=self.device, dtype=render_dtype),
             voxel_size=float(voxel_sizes[0].item()),
             extrinsics=extrinsics.to(device=self.device, dtype=render_dtype),
-            intrinsics=intrinsics.to(device=self.device, dtype=render_dtype),
+            intrinsics=normalized_intrinsics,
         )
         return {"attr": result.attr, "depth": result.depth, "alpha": result.alpha}
 

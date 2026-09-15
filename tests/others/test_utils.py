@@ -175,7 +175,8 @@ class TestDeprecate:
         with pytest.warns(FutureWarning) as warning:
             deprecate(("deprecated_arg", self.higher_version, "This message is better!!!"), standard_warn=False)
         assert str(warning[0].message) == "This message is better!!!"
-        assert "diffusers/tests/others/test_utils.py" in warning[0].filename
+        # The warning must point at this test file (the caller), not at diffusers' own deprecate() frame.
+        assert warning[0].filename == __file__
 
     def test_deprecate_testing_utils_module(self):
         import diffusers.utils.testing_utils

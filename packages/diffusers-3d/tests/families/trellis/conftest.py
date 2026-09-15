@@ -5,14 +5,17 @@ import torch
 
 from diffusers_3d import (
     ImageCondition,
+    TrellisClipTextConditioner,
     TrellisDinov2Conditioner,
     TrellisFlowEulerScheduler,
     TrellisImageTo3DPipeline,
     TrellisSLatFlowModel,
     TrellisSLatGaussianDecoder,
+    TrellisSLatMeshDecoder,
     TrellisSparseStructureDecoder,
     TrellisSparseStructureExample,
     TrellisSparseStructureFlowModel,
+    TrellisTextTo3DPipeline,
 )
 
 
@@ -61,6 +64,8 @@ def tiny_trellis_components():
         slat_scheduler = TrellisFlowEulerScheduler()
         torch.manual_seed(4)
         gaussian_decoder = TrellisSLatGaussianDecoder(**TrellisSLatGaussianDecoder.tiny_config())
+        torch.manual_seed(5)
+        mesh_decoder = TrellisSLatMeshDecoder(**TrellisSLatMeshDecoder.tiny_config())
         return (
             conditioner,
             sparse_structure_flow_model,
@@ -69,6 +74,7 @@ def tiny_trellis_components():
             slat_flow_model,
             slat_scheduler,
             gaussian_decoder,
+            mesh_decoder,
         )
 
     return make
@@ -87,8 +93,8 @@ def tiny_trellis_pipeline(tiny_trellis_components):
 
 @pytest.fixture
 def tiny_trellis_full_pipeline(tiny_trellis_components):
-    conditioner, flow, decoder, scheduler, slat_flow, slat_scheduler, gaussian_decoder = tiny_trellis_components(
-        include_slat=True
+    conditioner, flow, decoder, scheduler, slat_flow, slat_scheduler, gaussian_decoder, mesh_decoder = (
+        tiny_trellis_components(include_slat=True)
     )
     return TrellisImageTo3DPipeline(
         conditioner=conditioner,
@@ -98,6 +104,7 @@ def tiny_trellis_full_pipeline(tiny_trellis_components):
         slat_flow_model=slat_flow,
         slat_scheduler=slat_scheduler,
         gaussian_decoder=gaussian_decoder,
+        mesh_decoder=mesh_decoder,
         slat_mean=[0.0] * slat_flow.config.out_channels,
         slat_std=[1.0] * slat_flow.config.out_channels,
     )
@@ -106,3 +113,30 @@ def tiny_trellis_full_pipeline(tiny_trellis_components):
 @pytest.fixture
 def tiny_trellis_latent_dataset():
     return TinyTrellisPrecomputedLatentDataset()
+
+
+@pytest.fixture
+def tiny_text_conditioner(tiny_clip_tokenizer) -> TrellisClipTextConditioner:
+    torch.manual_seed(0)
+    conditioner = TrellisClipTextConditioner(**TrellisClipTextConditioner.tiny_config())
+    conditioner.tokenizer = tiny_clip_tokenizer
+    return conditioner
+
+
+@pytest.fixture
+def tiny_trellis_text_pipeline(tiny_trellis_components, tiny_text_conditioner):
+    _, flow, decoder, scheduler, slat_flow, slat_scheduler, gaussian_decoder, mesh_decoder = tiny_trellis_components(
+        include_slat=True
+    )
+    return TrellisTextTo3DPipeline(
+        conditioner=tiny_text_conditioner,
+        sparse_structure_flow_model=flow,
+        sparse_structure_decoder=decoder,
+        sparse_structure_scheduler=scheduler,
+        slat_flow_model=slat_flow,
+        slat_scheduler=slat_scheduler,
+        gaussian_decoder=gaussian_decoder,
+        mesh_decoder=mesh_decoder,
+        slat_mean=[0.0] * slat_flow.config.out_channels,
+        slat_std=[1.0] * slat_flow.config.out_channels,
+    )

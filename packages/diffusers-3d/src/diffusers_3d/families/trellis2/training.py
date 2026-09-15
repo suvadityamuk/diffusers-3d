@@ -350,10 +350,10 @@ TRELLIS2_SHAPE_SLAT_FROZEN_COMPONENT_POLICIES = (
 
 
 class Trellis2ShapeSLatFlowRecipe(TrainingRecipe3D[Trellis2ImageTo3DPipeline, Trellis2SLatExample, Trellis2SLatBatch]):
-    """Uniform-t shape-SLAT objective. Runs against the released layout but is not registered yet."""
+    """Uniform-t shape-SLAT flow objective on the released sparse layout."""
 
-    recipe_id = "trellis2-shape-slat-flow-experimental"
-    recipe_version = "0.1"
+    recipe_id = "trellis2-shape-slat-flow"
+    recipe_version = "1.0"
     family_id = "trellis2"
     target_type = Trellis2ImageTo3DPipeline
     example_type = Trellis2SLatExample
@@ -508,10 +508,10 @@ class Trellis2TextureSLatFlowRecipe(
         Trellis2TextureSLatBatch,
     ]
 ):
-    """Coordinate-aligned uniform-t texture-SLAT objective. Not registered yet."""
+    """Coordinate-aligned uniform-t texture-SLAT flow objective, conditioned on the clean shape SLAT."""
 
-    recipe_id = "trellis2-texture-slat-flow-experimental"
-    recipe_version = "0.1"
+    recipe_id = "trellis2-texture-slat-flow"
+    recipe_version = "1.0"
     family_id = "trellis2"
     target_type = Trellis2ImageTo3DPipeline
     example_type = Trellis2TextureSLatExample

@@ -518,11 +518,15 @@ def test_ovoxel_native_facade_delegates_to_pinned_io_dual_grid_and_renderer_api(
     rendered = backend.render_voxels(
         asset,
         extrinsics=torch.eye(4),
-        intrinsics=torch.eye(3),
+        intrinsics=torch.tensor([[2.0, 0.0, 2.0], [0.0, 2.0, 2.0], [0.0, 0.0, 1.0]]),
         image_size=4,
     )
     assert set(rendered) == {"attr", "depth", "alpha"}
     assert calls["renderer_options"] == {"resolution": 4}
+    # Pixel-unit intrinsics are rescaled to the rasterizer's unit-image convention.
+    torch.testing.assert_close(
+        calls["render"]["intrinsics"], torch.tensor([[0.5, 0.0, 0.5], [0.0, 0.5, 0.5], [0.0, 0.0, 1.0]])
+    )
     assert calls["render"]["voxel_size"] == pytest.approx(1 / 8)
     assert all(
         calls["render"][name].dtype is torch.float32 for name in ("position", "attrs", "extrinsics", "intrinsics")

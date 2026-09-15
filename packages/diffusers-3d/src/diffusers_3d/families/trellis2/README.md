@@ -107,7 +107,8 @@ the optional, license-gated stack is available.
   require matching PEP 610 source provenance followed by runtime API/toolchain
   checks. Raw upstream modules do not need custom attestation attributes.
 - Compiled O-Voxel source is not vendored. Native conversion, `.vxz`, and voxel
-  rendering were not run in the package CPU test matrix.
+  rendering are API-tested with fakes in the CPU test matrix and were run once
+  by hand on an A100 against real outputs (see `docs/compatibility.md`).
 - `Trellis2PBRPostprocessFacade` requires O-Voxel, CuMesh, FlexGEMM, and
   nvdiffrast together. nvdiffrast is research/restricted and requires an
   explicit license acknowledgement; it is never invoked silently.

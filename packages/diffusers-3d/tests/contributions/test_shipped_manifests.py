@@ -112,8 +112,11 @@ def test_reviewed_execution_and_training_registries_have_exact_manifest_evidence
         assert registration.metadata.review_status is ReviewStatus.REVIEWED
 
     for registration in _TRAINING_RECIPE_REGISTRY:
-        qualification = manifests_by_family[registration.family_id].training
-        assert qualification is not None
+        qualifications = {
+            qualification.recipe_id: qualification
+            for qualification in manifests_by_family[registration.family_id].all_training
+        }
+        qualification = qualifications[registration.recipe_id]
         assert qualification.recipe_class == _qualified_name(registration.recipe_type)
         assert qualification.target_class == _qualified_name(registration.target_type)
         assert qualification.example_class == _qualified_name(registration.example_type)

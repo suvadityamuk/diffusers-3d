@@ -230,7 +230,7 @@ def test_sparse_structure_recipe_registration_collation_and_full_trainer_checkpo
     )
 
 
-def test_experimental_slat_flow_objective_matches_released_sparse_equation(tiny_trellis_full_pipeline):
+def test_slat_flow_objective_matches_released_sparse_equation(tiny_trellis_full_pipeline):
     pipeline = tiny_trellis_full_pipeline
     recipe = TrellisSLatFlowRecipe(pipeline)
     coordinates = torch.tensor([[0, 0, 0, 0], [0, 1, 1, 1], [1, 2, 2, 2]], dtype=torch.int64)
@@ -265,4 +265,73 @@ def test_experimental_slat_flow_objective_matches_released_sparse_equation(tiny_
         pipeline.conditioner.unconditional_embedding(2),
     ).sample.features
     torch.testing.assert_close(output.loss, torch.nn.functional.mse_loss(prediction, expected_target))
-    assert all(registration.recipe_type is not TrellisSLatFlowRecipe for registration in _TRAINING_RECIPE_REGISTRY)
+
+
+class _TinySLatDataset:
+    """Two SLAT examples on a 4^3 grid with the channel count of the tiny SLAT flow model."""
+
+    def __init__(self, channels: int) -> None:
+        self.channels = channels
+
+    def __len__(self) -> int:
+        return 2
+
+    def __getitem__(self, index: int) -> TrellisSLatExample:
+        if not 0 <= index < 2:
+            raise IndexError(index)
+        coordinates = (
+            torch.tensor([[0, 0, 0], [1, 2, 3], [3, 3, 3]], dtype=torch.int64)
+            if index
+            else torch.tensor([[0, 1, 0], [2, 2, 2]], dtype=torch.int64)
+        )
+        features = torch.linspace(-1.0 + 0.1 * index, 1.0, coordinates.shape[0] * self.channels).reshape(
+            -1, self.channels
+        )
+        return TrellisSLatExample(
+            condition=ImageCondition(image=torch.linspace(0.0, 1.0, 3 * 8 * 8).reshape(3, 8, 8)),
+            normalized_slat=SparseVoxelAsset(coordinates=coordinates, features=features, voxel_size=1.0),
+            example_id=f"tiny-slat-{index}",
+        )
+
+
+def test_slat_flow_recipe_registration_full_step_and_checkpoint(tmp_path, tiny_trellis_full_pipeline):
+    pipeline = tiny_trellis_full_pipeline
+    recipe = TrellisSLatFlowRecipe(pipeline)
+    registration = _TRAINING_RECIPE_REGISTRY.validate(recipe)
+    assert registration.recipe_type is TrellisSLatFlowRecipe
+    assert registration.example_type is TrellisSLatExample
+    dataset = _TinySLatDataset(pipeline.slat_flow_model.config.out_channels)
+    batch = recipe.collate(tuple(dataset[index] for index in range(2)))
+    assert batch.normalized_slat.features.shape == (5, pipeline.slat_flow_model.config.out_channels)
+
+    trainer = Object3DTrainer(
+        recipe,
+        dataset,
+        FullFineTune(("slat_flow_model",)),
+        TrainingConfig3D(
+            base_model="tests/tiny-trellis",
+            revision="tiny-reference",
+            dataset_fingerprint="tests/tiny-trellis-slat-v1",
+            output_dir=tmp_path,
+            train_batch_size=2,
+            max_train_steps=1,
+            learning_rate=1e-3,
+            shuffle=False,
+            seed=7,
+            cpu=True,
+        ),
+    ).prepare()
+    assert all(name.startswith("slat_flow_model.") for name in trainer.trainable_parameter_names)
+    for component in (pipeline.conditioner, pipeline.sparse_structure_flow_model, pipeline.gaussian_decoder):
+        assert not any(parameter.requires_grad for parameter in component.parameters())
+    summary = trainer.train()
+    assert summary.final_loss is not None and torch.isfinite(torch.tensor(summary.final_loss))
+    assert trainer.save_checkpoint().is_file()
+    assert TrainingManifest3D.load(tmp_path) == trainer.manifest
+
+    weight = pipeline.slat_flow_model.out_layer.weight
+    saved = weight.detach().clone()
+    with torch.no_grad():
+        weight.add_(10.0)
+    trainer.load_checkpoint(tmp_path)
+    torch.testing.assert_close(weight, saved, atol=0.0, rtol=0.0)

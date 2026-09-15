@@ -85,13 +85,13 @@ strategy the recipe has not approved raises `TrainingPolicyError` before any par
 
 | Family | Pipeline | Task | Outputs | Needs a compiled backend |
 |---|---|---|---|---|
-| [TRELLIS](packages/diffusers-3d/src/diffusers_3d/families/trellis/README.md) | `TrellisImageTo3DPipeline` | image → 3D | sparse structure, SLAT, Gaussian splats | rendering the splats (gsplat) |
+| [TRELLIS](packages/diffusers-3d/src/diffusers_3d/families/trellis/README.md) | `TrellisImageTo3DPipeline`, `TrellisTextTo3DPipeline` | image → 3D, text → 3D | sparse structure, SLAT, Gaussian splats, FlexiCubes mesh | rendering the splats (gsplat) |
 | [TRELLIS.2](packages/diffusers-3d/src/diffusers_3d/families/trellis2/README.md) | `Trellis2ImageTo3DPipeline` | image → 3D | sparse structure, shape/texture SLAT, O-Voxel (dual grid + PBR) | meshing and GLB export (O-Voxel runtime) |
 
 Every network in both pipelines runs in plain PyTorch on CPU or GPU. The sparse convolutions, pooling, subdivision,
 and windowed attention that upstream implements with `spconv`, FlexGEMM, and `xformers` live in
 [`sparse_ops.py`](packages/diffusers-3d/src/diffusers_3d/families/trellis/sparse_ops.py) and are checked against the
-pinned upstream code numerically. TRELLIS's radiance-field and mesh decoders are not ported.
+pinned upstream code numerically. TRELLIS's radiance-field decoder is not ported.
 
 ## Installation
 

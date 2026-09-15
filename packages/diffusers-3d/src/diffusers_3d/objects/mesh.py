@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, fields
 
 import torch
 from diffusers.utils import BaseOutput
@@ -19,6 +19,7 @@ from ._validation import (
     validate_transform,
 )
 from .base import TensorDataMixin
+from .coordinates import changes_handedness, coordinate_change_matrix
 from .material import PBRMaterial
 from .types import CoordinateSystem, Metadata, Object3DKind
 
@@ -55,6 +56,32 @@ class MeshAsset(BaseOutput, TensorDataMixin):
     @property
     def object_to_world(self) -> torch.Tensor:
         return self.transform
+
+    def to_coordinate_system(self, target: CoordinateSystem | str) -> MeshAsset:
+        """Re-express the mesh in another convention (for example TRELLIS Z-up to the Y-up that PLY/GLB export expects).
+
+        Vertices, normals, and ``transform`` are rotated; if the handedness changes, face winding is flipped so
+        triangles stay front-facing. Every other channel is shared with ``self``.
+        """
+
+        target = normalize_coordinate_system(target)
+        if target is self.coordinate_system:
+            return self
+        matrix = coordinate_change_matrix(
+            self.coordinate_system, target, device=self.vertices.device, dtype=self.vertices.dtype
+        )
+        matrix4 = torch.eye(4, device=self.transform.device, dtype=self.transform.dtype)
+        matrix4[:3, :3] = matrix.to(dtype=self.transform.dtype)
+        faces = self.faces[:, [0, 2, 1]] if changes_handedness(self.coordinate_system, target) else self.faces
+        values = {field_info.name: getattr(self, field_info.name) for field_info in fields(self) if field_info.init}
+        values.update(
+            vertices=self.vertices @ matrix.T,
+            faces=faces,
+            transform=matrix4 @ self.transform @ matrix4.T,
+            coordinate_system=target,
+            normals=None if self.normals is None else self.normals @ matrix.T,
+        )
+        return MeshAsset(**values)
 
     def validate(self, expensive: bool = False) -> None:
         if not isinstance(self.coordinate_system, CoordinateSystem):

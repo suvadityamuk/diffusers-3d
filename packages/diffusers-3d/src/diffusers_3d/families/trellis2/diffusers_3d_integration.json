@@ -368,6 +368,86 @@
     "target_class": "diffusers_3d.families.trellis2.pipeline.Trellis2ImageTo3DPipeline",
     "trainer_registration": "diffusers_3d.families.trellis2.registrations.trellis2_training_registrations"
   },
+  "training_recipes": [
+    {
+      "backward_parity": {
+        "atol": 1e-06,
+        "kind": "backward",
+        "passed": true,
+        "reference": "Pinned upstream SLatFlowModel output and input-latent gradients with identical tiny CPU float32 state, xformers replaced by SDPA.",
+        "rtol": 1e-05,
+        "test": "tests/families/trellis2/test_reference_parity.py::test_tiny_slat_flow_matches_pinned_reference"
+      },
+      "batch_class": "diffusers_3d.families.trellis2.training.Trellis2SLatBatch",
+      "checkpoint_parity": {
+        "atol": 0.0,
+        "kind": "checkpoint",
+        "passed": true,
+        "reference": "Exact package full shape-SLAT flow save/load restoration with a validated training checkpoint identity manifest.",
+        "rtol": 0.0,
+        "test": "tests/families/trellis2/test_training.py::test_slat_recipes_registration_full_step_and_checkpoint"
+      },
+      "components": [
+        "shape_slat_flow_model"
+      ],
+      "example_class": "diffusers_3d.families.trellis2.training.Trellis2SLatExample",
+      "objective_parity": {
+        "atol": 0.0,
+        "kind": "objective",
+        "passed": true,
+        "reference": "Uniform-t flow-matching loss on deterministic sparse batches is finite for the shape and coordinate-aligned texture stages.",
+        "rtol": 0.0,
+        "test": "tests/families/trellis2/test_training.py::test_shape_and_texture_uniform_t_objectives_are_finite_and_registered"
+      },
+      "recipe_class": "diffusers_3d.families.trellis2.training.Trellis2ShapeSLatFlowRecipe",
+      "recipe_id": "trellis2-shape-slat-flow",
+      "recipe_version": "1.0",
+      "strategies": [
+        "full"
+      ],
+      "target_class": "diffusers_3d.families.trellis2.pipeline.Trellis2ImageTo3DPipeline",
+      "trainer_registration": "diffusers_3d.families.trellis2.registrations.trellis2_training_registrations"
+    },
+    {
+      "backward_parity": {
+        "atol": 1e-06,
+        "kind": "backward",
+        "passed": true,
+        "reference": "Pinned upstream SLatFlowModel output and input-latent gradients with identical tiny CPU float32 state, xformers replaced by SDPA.",
+        "rtol": 1e-05,
+        "test": "tests/families/trellis2/test_reference_parity.py::test_tiny_slat_flow_matches_pinned_reference"
+      },
+      "batch_class": "diffusers_3d.families.trellis2.training.Trellis2TextureSLatBatch",
+      "checkpoint_parity": {
+        "atol": 0.0,
+        "kind": "checkpoint",
+        "passed": true,
+        "reference": "Exact package full texture-SLAT flow save/load restoration with a validated training checkpoint identity manifest.",
+        "rtol": 0.0,
+        "test": "tests/families/trellis2/test_training.py::test_slat_recipes_registration_full_step_and_checkpoint"
+      },
+      "components": [
+        "texture_slat_flow_model"
+      ],
+      "example_class": "diffusers_3d.families.trellis2.training.Trellis2TextureSLatExample",
+      "objective_parity": {
+        "atol": 0.0,
+        "kind": "objective",
+        "passed": true,
+        "reference": "Uniform-t flow-matching loss on deterministic sparse batches is finite for the shape and coordinate-aligned texture stages.",
+        "rtol": 0.0,
+        "test": "tests/families/trellis2/test_training.py::test_shape_and_texture_uniform_t_objectives_are_finite_and_registered"
+      },
+      "recipe_class": "diffusers_3d.families.trellis2.training.Trellis2TextureSLatFlowRecipe",
+      "recipe_id": "trellis2-texture-slat-flow",
+      "recipe_version": "1.0",
+      "strategies": [
+        "full"
+      ],
+      "target_class": "diffusers_3d.families.trellis2.pipeline.Trellis2ImageTo3DPipeline",
+      "trainer_registration": "diffusers_3d.families.trellis2.registrations.trellis2_training_registrations"
+    }
+  ],
   "upstream": {
     "repository": "https://github.com/microsoft/TRELLIS.2",
     "revision": "75fbf0183001ed9876c8dbb35de6b68552ee08bd"
@@ -377,6 +457,9 @@
       "image"
     ],
     "output_representations": [
+      "mesh",
+      "o-voxel",
+      "slat",
       "sparse-structure"
     ],
     "task_ids": [

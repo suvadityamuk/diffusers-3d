@@ -6,14 +6,17 @@ from diffusers_3d import (
     BackendLicenseClass,
     BackendSupportLevel,
     IntegrationManifest3D,
+    TrellisClipTextConditioner,
     TrellisDinov2Conditioner,
     TrellisImageTo3DPipeline,
     TrellisSLatFlowModel,
     TrellisSLatFlowRecipe,
     TrellisSLatGaussianDecoder,
+    TrellisSLatMeshDecoder,
     TrellisSparseStructureDecoder,
     TrellisSparseStructureFlowModel,
     TrellisSparseStructureFlowRecipe,
+    TrellisTextTo3DPipeline,
     validate_integration_manifest,
 )
 from diffusers_3d.execution.registry import _MODEL_REGISTRY, _PIPELINE_REGISTRY
@@ -97,23 +100,46 @@ def test_manifest_matches_exact_reviewed_trellis_registrations():
         TrellisSparseStructureFlowModel,
         TrellisSLatFlowModel,
         TrellisSLatGaussianDecoder,
+        TrellisSLatMeshDecoder,
+        TrellisClipTextConditioner,
     }
-    assert {registration.pipeline_class for registration in pipeline_registrations} == {TrellisImageTo3DPipeline}
-    assert {registration.recipe_type for registration in recipe_registrations} == {TrellisSparseStructureFlowRecipe}
-    # SLAT fine-tuning has no released-evidence recipe yet, so it stays unregistered.
-    assert TrellisSLatFlowRecipe not in {registration.recipe_type for registration in _TRAINING_RECIPE_REGISTRY}
+    assert {registration.pipeline_class for registration in pipeline_registrations} == {
+        TrellisImageTo3DPipeline,
+        TrellisTextTo3DPipeline,
+    }
+    assert set(manifest.workflow.task_ids) == {"image-to-3d", "text-to-3d"}
+    assert set(manifest.workflow.input_representations) == {"image", "text"}
+    assert set(manifest.workflow.output_representations) == {"gaussian-splat", "mesh", "slat", "sparse-structure"}
+    assert {registration.recipe_type for registration in recipe_registrations} == {
+        TrellisSparseStructureFlowRecipe,
+        TrellisSLatFlowRecipe,
+    }
+    assert {recipe.recipe_id for recipe in manifest.training_recipes} == {TrellisSLatFlowRecipe.recipe_id}
 
     for registration in model_registrations:
         assert components[registration.metadata.component_role] == registration.metadata.model_class
-    pipeline_registration = pipeline_registrations[0]
-    assert components["pipeline"] == pipeline_registration.metadata.pipeline_class
-    assert set(pipeline_registration.metadata.output_representations) == {"gaussian-splat", "slat", "sparse-structure"}
+    pipeline_classes = {registration.metadata.pipeline_class for registration in pipeline_registrations}
+    assert {components["pipeline"], components["text-pipeline"]} == pipeline_classes
+    for pipeline_registration in pipeline_registrations:
+        assert set(pipeline_registration.metadata.output_representations) == {
+            "gaussian-splat",
+            "mesh",
+            "slat",
+            "sparse-structure",
+        }
     assert (
         _PIPELINE_REGISTRY.resolve(
             TrellisImageTo3DPipeline.object3d_model_index(),
             "image-to-3d",
         )
         is TrellisImageTo3DPipeline
+    )
+    assert (
+        _PIPELINE_REGISTRY.resolve(
+            TrellisTextTo3DPipeline.object3d_model_index(),
+            "text-to-3d",
+        )
+        is TrellisTextTo3DPipeline
     )
 
     training = manifest.training
