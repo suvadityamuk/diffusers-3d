@@ -14,7 +14,12 @@ from diffusers import __version__ as diffusers_version
 from safetensors.torch import load_file
 
 from .conditioner import TrellisDinov2Conditioner
-from .decoders import TrellisSLatGaussianDecoder, TrellisSLatMeshDecoder, TrellisSparseStructureDecoder
+from .decoders import (
+    TrellisSLatGaussianDecoder,
+    TrellisSLatMeshDecoder,
+    TrellisSLatRadianceFieldDecoder,
+    TrellisSparseStructureDecoder,
+)
 from .models import TrellisSLatFlowModel, TrellisSparseStructureFlowModel
 from .pipeline import TrellisImageTo3DPipeline, TrellisTextTo3DPipeline
 from .scheduler import TrellisFlowEulerScheduler
@@ -41,9 +46,12 @@ _COMPONENT_TYPES = {
         "SLatMeshDecoder": TrellisSLatMeshDecoder,
         "ElasticSLatMeshDecoder": TrellisSLatMeshDecoder,
     },
+    "slat_decoder_rf": {
+        "SLatRadianceFieldDecoder": TrellisSLatRadianceFieldDecoder,
+        "ElasticSLatRadianceFieldDecoder": TrellisSLatRadianceFieldDecoder,
+    },
 }
-_UNSUPPORTED_COMPONENTS = {"slat_decoder_rf"}
-_UPSTREAM_COMPONENTS = set(_COMPONENT_TYPES) | _UNSUPPORTED_COMPONENTS
+_UPSTREAM_COMPONENTS = set(_COMPONENT_TYPES)
 _SHARED_PIPELINE_ARGUMENTS = {"models", "slat_normalization", "slat_sampler", "sparse_structure_sampler"}
 # Upstream pipeline name -> (package pipeline, conditioner argument, released conditioner id)
 _PIPELINES = {
@@ -200,9 +208,8 @@ def convert_trellis_checkpoint(
     """Convert a local upstream image or text pipeline without importing TRELLIS at runtime.
 
     ``pipeline.json`` selects the target: ``TrellisImageTo3DPipeline`` (DINOv2 conditioner) or
-    ``TrellisTextTo3DPipeline`` (CLIP conditioner). The sparse-structure components, the SLAT flow model, and
-    the Gaussian and mesh decoders are converted; the released radiance-field decoder has no object-native
-    counterpart and is recorded as skipped.
+    ``TrellisTextTo3DPipeline`` (CLIP conditioner). Every released component is converted: the sparse-structure
+    flow and decoder, the SLAT flow model, and the Gaussian, mesh, and radiance-field decoders.
     """
 
     source = Path(source_directory)
@@ -238,22 +245,17 @@ def convert_trellis_checkpoint(
     destination.mkdir(parents=True, exist_ok=True)
     component_index: dict[str, list[str | None]] = {}
     component_report: dict[str, dict[str, Any]] = {}
-    skipped_components: dict[str, str] = {}
     output_names = {
         "sparse_structure_flow_model": "sparse_structure_flow_model",
         "sparse_structure_decoder": "sparse_structure_decoder",
         "slat_flow_model": "slat_flow_model",
         "slat_decoder_gs": "gaussian_decoder",
         "slat_decoder_mesh": "mesh_decoder",
+        "slat_decoder_rf": "radiance_field_decoder",
     }
     for component_key, reference in models.items():
         if not isinstance(reference, str) or not reference:
             raise ValueError(f"pipeline model reference {component_key!r} must be a non-empty string")
-        if component_key in _UNSUPPORTED_COMPONENTS:
-            skipped_components[component_key] = (
-                "the package has no reviewed object-native decoder for this upstream component"
-            )
-            continue
         model_type, model_config = _save_component(
             component_key,
             _component_source(source, reference),
@@ -295,7 +297,7 @@ def convert_trellis_checkpoint(
     else:
         component_index["slat_flow_model"] = [None, None]
         component_index["slat_scheduler"] = [None, None]
-    for decoder_name in ("gaussian_decoder", "mesh_decoder"):
+    for decoder_name in ("gaussian_decoder", "mesh_decoder", "radiance_field_decoder"):
         if decoder_name not in component_index:
             component_index[decoder_name] = [None, None]
 
@@ -335,7 +337,7 @@ def convert_trellis_checkpoint(
             "slat": slat_sampler_params,
             "sparse_structure": sparse_sampler_params,
         },
-        "skipped_components": skipped_components,
+        "skipped_components": {},
         "source_pipeline": str(pipeline_path.resolve()),
         "production_gpu_quality_verified": False,
     }

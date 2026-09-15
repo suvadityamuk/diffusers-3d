@@ -62,9 +62,19 @@ The TRELLIS.2 adapters intentionally expose only reviewed narrow API surfaces:
 - `Trellis2PBRPostprocessFacade` gates the combined O-Voxel, CuMesh, FlexGEMM, and nvdiffrast path. It never runs
   during ordinary pipeline output or backend discovery.
 
-These native TRELLIS.2 paths are adapter/API tested with CPU fakes in CI. They were also run once by hand on an A100
-with the pinned revisions compiled from source (see [compatibility.md](compatibility.md)); render or GLB quality
-beyond "recognizable" is not claimed.
+These native TRELLIS.2 paths are adapter/API tested with CPU fakes in CI and run on an A100 by the GPU smoke workflow
+(`scripts/gpu_smoke.py`, backends built by `scripts/install_gpu_backends.sh` at the registry pins); render or GLB
+quality beyond "recognizable" is not claimed.
+
+Two TRELLIS paths are pure PyTorch on top of the adapters above:
+
+- `TrellisGlbPostprocessFacade.to_textured_mesh(mesh, gaussians)` reproduces upstream `to_glb`: CuMesh repair and
+  simplify, xatlas unwrap, gsplat renders from Hammersley views, and `texture_baking.py`, which rasterizes the UV atlas
+  and averages the depth- and alpha-tested observations per texel. `TrimeshBackend` exports the textured
+  `PBRMaterial` to GLB.
+- `radiance_field.render_radiance_field(asset, cameras)` volume-renders a `RadianceFieldAsset` on any device. It is an
+  independent implementation of the tri-vector field's definition, not a port of `diffoctreerast`, which stays a
+  research-only registry entry.
 
 `utils3d` means the EasternJournalist repository used by TRELLIS, not the unrelated PyPI distribution. It must be
 installed from an audited pinned revision.

@@ -11,6 +11,7 @@ from .gaussian import GaussianSplatAsset
 from .material import PBRMaterial
 from .mesh import MeshAsset
 from .outputs import Latent3DOutput, Object3DPipelineOutput
+from .radiance_field import RadianceFieldAsset
 from .types import CoordinateSystem, JSONPrimitive, JSONValue, Metadata, Object3D, Object3DKind
 from .voxel import OVoxelAsset, SparseVoxelAsset
 
@@ -30,6 +31,7 @@ __all__ = [
     "Object3DPipelineOutput",
     "Object3DValidationError",
     "PBRMaterial",
+    "RadianceFieldAsset",
     "SparseVoxelAsset",
     "TensorDTypeError",
     "TensorDeviceError",

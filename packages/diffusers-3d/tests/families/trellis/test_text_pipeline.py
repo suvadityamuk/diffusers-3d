@@ -112,13 +112,16 @@ def test_synthetic_text_conversion_from_a_clip_folder_auto_loads(
     source = tmp_path / "source"
     (source / "ckpts").mkdir(parents=True)
     (source / "shared" / "ckpts").mkdir(parents=True)
-    _, flow, decoder, _, slat_flow, _, gaussian_decoder, mesh_decoder = tiny_trellis_components(include_slat=True)
+    _, flow, decoder, _, slat_flow, _, gaussian_decoder, mesh_decoder, rf_decoder = tiny_trellis_components(
+        include_slat=True
+    )
     # Text releases reference the shared decoders from another repository, as ``<repo>/ckpts/<name>``.
     _write_component(source / "ckpts", "ss_flow_txt", "SparseStructureFlowModel", flow)
     _write_component(source / "ckpts", "slat_flow_txt", "SLatFlowModel", slat_flow)
     _write_component(source / "shared" / "ckpts", "ss_dec", "SparseStructureDecoder", decoder)
     _write_component(source / "shared" / "ckpts", "slat_gs", "SLatGaussianDecoder", gaussian_decoder)
     _write_component(source / "shared" / "ckpts", "slat_mesh", "SLatMeshDecoder", mesh_decoder)
+    _write_component(source / "shared" / "ckpts", "slat_rf", "SLatRadianceFieldDecoder", rf_decoder)
     sampler = {
         "name": "FlowEulerGuidanceIntervalSampler",
         "args": {"sigma_min": 1e-5},
@@ -159,7 +162,7 @@ def test_synthetic_text_conversion_from_a_clip_folder_auto_loads(
     convert_trellis_checkpoint(source, tmp_path / "converted_released", conditioner_path=tmp_path / "clip")
     assert model_index["_class_name"] == "TrellisTextTo3DPipeline"
     assert model_index["conditioner"][1] == "TrellisClipTextConditioner"
-    assert set(report["skipped_components"]) == {"slat_decoder_rf"}
+    assert report["skipped_components"] == {}
     assert report["samplers"]["sparse_structure"]["cfg_strength"] == 7.5
 
     loaded = AutoPipelineForTextTo3D.from_pretrained(output, local_files_only=True)

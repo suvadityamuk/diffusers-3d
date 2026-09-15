@@ -273,6 +273,26 @@
         "target_format": "diffusers-safetensors",
         "test": "tests/families/trellis/test_conversion.py::test_synthetic_conversion_converts_slat_components_and_auto_loads"
       },
+      "class_name": "diffusers_3d.families.trellis.decoders.TrellisSLatRadianceFieldDecoder",
+      "parity": [
+        {
+          "atol": 1e-06,
+          "kind": "inference",
+          "passed": true,
+          "reference": "Pinned TRELLIS SLatRadianceFieldDecoder (swin attention torso, layer norm, output projection, Strivec split with the +1 trivec offset): trivec, density, and features_dc match on a tiny CPU float32 configuration, with the upstream representation built on CPU instead of the hard-coded cuda device.",
+          "rtol": 1e-05,
+          "test": "tests/families/trellis/test_reference_parity.py::test_swin_radiance_field_decoder_matches_pinned_reference"
+        }
+      ],
+      "role": "slat-radiance-field-decoder"
+    },
+    {
+      "checkpoint_conversion": {
+        "converter": "diffusers_3d.families.trellis.conversion.convert_trellis_checkpoint",
+        "source_format": "upstream-component-json-safetensors",
+        "target_format": "diffusers-safetensors",
+        "test": "tests/families/trellis/test_conversion.py::test_synthetic_conversion_converts_slat_components_and_auto_loads"
+      },
       "class_name": "diffusers_3d.families.trellis.decoders.TrellisSparseStructureDecoder",
       "parity": [
         {
@@ -476,6 +496,7 @@
     "output_representations": [
       "gaussian-splat",
       "mesh",
+      "radiance-field",
       "slat",
       "sparse-structure"
     ],

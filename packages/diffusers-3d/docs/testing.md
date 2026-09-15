@@ -128,9 +128,12 @@ mip-Gaussian research dependencies. Any validation error is a failure.
 ## GPU and research verification
 
 No hosted GitHub CPU job is evidence of CUDA, ROCm, compiled-extension, real-checkpoint, rendering, or production
-quality. Such runs must be started manually on an appropriate licensed machine, record the package report from
-`diffusers-3d-report`, and use `-m accelerated` or `-m research_only` as applicable. There are currently no shipped
-tests that claim a completed production GPU quality run.
+quality. That evidence comes from `scripts/gpu_smoke.py`, which converts the released checkpoints, generates from an
+image and a prompt, and exercises every compiled backend built at its pinned revision by
+`scripts/install_gpu_backends.sh`, asserting only coarse invariants (finite, non-empty, non-blank). The
+`Diffusers 3D GPU smoke` workflow runs it on a Hugging Face Jobs A100 on demand and weekly; it can also be run by hand on
+any CUDA machine with `HF_TOKEN` set. Quality beyond "recognizable" is still not claimed, and `-m accelerated` /
+`-m research_only` tests remain manual.
 
 Shared reviewed-model contracts exercise CPU batching, dtype/device movement,
 tuple output equivalence, component save/load, attention processor/backend

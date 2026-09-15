@@ -14,6 +14,7 @@ _TRELLIS_EXPORTS = {
     "TrellisGaussianDecoderOutput",
     "TrellisImageTo3DPipeline",
     "TrellisMeshDecoderOutput",
+    "TrellisRadianceFieldDecoderOutput",
     "TrellisSLatBatch",
     "TrellisSLatExample",
     "TrellisSLatFlowModel",

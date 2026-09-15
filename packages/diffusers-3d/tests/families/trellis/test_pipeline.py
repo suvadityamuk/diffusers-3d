@@ -8,6 +8,7 @@ from diffusers_3d import (
     GaussianSplatAsset,
     ImageCondition,
     Object3DPipelineOutput,
+    RadianceFieldAsset,
     SparseVoxelAsset,
     TrellisImageTo3DPipeline,
     preprocess_image_condition,
@@ -66,6 +67,7 @@ def test_pipeline_save_load_auto_and_optional_components(tmp_path, tiny_trellis_
     assert loaded.slat_scheduler is None
     assert loaded.gaussian_decoder is None
     assert loaded.mesh_decoder is None
+    assert loaded.radiance_field_decoder is None
     assert loaded.config.slat_mean is None
     assert automatic.config.slat_std is None
 
@@ -89,6 +91,20 @@ def test_portable_full_attention_slat_and_gaussian_paths(tiny_trellis_full_pipel
     assert output.objects[1].features.shape == (8**3, 4)
     assert output.objects[2].means.shape == (8**3 * 2, 3)
 
+    # The radiance field shares the SLAT with the splats (the full 8^3 tiny grid has no surface for the mesh).
+    everything = tiny_trellis_full_pipeline(
+        image,
+        formats=("gaussian", "radiance_field"),
+        sparse_structure_num_inference_steps=2,
+        slat_num_inference_steps=2,
+        sparse_structure_latents=sparse_structure_latents,
+        generator=torch.Generator().manual_seed(5),
+    )
+    assert [type(value) for value in everything.objects] == [GaussianSplatAsset, RadianceFieldAsset]
+    field = everything.objects[1]
+    assert field.coordinates.shape == (8**3, 3) and field.trivec.shape == (8**3, 2, 3, 4)
+    assert field.coordinate_system is everything.objects[0].coordinate_system
+
 
 def test_pipeline_rejects_unavailable_requested_formats(tiny_trellis_pipeline):
     with pytest.raises(RuntimeError, match="SLAT"):
@@ -97,5 +113,7 @@ def test_pipeline_rejects_unavailable_requested_formats(tiny_trellis_pipeline):
         tiny_trellis_pipeline(torch.zeros(3, 8, 8), formats=("sparse_structure", "sparse_structure"))
     with pytest.raises(RuntimeError, match="SLAT"):
         tiny_trellis_pipeline(torch.zeros(3, 8, 8), formats=("mesh",))
-    with pytest.raises(ValueError, match="unique"):
+    with pytest.raises(RuntimeError, match="SLAT"):
         tiny_trellis_pipeline(torch.zeros(3, 8, 8), formats=("radiance_field",))
+    with pytest.raises(ValueError, match="unique"):
+        tiny_trellis_pipeline(torch.zeros(3, 8, 8), formats=("nerf",))

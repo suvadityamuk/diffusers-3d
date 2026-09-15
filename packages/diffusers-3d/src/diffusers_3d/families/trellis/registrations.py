@@ -7,10 +7,15 @@ def trellis_execution_registrations(
     model_registration_type: type[Any],
     pipeline_registration_type: type[Any],
 ) -> tuple[tuple[Any, ...], tuple[Any, ...]]:
-    """Register the image and text pipelines and every reviewed component (sparse structure, SLAT, Gaussian, mesh)."""
+    """Register the image and text pipelines and every reviewed component (sparse structure, SLAT, three decoders)."""
 
     from .conditioner import TrellisDinov2Conditioner
-    from .decoders import TrellisSLatGaussianDecoder, TrellisSLatMeshDecoder, TrellisSparseStructureDecoder
+    from .decoders import (
+        TrellisSLatGaussianDecoder,
+        TrellisSLatMeshDecoder,
+        TrellisSLatRadianceFieldDecoder,
+        TrellisSparseStructureDecoder,
+    )
     from .models import TrellisSLatFlowModel, TrellisSparseStructureFlowModel
     from .pipeline import TrellisImageTo3DPipeline, TrellisTextTo3DPipeline
     from .text_conditioner import TrellisClipTextConditioner
@@ -21,6 +26,7 @@ def trellis_execution_registrations(
         TrellisSLatFlowModel,
         TrellisSLatGaussianDecoder,
         TrellisSLatMeshDecoder,
+        TrellisSLatRadianceFieldDecoder,
         TrellisDinov2Conditioner,
         TrellisClipTextConditioner,
     )

@@ -14,6 +14,7 @@ from diffusers_3d import (
     TrellisSLatFlowModel,
     TrellisSLatGaussianDecoder,
     TrellisSLatMeshDecoder,
+    TrellisSLatRadianceFieldDecoder,
 )
 from diffusers_3d.families.trellis.conversion import convert_trellis_checkpoint
 
@@ -66,7 +67,7 @@ def _pipeline_config(*, normalization_channels: int = 4):
 def test_synthetic_conversion_converts_slat_components_and_auto_loads(tmp_path, tiny_trellis_components):
     source = tmp_path / "source"
     source.mkdir()
-    conditioner, flow, decoder, _, slat_flow, _, gaussian_decoder, mesh_decoder = tiny_trellis_components(
+    conditioner, flow, decoder, _, slat_flow, _, gaussian_decoder, mesh_decoder, rf_decoder = tiny_trellis_components(
         include_slat=True
     )
     _write_component(source, "ss_flow", "SparseStructureFlowModel", flow)
@@ -74,6 +75,7 @@ def test_synthetic_conversion_converts_slat_components_and_auto_loads(tmp_path, 
     _write_component(source, "slat_flow", "SLatFlowModel", slat_flow)
     _write_component(source, "slat_gs", "SLatGaussianDecoder", gaussian_decoder)
     _write_component(source, "slat_mesh", "SLatMeshDecoder", mesh_decoder)
+    _write_component(source, "slat_rf", "SLatRadianceFieldDecoder", rf_decoder)
     (source / "pipeline.json").write_text(json.dumps(_pipeline_config()), encoding="utf-8")
     # The released ``dinov2_vitl14_reg`` lives on the Hub as a Transformers ``Dinov2WithRegistersModel``; the
     # converter accepts that folder directly and folds its register tokens into the conditioner.
@@ -112,6 +114,7 @@ def test_synthetic_conversion_converts_slat_components_and_auto_loads(tmp_path, 
         "conditioner",
         "gaussian_decoder",
         "mesh_decoder",
+        "radiance_field_decoder",
         "slat_flow_model",
         "slat_scheduler",
         "sparse_structure_decoder",
@@ -128,16 +131,19 @@ def test_synthetic_conversion_converts_slat_components_and_auto_loads(tmp_path, 
         "slat_flow_model",
         "slat_decoder_gs",
         "slat_decoder_mesh",
+        "slat_decoder_rf",
     }
     assert report["components"]["slat_flow_model"]["class"] == TrellisSLatFlowModel.__name__
     assert report["components"]["slat_decoder_gs"]["class"] == TrellisSLatGaussianDecoder.__name__
     assert report["components"]["slat_decoder_mesh"]["class"] == TrellisSLatMeshDecoder.__name__
-    assert set(report["skipped_components"]) == {"slat_decoder_rf"}
+    assert report["components"]["slat_decoder_rf"]["class"] == TrellisSLatRadianceFieldDecoder.__name__
+    assert report["skipped_components"] == {}
     loaded = AutoPipelineForImageTo3D.from_pretrained(output, local_files_only=True)
     assert type(loaded) is TrellisImageTo3DPipeline
     assert type(loaded.slat_flow_model) is TrellisSLatFlowModel
     assert type(loaded.gaussian_decoder) is TrellisSLatGaussianDecoder
     assert type(loaded.mesh_decoder) is TrellisSLatMeshDecoder
+    assert type(loaded.radiance_field_decoder) is TrellisSLatRadianceFieldDecoder
     assert loaded.config.slat_mean == [0.0] * slat_flow.config.out_channels
 
 

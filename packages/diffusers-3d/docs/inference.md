@@ -156,15 +156,19 @@ available.
 
 ## TRELLIS (v1) differences
 
-`TrellisImageTo3DPipeline` accepts `formats` from `{"sparse_structure", "slat", "gaussian", "mesh"}` (default: every
+`TrellisImageTo3DPipeline` accepts `formats` from `{"sparse_structure", "slat", "gaussian", "mesh", "radiance_field"}`
+(default: every
 loaded SLAT decoder output) and uses flat keyword arguments instead of per-stage mappings:
 `sparse_structure_num_inference_steps`, `slat_num_inference_steps`, `guidance_scale`, `guidance_interval`, `rescale_t`.
 `"gaussian"` returns a `GaussianSplatAsset` from the windowed-attention Gaussian decoder; rasterizing it requires the
 optional `gsplat` backend. `"mesh"` returns a `MeshAsset` from the FlexiCubes mesh decoder in plain PyTorch, with vertex
 colours and the predicted normal map in `extras["normal_map"]`. To export it with `TrimeshBackend`, call
 `mesh.to_coordinate_system("right_handed_y_up")` first (TRELLIS outputs are Z-up) and drop the extras, which no file
-format carries: `dataclasses.replace(mesh, extras={})`. The released radiance-field decoder is not
-ported. `TrellisTextTo3DPipeline` (`microsoft/TRELLIS-text-*`) takes prompts or `TextCondition` values instead of
+format carries: `dataclasses.replace(mesh, extras={})`. `"radiance_field"` returns a `RadianceFieldAsset` (the
+released tri-vector field); `diffusers_3d.backends.radiance_field.render_radiance_field(asset, cameras)` volume-renders
+it in plain PyTorch. For a textured GLB like upstream's `to_glb`, pass the mesh and the splats to
+`TrellisGlbPostprocessFacade().to_textured_mesh(...)` (CuMesh, xatlas, and gsplat) and export the result the same way.
+`TrellisTextTo3DPipeline` (`microsoft/TRELLIS-text-*`) takes prompts or `TextCondition` values instead of
 images and shares everything else. Convert official checkpoints with `diffusers-3d-convert-trellis`, which takes the
 same arguments as the TRELLIS.2 converter. Its `--conditioner-path` is the released `dinov2_vitl14_reg`, published on
 the Hub as `facebook/dinov2-with-registers-large` (or `openai/clip-vit-large-patch14` for the text pipelines):
@@ -180,10 +184,11 @@ diffusers-3d-convert-trellis \
 
 ## What is and is not covered
 
-Every network in both families (conditioners, sparse-structure flows and decoders, SLAT flows, the Gaussian and mesh
-decoders, and the shape and PBR decoders) runs in plain PyTorch on any device. Sparse convolutions, pooling, subdivision, and
+Every network in both families (conditioners, sparse-structure flows and decoders, SLAT flows, the Gaussian, mesh, and
+radiance-field decoders, and the shape and PBR decoders) runs in plain PyTorch on any device. Sparse convolutions, pooling, subdivision, and
 windowed attention are implemented in `families/trellis/sparse_ops.py` and checked numerically against the pinned
 upstream code with tiny weights, with the upstream CUDA kernels (`spconv`, FlexGEMM, `xformers`) replaced by dense
 PyTorch equivalents in the test. Full-resolution generation on the released weights and the compiled mesh, render, and
-PBR GLB paths are not in CI; they were run by hand on an A100 and the numbers are recorded in
-[compatibility.md](compatibility.md). See that page and the family READMEs for the exact evidence behind each claim.
+PBR GLB paths are not in the CPU CI; the [GPU smoke workflow](../../../.github/workflows/diffusers_3d_gpu_smoke.yml)
+runs them on a Hugging Face Jobs A100 on demand and weekly (`scripts/gpu_smoke.py`), and the numbers from the last
+manual run are recorded in [compatibility.md](compatibility.md). See that page and the family READMEs for the exact evidence behind each claim.

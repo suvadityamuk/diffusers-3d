@@ -150,6 +150,30 @@ def test_trimesh_glb_preserves_object_transform(cube, tmp_path):
         backend.export_mesh(mesh, tmp_path / "transformed.obj")
 
 
+def test_trimesh_glb_round_trips_a_base_color_texture(tmp_path):
+    pytest.importorskip("trimesh")
+    backend = TrimeshBackend()
+    vertices = torch.tensor([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [1.0, 1.0, 0.0], [0.0, 1.0, 0.0]])
+    faces = torch.tensor([[0, 1, 2], [0, 2, 3]])
+    uvs = torch.tensor([[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]])
+    texture = torch.linspace(0.0, 1.0, 4 * 4 * 3).reshape(4, 4, 3)
+    mesh = MeshAsset(
+        vertices, faces, uvs=uvs, materials=(PBRMaterial(base_color=texture, roughness=torch.tensor(1.0)),)
+    )
+
+    backend.export_mesh(mesh, tmp_path / "textured.glb")
+    restored = backend.import_mesh(tmp_path / "textured.glb")
+
+    material = restored.materials[0]
+    assert material.base_color.shape == (4, 4, 3)
+    # 8-bit PNG quantization is the only loss; orientation (row 0 = top) must be preserved.
+    assert torch.allclose(material.base_color, texture, atol=1.0 / 255)
+    assert torch.allclose(restored.uvs, uvs)
+    assert float(material.roughness) == 1.0
+    with pytest.raises(ValueError, match="textured base colours"):
+        backend.export_mesh(mesh, tmp_path / "textured.obj")
+
+
 def test_trimesh_rejects_lossy_stl_channels(cube, tmp_path):
     pytest.importorskip("trimesh")
     mesh = MeshAsset(cube.vertices, cube.faces, colors=torch.ones(cube.vertices.shape[0], 3))

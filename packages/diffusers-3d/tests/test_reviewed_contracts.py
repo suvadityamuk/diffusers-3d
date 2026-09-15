@@ -27,6 +27,7 @@ from diffusers_3d import (
     TrellisSLatFlowModel,
     TrellisSLatGaussianDecoder,
     TrellisSLatMeshDecoder,
+    TrellisSLatRadianceFieldDecoder,
     TrellisSparseStructureDecoder,
     TrellisSparseStructureFlowModel,
     TrellisSparseTensor,
@@ -194,6 +195,19 @@ def _invoke_mesh_decoder(model: torch.nn.Module, batch_size: int, return_dict: b
     )
 
 
+def _invoke_radiance_field_decoder(model: torch.nn.Module, batch_size: int, return_dict: bool) -> torch.Tensor:
+    assets = _assets(
+        model(_sparse_latents(model, batch_size, model.latent_channels), return_dict=return_dict),
+        return_dict=return_dict,
+    )
+    return torch.stack(
+        [
+            torch.cat([asset.trivec.flatten(1), asset.density, asset.color_coefficients.flatten(1)], dim=1)
+            for asset in assets
+        ]
+    )
+
+
 def _select_all_children(model: torch.nn.Module) -> None:
     # Untrained subdivision heads sit at zero; bias them so every stage keeps all eight children and
     # each batch item decodes to the same number of voxels.
@@ -233,6 +247,7 @@ MODEL_CONTRACTS = (
     ModelContract(TrellisSLatFlowModel, _invoke_slat_flow),
     ModelContract(TrellisSLatGaussianDecoder, _invoke_gaussian_decoder),
     ModelContract(TrellisSLatMeshDecoder, _invoke_mesh_decoder),
+    ModelContract(TrellisSLatRadianceFieldDecoder, _invoke_radiance_field_decoder),
     ModelContract(TrellisDinov2Conditioner, _invoke_conditioner),
     ModelContract(TrellisClipTextConditioner, _invoke_text_conditioner),
     ModelContract(Trellis2SparseStructureFlowModel, _invoke_trellis_flow),
@@ -248,6 +263,7 @@ SPARSE_MODEL_TYPES = {
     TrellisSLatFlowModel,
     TrellisSLatGaussianDecoder,
     TrellisSLatMeshDecoder,
+    TrellisSLatRadianceFieldDecoder,
     Trellis2SLatFlowModel,
     Trellis2ShapeDualGridDecoder,
     Trellis2PBRSparseDecoder,
@@ -390,6 +406,7 @@ def test_reviewed_attention_models_support_processor_and_native_backend_hooks():
         TrellisSLatFlowModel,
         TrellisSLatGaussianDecoder,
         TrellisSLatMeshDecoder,
+        TrellisSLatRadianceFieldDecoder,
         Trellis2SLatFlowModel,
     }
     found = set()

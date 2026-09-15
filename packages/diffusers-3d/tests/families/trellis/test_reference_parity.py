@@ -21,6 +21,7 @@ from diffusers_3d import (
     TrellisSLatFlowModel,
     TrellisSLatGaussianDecoder,
     TrellisSLatMeshDecoder,
+    TrellisSLatRadianceFieldDecoder,
     TrellisSparseStructureDecoder,
     TrellisSparseStructureFlowModel,
     TrellisSparseTensor,
@@ -48,6 +49,7 @@ REFERENCE_PATHS = (
     "trellis/models/structured_latent_vae/base.py",
     "trellis/models/structured_latent_vae/decoder_gs.py",
     "trellis/models/structured_latent_vae/decoder_mesh.py",
+    "trellis/models/structured_latent_vae/decoder_rf.py",
     "trellis/representations/mesh/cube2mesh.py",
     "trellis/representations/mesh/utils_cube.py",
     "trellis/modules/sparse/__init__.py",
@@ -379,6 +381,22 @@ class _CapturedGaussian:
         self.config = kwargs
 
 
+class _CapturedStrivec(_CapturedGaussian):
+    """Stands in for ``trellis.representations.Strivec`` (upstream builds it on ``cuda``)."""
+
+
+class _CpuTorch:
+    """``torch`` with ``full`` ignoring ``device``: upstream ``to_representation`` hard-codes ``device='cuda'``."""
+
+    def __getattr__(self, name):
+        return getattr(torch, name)
+
+    @staticmethod
+    def full(*args, device=None, **kwargs):
+        del device
+        return torch.full(*args, **kwargs)
+
+
 def _package(name: str, path: Path) -> types.ModuleType:
     module = types.ModuleType(name)
     module.__path__ = [str(path)]
@@ -400,6 +418,7 @@ def _load_pinned_sparse_reference() -> types.SimpleNamespace:
     _package(f"{REFERENCE_PACKAGE}.models.structured_latent_vae", source_root / "models" / "structured_latent_vae")
     representations = _package(f"{REFERENCE_PACKAGE}.representations", source_root / "representations")
     representations.Gaussian = _CapturedGaussian
+    representations.Strivec = _CapturedStrivec
     flexicubes_root = source_root / "representations" / "mesh" / "flexicubes"
     try:
         with _fake_backends():
@@ -425,6 +444,11 @@ def _load_pinned_sparse_reference() -> types.SimpleNamespace:
                 f"{REFERENCE_PACKAGE}.models.structured_latent_vae.decoder_gs",
                 source_root / "models" / "structured_latent_vae" / "decoder_gs.py",
             )
+            rf_module = _load_module(
+                f"{REFERENCE_PACKAGE}.models.structured_latent_vae.decoder_rf",
+                source_root / "models" / "structured_latent_vae" / "decoder_rf.py",
+            )
+            rf_module.torch = _CpuTorch()
             mesh_decoder = None
             if (flexicubes_root / "flexicubes.py").is_file():
                 # The FlexiCubes submodule is not part of the superproject tree; pin it separately.
@@ -459,6 +483,7 @@ def _load_pinned_sparse_reference() -> types.SimpleNamespace:
         sparse=sparse,
         SLatFlowModel=flow_module.SLatFlowModel,
         SLatGaussianDecoder=gs_module.SLatGaussianDecoder,
+        SLatRadianceFieldDecoder=rf_module.SLatRadianceFieldDecoder,
         mesh_decoder=mesh_decoder,
     )
     return _SPARSE_REFERENCE
@@ -560,6 +585,44 @@ def test_swin_gaussian_decoder_matches_pinned_reference():
             asset.extras["trellis_raw_opacity"] * rep_config["lr"]["_opacity"], gaussian._opacity, atol=1e-6, rtol=1e-5
         )
         assert gaussian.config["scaling_bias"] == rep_config["scaling_bias"]
+
+
+def test_swin_radiance_field_decoder_matches_pinned_reference():
+    reference = _load_pinned_sparse_reference()
+    config = {**TrellisSLatRadianceFieldDecoder.tiny_config(), "attn_mode": "swin", "window_size": 2}
+    generator = torch.Generator().manual_seed(70)
+    coordinates = torch.tensor(
+        [[0, 0, 0, 0], [0, 0, 0, 1], [0, 1, 2, 3], [0, 7, 0, 5], [1, 2, 1, 0], [1, 3, 1, 0], [1, 7, 7, 7]],
+        dtype=torch.int64,
+    )
+    latents = torch.randn(coordinates.shape[0], 4, generator=generator)
+
+    with _fake_backends():
+        torch.manual_seed(71)
+        reference_model = reference.SLatRadianceFieldDecoder(**config).eval()
+        _randomize_state(reference_model, seed=72)
+        model = TrellisSLatRadianceFieldDecoder(**config).eval()
+        model.load_state_dict(reference_model.state_dict(), strict=True)
+        assert set(model.state_dict()) == set(reference_model.state_dict())
+        reference_x, x = _sparse_inputs(reference, coordinates, latents)
+        with torch.no_grad():
+            expected = reference_model(reference_x)
+            actual = model(x).assets
+    assert len(expected) == len(actual) == 2
+    rank, dim = config["representation_config"]["rank"], config["representation_config"]["dim"]
+    for strivec, asset in zip(expected, actual):
+        assert strivec.config["rank"] == rank and strivec.config["dim"] == dim
+        assert strivec.config["aabb"] == [-0.5, -0.5, -0.5, 1, 1, 1] and strivec.density_shift == 0.0
+        assert asset.density_shift == 0.0 and asset.resolution == config["resolution"]
+        # Upstream stores unit-cube positions; the asset keeps grid coordinates plus a centre-mapping transform.
+        centres = asset.coordinates.float() @ asset.grid_transform[:3, :3].T + asset.grid_transform[:3, 3]
+        torch.testing.assert_close(centres + 0.5, strivec.position, atol=1e-6, rtol=0)
+        assert bool((strivec.depth == 3).all())  # log2(8)
+        torch.testing.assert_close(asset.trivec, strivec.trivec, atol=1e-6, rtol=1e-5)
+        torch.testing.assert_close(asset.density, strivec.density, atol=1e-6, rtol=1e-5)
+        torch.testing.assert_close(
+            asset.color_coefficients, strivec.features_dc.reshape(-1, rank, 3), atol=1e-6, rtol=1e-5
+        )
 
 
 def _canonical_mesh(vertices: torch.Tensor, faces: torch.Tensor, colors: torch.Tensor):

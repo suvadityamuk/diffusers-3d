@@ -52,6 +52,22 @@ def _constant_color(value: torch.Tensor, name: str, *, channels: tuple[int, ...]
     return value.detach().cpu().float().tolist()
 
 
+def _texture_image(value: torch.Tensor) -> Any:
+    """``(H, W, 3|4)`` unit-range texture -> uint8 PIL image, row 0 at the top like glTF expects."""
+
+    from PIL import Image
+
+    array = (value.detach().cpu().float().clamp(0, 1).numpy() * 255.0).round().astype("uint8")
+    return Image.fromarray(array, mode="RGBA" if array.shape[-1] == 4 else "RGB")
+
+
+def _texture_tensor(image: Any) -> torch.Tensor:
+    import numpy as np
+
+    array = np.asarray(image.convert("RGBA") if image.mode not in {"RGB", "RGBA"} else image)
+    return torch.from_numpy(array.astype("float32") / 255.0)
+
+
 class TrimeshBackend:
     """Portable CPU mesh conversion, file I/O, and conservative processing.
 
@@ -74,12 +90,19 @@ class TrimeshBackend:
     def _to_trimesh_material(self, material: PBRMaterial) -> Any:
         if material.extras:
             raise ValueError("trimesh conversion cannot represent PBR material extras")
-        base_color = _constant_color(material.base_color, "base_color", channels=(3, 4))
-        opacity = _constant_scalar(material.opacity, "opacity")
-        if len(base_color) == 3:
-            base_color.append(1.0 if opacity is None else opacity)
-        elif opacity is not None:
-            base_color[3] *= opacity
+        base_color_texture = None
+        if material.base_color.ndim == 3:
+            # Textured base colour: the image carries the colour and the factor stays white.
+            base_color_texture = _texture_image(material.base_color)
+            opacity = _constant_scalar(material.opacity, "opacity")
+            base_color = [1.0, 1.0, 1.0, 1.0 if opacity is None else opacity]
+        else:
+            base_color = _constant_color(material.base_color, "base_color", channels=(3, 4))
+            opacity = _constant_scalar(material.opacity, "opacity")
+            if len(base_color) == 3:
+                base_color.append(1.0 if opacity is None else opacity)
+            elif opacity is not None:
+                base_color[3] *= opacity
         if material.normal is not None:
             raise ValueError("trimesh conversion cannot represent a constant PBR normal channel")
 
@@ -92,6 +115,7 @@ class TrimeshBackend:
         return self._trimesh.visual.material.PBRMaterial(
             name=name,
             baseColorFactor=base_color,
+            baseColorTexture=base_color_texture,
             metallicFactor=_constant_scalar(material.metallic, "metallic"),
             roughnessFactor=_constant_scalar(material.roughness, "roughness"),
             emissiveFactor=emissive,
@@ -154,12 +178,17 @@ class TrimeshBackend:
             "material_count": len(mesh.materials),
             "materials": [
                 {
-                    "base_color_channels": material.base_color.shape[0],
+                    "base_color_channels": material.base_color.shape[-1],
                     "has_metallic": material.metallic is not None,
                     "has_roughness": material.roughness is not None,
                     "has_emissive": material.emissive is not None,
                     "has_opacity": material.opacity is not None,
-                    "base_color": material.base_color.detach().cpu().tolist(),
+                    "base_color": (
+                        None if material.base_color.ndim == 3 else material.base_color.detach().cpu().tolist()
+                    ),
+                    "base_color_texture_shape": (
+                        list(material.base_color.shape) if material.base_color.ndim == 3 else None
+                    ),
                     "metallic": None if material.metallic is None else material.metallic.detach().cpu().tolist(),
                     "roughness": (None if material.roughness is None else material.roughness.detach().cpu().tolist()),
                     "emissive": None if material.emissive is None else material.emissive.detach().cpu().tolist(),
@@ -198,7 +227,7 @@ class TrimeshBackend:
     ) -> PBRMaterial:
         if descriptor is not None and not isinstance(descriptor, Mapping):
             raise ValueError("trimesh package material metadata is malformed")
-        if descriptor is not None and "base_color" in descriptor:
+        if descriptor is not None and ("base_color" in descriptor or descriptor.get("base_color_texture_shape")):
             stored_metadata = descriptor.get("metadata", {})
             if not isinstance(stored_metadata, Mapping):
                 raise ValueError("trimesh package material metadata is malformed")
@@ -209,7 +238,11 @@ class TrimeshBackend:
 
             base_color = stored_tensor("base_color")
             if base_color is None:
-                raise ValueError("trimesh package material metadata is missing base_color")
+                texture = getattr(material, "baseColorTexture", None)
+                texture_shape = descriptor.get("base_color_texture_shape")
+                if texture is None or not isinstance(texture_shape, (list, tuple)) or len(texture_shape) != 3:
+                    raise ValueError("trimesh package material metadata is missing base_color")
+                base_color = _texture_tensor(texture)[..., : int(texture_shape[2])]
             return PBRMaterial(
                 base_color=base_color,
                 metallic=stored_tensor("metallic"),
@@ -222,19 +255,20 @@ class TrimeshBackend:
         if isinstance(material, pbr_type):
             if any(
                 getattr(material, name, None) is not None
-                for name in (
-                    "baseColorTexture",
-                    "metallicRoughnessTexture",
-                    "normalTexture",
-                    "occlusionTexture",
-                    "emissiveTexture",
-                )
+                for name in ("metallicRoughnessTexture", "normalTexture", "occlusionTexture", "emissiveTexture")
             ):
                 raise ValueError("textured trimesh materials cannot be converted without losing texture channels")
             color = _cpu_tensor(material.baseColorFactor, dtype=torch.float32) / 255.0
             base_color_channels = 4 if descriptor is None else int(descriptor.get("base_color_channels", 4))
             if base_color_channels not in (3, 4):
                 raise ValueError("trimesh package material metadata has an invalid base color channel count")
+            texture = getattr(material, "baseColorTexture", None)
+            if texture is None:
+                base_color = color[:base_color_channels]
+            else:
+                # Textured base colour: the image times the factor, as glTF defines it.
+                base_color = _texture_tensor(texture)
+                base_color = (base_color * color[: base_color.shape[-1]]).clamp(0, 1)
             if descriptor is None:
                 metadata = {"name": material.name} if material.name else {}
             else:
@@ -243,7 +277,7 @@ class TrimeshBackend:
                     raise ValueError("trimesh package material metadata is malformed")
                 metadata = dict(stored_metadata)
             return PBRMaterial(
-                base_color=color[:base_color_channels],
+                base_color=base_color,
                 metallic=(
                     None
                     if material.metallicFactor is None
@@ -264,7 +298,9 @@ class TrimeshBackend:
                 ),
                 opacity=(
                     color[3].clone()
-                    if descriptor is not None and descriptor.get("has_opacity", False) and base_color_channels == 3
+                    if descriptor is not None
+                    and descriptor.get("has_opacity", False)
+                    and (base_color_channels == 3 or texture is not None)
                     else None
                 ),
                 metadata=metadata,
@@ -405,6 +441,8 @@ class TrimeshBackend:
                 f"{file_type.upper()} export cannot preserve package mesh extras {sorted(mesh.extras)}; drop them "
                 "first, for example with dataclasses.replace(mesh, extras={})"
             )
+        if file_type != "glb" and any(material.base_color.ndim == 3 for material in mesh.materials):
+            raise ValueError(f"{file_type.upper()} export cannot preserve textured base colours; use GLB")
         if any(material.base_color.shape[-1] == 4 and material.opacity is not None for material in mesh.materials):
             raise ValueError(
                 f"{file_type.upper()} export cannot preserve separate base color alpha and opacity channels"

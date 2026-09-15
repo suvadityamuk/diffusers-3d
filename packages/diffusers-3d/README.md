@@ -36,8 +36,9 @@ expression does not relicense any family code or model artifact.
 
 ## Current TRELLIS.2 limitations
 
-- Every network runs in plain PyTorch, with tiny-weight parity against the pinned upstream code. No full 4B checkpoint,
-  production GPU quality, compiled O-Voxel mesh/render, or PBR GLB run has been performed in the test matrix.
+- Every network runs in plain PyTorch, with tiny-weight parity against the pinned upstream code in the CPU test
+  matrix. The full 4B checkpoint, the compiled O-Voxel mesh/render path, and the PBR GLB export run in the separate
+  GPU smoke workflow (`scripts/gpu_smoke.py`), which checks coarse invariants only; quality is not claimed.
 - O-Voxel schema/mixed lossless packing and deterministic lexicographic NPZ across the uint16 coordinate domain are
   pure package code. Explicit 30-bit Morton ordering remains available through coordinate 1023. Unit-domain PBR
   channels use uint8 while out-of-cell dual vertices and unbounded split weights retain float16/float32. NPZ files

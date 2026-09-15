@@ -55,6 +55,7 @@ from .research import (
 from .scikit_image import ScikitImageBackend
 from .spconv import SPCONV_BATCH_INDICES, SpconvBackend
 from .trellis2_pbr import OVoxelPBRPostprocessFacade, Trellis2PBRPostprocessFacade
+from .trellis_glb import TrellisGlbPostprocessFacade
 from .trimesh import TrimeshBackend
 from .types import (
     BackendCapability,
@@ -112,6 +113,7 @@ __all__ = [
     "TensorMap",
     "TrimeshBackend",
     "Trellis2PBRPostprocessFacade",
+    "TrellisGlbPostprocessFacade",
     "KaolinFlexiCubesBackend",
     "XAtlasBackend",
     "create_default_backend_registry",

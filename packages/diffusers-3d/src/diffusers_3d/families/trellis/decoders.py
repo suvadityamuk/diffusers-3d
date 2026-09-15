@@ -21,7 +21,14 @@ from torch import nn
 
 from ...execution.metadata import ContributionStatus, ReviewStatus
 from ...execution.models import Object3DModel
-from ...objects import CoordinateSystem, GaussianSplatAsset, MeshAsset, Object3DKind, SparseVoxelAsset
+from ...objects import (
+    CoordinateSystem,
+    GaussianSplatAsset,
+    MeshAsset,
+    Object3DKind,
+    RadianceFieldAsset,
+    SparseVoxelAsset,
+)
 from .flexicubes import sparse_cubes_to_mesh
 from .models import (
     TrellisAbsolutePositionEmbedder,
@@ -53,6 +60,13 @@ class TrellisMeshDecoderOutput(BaseOutput):
     """One FlexiCubes mesh per sparse batch item."""
 
     assets: tuple[MeshAsset, ...]
+
+
+@dataclass
+class TrellisRadianceFieldDecoderOutput(BaseOutput):
+    """One tri-vector radiance field per sparse batch item."""
+
+    assets: tuple[RadianceFieldAsset, ...]
 
 
 class TrellisChannelLayerNorm32(TrellisLayerNorm32):
@@ -604,6 +618,9 @@ class TrellisSLatGaussianDecoder(_TrellisSLatDecoderBase):
     ) -> tuple[GaussianSplatAsset, ...]:
         count = int(self.rep_config["num_gaussians"])
         learning_rates = self.rep_config["lr"]
+        # Half-precision positions and quaternions are too coarse for the asset (unit-norm check, 1/256 steps).
+        if parameters.dtype.itemsize < 4:
+            parameters = parameters.float()
         assets = []
         for batch_index in range(hidden_states.batch_size):
             mask = hidden_states.coordinates[:, 0] == batch_index
@@ -799,7 +816,6 @@ class TrellisSLatMeshDecoder(_TrellisSLatDecoderBase):
             use_checkpoint=use_checkpoint,
             qk_rms_norm=qk_rms_norm,
         )
-        self.rep_config = representation_config
         self.mesh_resolution = resolution * 4
         self.out_channels = 8 + 24 + 21 + (8 * 6 if self.use_color else 0)
         self.upsample = nn.ModuleList(
@@ -897,15 +913,17 @@ class TrellisSLatMeshDecoder(_TrellisSLatDecoderBase):
         return TrellisMeshDecoderOutput(assets=assets)
 
 
-class TrellisSLatRadianceFieldDecoder(Object3DModel):
-    """Explicit future type for unsupported TRELLIS radiance-field decoding."""
+class TrellisSLatRadianceFieldDecoder(_TrellisSLatDecoderBase):
+    """SLAT radiance-field decoder (released layout: 12 shifted-window attention blocks, rank-16 tri-vectors).
 
-    family_id = "trellis"
+    Every latent voxel becomes one :class:`RadianceFieldAsset` voxel carrying the released ``Strivec`` channels
+    ``[trivec (rank x 3 x dim) | density (rank) | features_dc (rank x 3)]``; the network's ``trivec`` output is
+    offset by one, as upstream does. Rendering is not part of the model: use
+    :func:`diffusers_3d.backends.radiance_field.render_radiance_field`.
+    """
+
     component_role = "slat-radiance-field-decoder"
-    supported_object_kinds = ()
-    required_backends = ("diffoctreerast",)
-    contribution_status = ContributionStatus.EXPERIMENTAL_HUB
-    review_status = ReviewStatus.UNREVIEWED
+    supported_object_kinds = (Object3DKind.RADIANCE_FIELD,)
 
     @register_to_config
     def __init__(
@@ -920,23 +938,39 @@ class TrellisSLatRadianceFieldDecoder(Object3DModel):
         attn_mode: str = "swin",
         window_size: int = 8,
         pe_mode: str = "ape",
-        use_fp16: bool = True,
+        use_fp16: bool = False,
         use_checkpoint: bool = False,
         qk_rms_norm: bool = False,
         representation_config: dict[str, Any] | None = None,
     ) -> None:
         super().__init__()
-        del num_head_channels
-        if min(resolution, model_channels, latent_channels, num_blocks, window_size) <= 0:
-            raise ValueError("decoder dimensions must be positive")
-        if num_heads is not None and (num_heads <= 0 or model_channels % num_heads):
-            raise ValueError("model_channels must be divisible by num_heads")
-        if attn_mode not in {"full", "shift_window", "shift_sequence", "shift_order", "swin"}:
-            raise ValueError("unsupported sparse attention mode")
-        if pe_mode not in {"ape", "rope"}:
-            raise ValueError("pe_mode must be 'ape' or 'rope'")
-        self.resolution = resolution
-        self.representation_config = {} if representation_config is None else dict(representation_config)
+        representation_config = (
+            {"rank": 16, "dim": 8} if representation_config is None else dict(representation_config)
+        )
+        rank, dim = representation_config.get("rank"), representation_config.get("dim")
+        if not isinstance(rank, int) or not isinstance(dim, int) or rank <= 0 or dim < 2:
+            raise ValueError("representation_config needs a positive integer rank and an integer dim >= 2")
+        self._init_torso(
+            resolution=resolution,
+            model_channels=model_channels,
+            latent_channels=latent_channels,
+            num_blocks=num_blocks,
+            num_heads=num_heads,
+            num_head_channels=num_head_channels,
+            mlp_ratio=mlp_ratio,
+            attn_mode=attn_mode,
+            window_size=window_size,
+            pe_mode=pe_mode,
+            use_fp16=use_fp16,
+            use_checkpoint=use_checkpoint,
+            qk_rms_norm=qk_rms_norm,
+        )
+        self.rank, self.dim = rank, dim
+        self.out_channels = rank * 3 * dim + rank + rank * 3
+        self.out_layer = nn.Linear(model_channels, self.out_channels)
+        self._initialize_weights()
+        if use_fp16:
+            self.blocks.to(dtype=torch.float16)
 
     @classmethod
     def production_config(cls) -> dict[str, Any]:
@@ -953,16 +987,73 @@ class TrellisSLatRadianceFieldDecoder(Object3DModel):
             "representation_config": {"rank": 16, "dim": 8},
         }
 
-    def forward(self, hidden_states: TrellisSparseTensor) -> None:
-        del hidden_states
-        raise NotImplementedError(
-            "TRELLIS radiance fields do not yet have a package-native Object3D type and are intentionally unsupported"
-        )
+    @classmethod
+    def tiny_config(cls) -> dict[str, Any]:
+        return {
+            "resolution": 8,
+            "model_channels": 32,
+            "latent_channels": 4,
+            "num_blocks": 2,
+            "num_heads": 4,
+            "mlp_ratio": 2,
+            "attn_mode": "full",
+            "window_size": 2,
+            "use_fp16": False,
+            "representation_config": {"rank": 2, "dim": 4},
+        }
+
+    def _to_assets(
+        self, hidden_states: TrellisSparseTensor, parameters: torch.Tensor
+    ) -> tuple[RadianceFieldAsset, ...]:
+        rank, dim = self.rank, self.dim
+        trivec_size = rank * 3 * dim
+        if parameters.dtype.itemsize < 4:
+            parameters = parameters.float()
+        grid_transform = trellis_grid_transform(self.resolution, device=parameters.device, dtype=parameters.dtype)
+        assets = []
+        for batch_index in range(hidden_states.batch_size):
+            mask = hidden_states.coordinates[:, 0] == batch_index
+            values = parameters[mask]
+            assets.append(
+                RadianceFieldAsset(
+                    coordinates=hidden_states.coordinates[mask, 1:],
+                    trivec=values[:, :trivec_size].reshape(-1, rank, 3, dim) + 1.0,
+                    density=values[:, trivec_size : trivec_size + rank],
+                    color_coefficients=values[:, trivec_size + rank :].reshape(-1, rank, 3),
+                    resolution=self.resolution,
+                    grid_transform=grid_transform,
+                    coordinate_system=CoordinateSystem.RIGHT_HANDED_Z_UP,
+                    metadata={
+                        "family": "trellis",
+                        "representation": "radiance-field",
+                        "resolution": self.resolution,
+                        "rank": rank,
+                        "dim": dim,
+                    },
+                )
+            )
+        return tuple(assets)
+
+    def forward(
+        self,
+        hidden_states: TrellisSparseTensor,
+        *,
+        return_dict: bool = True,
+    ) -> TrellisRadianceFieldDecoderOutput | tuple[tuple[RadianceFieldAsset, ...]]:
+        self._check_input(hidden_states)
+        features = self._run_torso(hidden_states)
+        features = F.layer_norm(features, features.shape[-1:])
+        parameters = self.out_layer(features.to(dtype=hidden_states.dtype))
+        assets = self._to_assets(hidden_states, parameters)
+        if not return_dict:
+            return (assets,)
+        return TrellisRadianceFieldDecoderOutput(assets=assets)
 
 
 __all__ = [
     "TrellisGaussianDecoderOutput",
     "TrellisMeshDecoderOutput",
+    "TrellisRadianceFieldDecoderOutput",
     "TrellisSLatGaussianDecoder",
     "TrellisSLatMeshDecoder",
     "TrellisSLatRadianceFieldDecoder",

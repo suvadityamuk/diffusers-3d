@@ -13,6 +13,7 @@ class Object3DKind(str, Enum):
     GAUSSIAN_SPLAT = "gaussian_splat"
     SPARSE_VOXEL = "sparse_voxel"
     O_VOXEL = "o_voxel"
+    RADIANCE_FIELD = "radiance_field"
 
 
 class CoordinateSystem(str, Enum):

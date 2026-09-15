@@ -9,6 +9,8 @@ from diffusers_3d import (
     CoordinateSystem,
     GaussianSplatAsset,
     MeshAsset,
+    Object3DKind,
+    RadianceFieldAsset,
     SparseVoxelAsset,
     TrellisSLatGaussianDecoder,
     TrellisSLatMeshDecoder,
@@ -150,8 +152,31 @@ def test_mesh_decoder_returns_zup_mesh_assets_with_colors_and_normal_map():
             decoder(sparse)
 
 
-def test_unported_radiance_decoder_fails_explicitly():
-    sparse = TrellisSparseTensor(torch.tensor([[0, 0, 0, 0]]), torch.zeros(1, 8))
-    radiance = TrellisSLatRadianceFieldDecoder()
-    with pytest.raises(NotImplementedError, match="package-native Object3D"):
-        radiance(sparse)
+def test_radiance_field_decoder_splits_the_released_strivec_layout():
+    config = TrellisSLatRadianceFieldDecoder.tiny_config()
+    decoder = TrellisSLatRadianceFieldDecoder(**config).eval()
+    rank, dim = config["representation_config"]["rank"], config["representation_config"]["dim"]
+    assert decoder.out_channels == rank * 3 * dim + rank + rank * 3
+    coordinates = torch.tensor([[0, 0, 0, 0], [0, 1, 2, 3], [1, 7, 7, 7]], dtype=torch.int64)
+    sparse = TrellisSparseTensor(coordinates, torch.zeros(3, config["latent_channels"]))
+    # A zero output projection with a known bias makes the split observable: channel c carries value c.
+    with torch.no_grad():
+        decoder.out_layer.weight.zero_()
+        decoder.out_layer.bias.copy_(torch.arange(decoder.out_channels, dtype=torch.float32))
+        output = decoder(sparse)
+    assert len(output.assets) == 2
+    first = output.assets[0]
+    assert type(first) is RadianceFieldAsset and first.kind is Object3DKind.RADIANCE_FIELD
+    assert first.coordinate_system is CoordinateSystem.RIGHT_HANDED_Z_UP
+    assert torch.equal(first.coordinates, coordinates[:2, 1:])
+    assert first.resolution == config["resolution"] and first.rank == rank and first.dim == dim
+    channels = torch.arange(decoder.out_channels, dtype=torch.float32)
+    trivec_size = rank * 3 * dim
+    # trivec comes first and is offset by one, then density, then the DC colour coefficients.
+    torch.testing.assert_close(first.trivec[0], channels[:trivec_size].reshape(rank, 3, dim) + 1.0)
+    torch.testing.assert_close(first.density[0], channels[trivec_size : trivec_size + rank])
+    torch.testing.assert_close(first.color_coefficients[0], channels[trivec_size + rank :].reshape(rank, 3))
+    torch.testing.assert_close(first.grid_transform, trellis_grid_transform(config["resolution"]))
+    assert first.metadata["representation"] == "radiance-field"
+    with pytest.raises(ValueError, match="rank"):
+        TrellisSLatRadianceFieldDecoder(**{**config, "representation_config": {"rank": 0, "dim": 4}})

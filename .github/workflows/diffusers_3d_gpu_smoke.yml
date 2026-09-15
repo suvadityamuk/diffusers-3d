@@ -1,0 +1,74 @@
+name: Diffusers 3D GPU smoke
+
+# Runs packages/diffusers-3d/scripts/gpu_smoke.py on a Hugging Face Jobs A100: converts the released TRELLIS and
+# TRELLIS.2 checkpoints, generates from an image and a prompt, and exercises every compiled backend at its pinned
+# revision. GitHub CPU jobs cannot provide this evidence, so it runs on demand and weekly rather than per PR.
+#
+# Needs the HF_TOKEN secret: it launches the job and reads the gated DINOv3 weights inside it.
+
+on:
+  workflow_dispatch:
+    inputs:
+      stages:
+        description: Comma-separated stages (status,trellis2,trellis,text)
+        default: status,trellis2,trellis,text
+      flavor:
+        description: Hugging Face Jobs hardware flavor
+        default: a100-large
+  schedule:
+    - cron: "17 6 * * 1"
+
+permissions:
+  contents: read
+
+jobs:
+  gpu-smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 150
+    steps:
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install the Hugging Face CLI
+        run: python -m pip install --quiet "huggingface_hub[cli]>=1.0"
+      - name: Launch the smoke job
+        id: launch
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+          REPOSITORY: ${{ github.server_url }}/${{ github.repository }}.git
+          REVISION: ${{ github.sha }}
+          STAGES: ${{ inputs.stages || 'status,trellis2,trellis,text' }}
+          FLAVOR: ${{ inputs.flavor || 'a100-large' }}
+        run: |
+          set -euo pipefail
+          # The devel image ships nvcc, which FlexGEMM, CuMesh, nvdiffrast, and O-Voxel need to build.
+          output="$(hf jobs run --detach --flavor "$FLAVOR" --timeout 2h --secrets HF_TOKEN \
+            --env REPOSITORY="$REPOSITORY" --env REVISION="$REVISION" --env STAGES="$STAGES" \
+            pytorch/pytorch:2.8.0-cuda12.9-cudnn9-devel bash -c '
+              set -euo pipefail
+              apt-get update -qq > /dev/null && apt-get install -y -qq git ninja-build libgl1 libglib2.0-0 > /dev/null
+              git clone --quiet --filter=blob:none "$REPOSITORY" /work/repo
+              git -C /work/repo checkout --quiet "$REVISION"
+              cd /work/repo
+              python -m pip install -q . "./packages/diffusers-3d[portable]" "transformers>=5.5" \
+                accelerate safetensors pillow "huggingface_hub>=1.0"
+              ACCEPT_NVDIFFRAST_RESEARCH_LICENSE=1 bash packages/diffusers-3d/scripts/install_gpu_backends.sh
+              python packages/diffusers-3d/scripts/gpu_smoke.py --work /work/cache --output /work/out --stages "$STAGES"
+              cat /work/out/report.json
+            ')"
+          echo "$output"
+          job_id="$(echo "$output" | sed -n 's/^id=\([^ ]*\).*/\1/p' | head -n 1)"
+          test -n "$job_id"
+          echo "job_id=$job_id" >> "$GITHUB_OUTPUT"
+      - name: Wait for the job and check its status
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+          JOB_ID: ${{ steps.launch.outputs.job_id }}
+        run: |
+          set -uo pipefail
+          # `hf jobs wait` exits non-zero when the job errored, was cancelled, or timed out.
+          hf jobs wait "$JOB_ID" --timeout 2h
+          status=$?
+          hf jobs logs "$JOB_ID" | tail -n 300
+          hf jobs inspect "$JOB_ID" --json | python -c 'import json, sys; print("status:", json.load(sys.stdin)[0]["status"])'
+          exit "$status"

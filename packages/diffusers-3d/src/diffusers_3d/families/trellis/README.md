@@ -72,15 +72,37 @@ active voxels instead of materializing the dense 256³ grid and returns a Z-up
 `MeshAsset` with vertex `colors` and the predicted normal map in
 `extras["normal_map"]`. `formats=("mesh",)` selects it in both pipelines.
 
-Tiny outputs of all three models match the pinned upstream code with `spconv`
+`TrellisSLatRadianceFieldDecoder` is the released radiance-field decoder:
+the same torso followed by a projection to the `Strivec` channels (rank-16
+tri-vectors with 8 samples per axis, per-component density and DC colour).
+It returns a `RadianceFieldAsset`, which stores exactly those channels plus
+the grid transform. Rendering is not a model concern:
+`diffusers_3d.backends.radiance_field.render_radiance_field` is an
+independent pure-PyTorch volume renderer written from the representation's
+definition (two samples per trivec cell, `softplus` density, `sigmoid`
+colour, front-to-back compositing). It does not derive from the restricted
+`diffoctreerast` rasterizer and claims no pixel parity with it.
+`formats=("radiance_field",)` selects the decoder in both pipelines.
+
+Tiny outputs of all four models match the pinned upstream code with `spconv`
 and `xformers` shimmed to dense PyTorch (the mesh decoder additionally against
-the pinned FlexiCubes submodule, up to vertex order), and released state-dict
+the pinned FlexiCubes submodule, up to vertex order; the radiance-field
+decoder with the upstream `Strivec` built on CPU), and released state-dict
 layouts are checked against the published safetensors headers.
 
-Not ported:
+## Textured GLB
 
-- `TrellisSLatRadianceFieldDecoder`, because the package has no native
-  radiance-field `Object3D` type.
+Upstream's `to_glb` textures the mesh from renders of the Gaussians rather
+than from the mesh decoder's vertex colours. `TrellisGlbPostprocessFacade.
+to_textured_mesh(mesh, gaussians)` follows that recipe with permissive
+backends: CuMesh repairs and simplifies the mesh to 5% of its faces, xatlas
+unwraps it, gsplat renders the splats from 100 Hammersley-distributed views,
+and `backends/texture_baking.py` projects every texel onto those renders and
+averages the views that see it (depth- and alpha-tested against the render).
+The result is a `MeshAsset` with `uvs` and a textured `PBRMaterial` that
+`TrimeshBackend.export_mesh` writes as a GLB with a base-colour texture. The
+upstream hole filling and the optimisation-based baking mode are not
+reproduced.
 
 ## Backend and license boundaries
 
@@ -133,8 +155,8 @@ the resized RGB and alpha tensors. Separate masks participate in alpha.
 - No production-resolution GPU or end-to-end two-stage parity run is part of
   this package's test matrix; the released checkpoints were run by hand on an
   A100 (see `docs/compatibility.md`) and render quality is not claimed.
-- Radiance-field decoding, rendering quality, texture quality, and
-  background removal are not claimed.
+- Rendering quality, texture quality, pixel parity of the radiance-field
+  renderer with `diffoctreerast`, and background removal are not claimed.
 - CI and conversion tests are offline CPU tests and download no model weights.
 
 Convert a local pipeline:
@@ -145,5 +167,4 @@ diffusers-3d-convert-trellis source/ output/ \
 ```
 
 The converter writes the conditioner, sparse-structure flow and decoder, SLAT
-flow, and the Gaussian and mesh decoders; the radiance-field decoder in the
-release is skipped.
+flow, and the Gaussian, mesh, and radiance-field decoders.

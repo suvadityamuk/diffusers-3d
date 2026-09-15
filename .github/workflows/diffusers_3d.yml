@@ -134,6 +134,8 @@ jobs:
             https://github.com/microsoft/TRELLIS.git \
             442aa1e1afb9014e80681d3bf604e8d728a86ee7 \
             "$RUNNER_TEMP/TRELLIS"
+          # The mesh-decoder parity test needs the FlexiCubes submodule at the revision the superproject pins.
+          git -C "$RUNNER_TEMP/TRELLIS" submodule update --init --depth=1 trellis/representations/mesh/flexicubes
           clone_exact \
             https://github.com/microsoft/TRELLIS.2.git \
             75fbf0183001ed9876c8dbb35de6b68552ee08bd \
@@ -159,7 +161,7 @@ jobs:
           skipped = sum(int(suite.attrib.get("skipped", 0)) for suite in suites)
           failures = sum(int(suite.attrib.get("failures", 0)) for suite in suites)
           errors = sum(int(suite.attrib.get("errors", 0)) for suite in suites)
-          assert tests == 4, f"expected 4 reference-parity cases, collected {tests}"
+          assert tests == 10, f"expected 10 reference-parity cases, collected {tests}"
           assert (skipped, failures, errors) == (0, 0, 0), (
               f"reference parity was not clean: skipped={skipped}, "
               f"failures={failures}, errors={errors}"

@@ -13,6 +13,7 @@ from diffusers_3d import (
     TrellisSLatFlowRecipe,
     TrellisSLatGaussianDecoder,
     TrellisSLatMeshDecoder,
+    TrellisSLatRadianceFieldDecoder,
     TrellisSparseStructureDecoder,
     TrellisSparseStructureFlowModel,
     TrellisSparseStructureFlowRecipe,
@@ -101,6 +102,7 @@ def test_manifest_matches_exact_reviewed_trellis_registrations():
         TrellisSLatFlowModel,
         TrellisSLatGaussianDecoder,
         TrellisSLatMeshDecoder,
+        TrellisSLatRadianceFieldDecoder,
         TrellisClipTextConditioner,
     }
     assert {registration.pipeline_class for registration in pipeline_registrations} == {
@@ -109,7 +111,13 @@ def test_manifest_matches_exact_reviewed_trellis_registrations():
     }
     assert set(manifest.workflow.task_ids) == {"image-to-3d", "text-to-3d"}
     assert set(manifest.workflow.input_representations) == {"image", "text"}
-    assert set(manifest.workflow.output_representations) == {"gaussian-splat", "mesh", "slat", "sparse-structure"}
+    assert set(manifest.workflow.output_representations) == {
+        "gaussian-splat",
+        "mesh",
+        "radiance-field",
+        "slat",
+        "sparse-structure",
+    }
     assert {registration.recipe_type for registration in recipe_registrations} == {
         TrellisSparseStructureFlowRecipe,
         TrellisSLatFlowRecipe,
@@ -124,6 +132,7 @@ def test_manifest_matches_exact_reviewed_trellis_registrations():
         assert set(pipeline_registration.metadata.output_representations) == {
             "gaussian-splat",
             "mesh",
+            "radiance-field",
             "slat",
             "sparse-structure",
         }

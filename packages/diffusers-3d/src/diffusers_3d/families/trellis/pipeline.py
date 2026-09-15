@@ -28,10 +28,16 @@ from ...objects import (
     Object3D,
     Object3DKind,
     Object3DPipelineOutput,
+    RadianceFieldAsset,
     SparseVoxelAsset,
 )
 from .conditioner import TrellisDinov2Conditioner
-from .decoders import TrellisSLatGaussianDecoder, TrellisSLatMeshDecoder, TrellisSparseStructureDecoder
+from .decoders import (
+    TrellisSLatGaussianDecoder,
+    TrellisSLatMeshDecoder,
+    TrellisSLatRadianceFieldDecoder,
+    TrellisSparseStructureDecoder,
+)
 from .models import TrellisSLatFlowModel, TrellisSparseStructureFlowModel
 from .scheduler import TrellisFlowEulerScheduler
 from .sparse import TrellisSparseTensor
@@ -50,17 +56,22 @@ def _conditioner_spec(conditioner_type: type[Object3DModel]) -> Object3DComponen
 
 
 class _TrellisTwoStagePipeline(Object3DPipeline):
-    """Shared TRELLIS stages: sparse structure -> SLAT -> Gaussian splats and/or FlexiCubes meshes, in plain PyTorch.
+    """Shared TRELLIS stages: sparse structure -> SLAT -> Gaussian splats, FlexiCubes meshes, and/or radiance fields.
 
     Subclasses supply the conditioner (DINOv2 image tokens or CLIP text tokens) and ``__call__``. ``formats``
-    covers ``"sparse_structure"``, ``"slat"``, ``"gaussian"``, and ``"mesh"``; the released radiance-field
-    decoder is not ported.
+    covers ``"sparse_structure"``, ``"slat"``, ``"gaussian"``, ``"mesh"``, and ``"radiance_field"``; every network
+    runs in plain PyTorch.
     """
 
     family_id = "trellis"
-    output_object_types = (SparseVoxelAsset, GaussianSplatAsset, MeshAsset)
-    output_representations = ("sparse-structure", "slat", "gaussian-splat", "mesh")
-    object_kinds = (Object3DKind.SPARSE_VOXEL, Object3DKind.GAUSSIAN_SPLAT, Object3DKind.MESH)
+    output_object_types = (SparseVoxelAsset, GaussianSplatAsset, MeshAsset, RadianceFieldAsset)
+    output_representations = ("sparse-structure", "slat", "gaussian-splat", "mesh", "radiance-field")
+    object_kinds = (
+        Object3DKind.SPARSE_VOXEL,
+        Object3DKind.GAUSSIAN_SPLAT,
+        Object3DKind.MESH,
+        Object3DKind.RADIANCE_FIELD,
+    )
     required_backends = ()
     contribution_status = ContributionStatus.REVIEWED_PACKAGE
     review_status = ReviewStatus.REVIEWED
@@ -121,16 +132,25 @@ class _TrellisTwoStagePipeline(Object3DPipeline):
             review_status=ReviewStatus.REVIEWED,
             loading_eligible=True,
         ),
+        Object3DComponentSpec(
+            name="radiance_field_decoder",
+            expected_class=fully_qualified_class_name(TrellisSLatRadianceFieldDecoder),
+            subfolder="radiance_field_decoder",
+            optional=True,
+            review_status=ReviewStatus.REVIEWED,
+            loading_eligible=True,
+        ),
     )
     model_cpu_offload_seq = (
         "conditioner->sparse_structure_flow_model->sparse_structure_decoder->slat_flow_model"
-        "->gaussian_decoder->mesh_decoder"
+        "->gaussian_decoder->mesh_decoder->radiance_field_decoder"
     )
     _optional_components = [
         "slat_flow_model",
         "slat_scheduler",
         "gaussian_decoder",
         "mesh_decoder",
+        "radiance_field_decoder",
     ]
 
     def __init__(
@@ -143,6 +163,7 @@ class _TrellisTwoStagePipeline(Object3DPipeline):
         slat_scheduler: TrellisFlowEulerScheduler | None = None,
         gaussian_decoder: TrellisSLatGaussianDecoder | None = None,
         mesh_decoder: TrellisSLatMeshDecoder | None = None,
+        radiance_field_decoder: TrellisSLatRadianceFieldDecoder | None = None,
         slat_mean: Sequence[float] | None = None,
         slat_std: Sequence[float] | None = None,
     ) -> None:
@@ -165,9 +186,16 @@ class _TrellisTwoStagePipeline(Object3DPipeline):
                 raise ValueError("SLAT normalization must contain one value per output feature channel")
             if any(float(value) <= 0 for value in slat_std):
                 raise ValueError("SLAT standard deviations must be positive")
-        elif any(component is not None for component in (slat_scheduler, gaussian_decoder, mesh_decoder)):
+        elif any(
+            component is not None
+            for component in (slat_scheduler, gaussian_decoder, mesh_decoder, radiance_field_decoder)
+        ):
             raise ValueError("SLAT decoders and scheduler require slat_flow_model")
-        for name, decoder in (("Gaussian", gaussian_decoder), ("mesh", mesh_decoder)):
+        for name, decoder in (
+            ("Gaussian", gaussian_decoder),
+            ("mesh", mesh_decoder),
+            ("radiance-field", radiance_field_decoder),
+        ):
             if decoder is not None and decoder.config.latent_channels != slat_flow_model.config.out_channels:
                 raise ValueError(f"SLAT flow output channels must match the {name} decoder")
 
@@ -180,6 +208,7 @@ class _TrellisTwoStagePipeline(Object3DPipeline):
             slat_scheduler=slat_scheduler,
             gaussian_decoder=gaussian_decoder,
             mesh_decoder=mesh_decoder,
+            radiance_field_decoder=radiance_field_decoder,
         )
         self.register_to_config(
             slat_mean=None if slat_mean is None else [float(value) for value in slat_mean],
@@ -373,6 +402,10 @@ class _TrellisTwoStagePipeline(Object3DPipeline):
             if self.mesh_decoder is None:
                 raise RuntimeError("format 'mesh' requires mesh_decoder")
             objects.extend(self.mesh_decoder(slat).assets)
+        if "radiance_field" in formats:
+            if self.radiance_field_decoder is None:
+                raise RuntimeError("format 'radiance_field' requires radiance_field_decoder")
+            objects.extend(self.radiance_field_decoder(slat).assets)
         return tuple(objects)
 
     def _generate(
@@ -394,11 +427,15 @@ class _TrellisTwoStagePipeline(Object3DPipeline):
     ) -> Object3DPipelineOutput | tuple[tuple[Object3D, ...], Latent3DOutput | None]:
         """Run both stages from encoded conditioning.
 
-        ``formats`` defaults to every loaded SLAT decoder output (``"gaussian"`` and/or ``"mesh"``), or
-        ``"sparse_structure"`` when none is loaded.
+        ``formats`` defaults to every loaded SLAT decoder output (``"gaussian"``, ``"mesh"``, and/or
+        ``"radiance_field"``), or ``"sparse_structure"`` when none is loaded.
         """
 
-        decoders = {"gaussian": self.gaussian_decoder, "mesh": self.mesh_decoder}
+        decoders = {
+            "gaussian": self.gaussian_decoder,
+            "mesh": self.mesh_decoder,
+            "radiance_field": self.radiance_field_decoder,
+        }
         if formats is None:
             formats = tuple(name for name, decoder in decoders.items() if decoder is not None) or ("sparse_structure",)
         formats = tuple(formats)
@@ -476,6 +513,7 @@ class TrellisImageTo3DPipeline(_TrellisTwoStagePipeline):
         slat_scheduler: TrellisFlowEulerScheduler | None = None,
         gaussian_decoder: TrellisSLatGaussianDecoder | None = None,
         mesh_decoder: TrellisSLatMeshDecoder | None = None,
+        radiance_field_decoder: TrellisSLatRadianceFieldDecoder | None = None,
         slat_mean: Sequence[float] | None = None,
         slat_std: Sequence[float] | None = None,
     ) -> None:
@@ -490,6 +528,7 @@ class TrellisImageTo3DPipeline(_TrellisTwoStagePipeline):
             slat_scheduler,
             gaussian_decoder,
             mesh_decoder,
+            radiance_field_decoder,
             slat_mean,
             slat_std,
         )
@@ -602,6 +641,7 @@ class TrellisTextTo3DPipeline(_TrellisTwoStagePipeline):
         slat_scheduler: TrellisFlowEulerScheduler | None = None,
         gaussian_decoder: TrellisSLatGaussianDecoder | None = None,
         mesh_decoder: TrellisSLatMeshDecoder | None = None,
+        radiance_field_decoder: TrellisSLatRadianceFieldDecoder | None = None,
         slat_mean: Sequence[float] | None = None,
         slat_std: Sequence[float] | None = None,
     ) -> None:
@@ -616,6 +656,7 @@ class TrellisTextTo3DPipeline(_TrellisTwoStagePipeline):
             slat_scheduler,
             gaussian_decoder,
             mesh_decoder,
+            radiance_field_decoder,
             slat_mean,
             slat_std,
         )
