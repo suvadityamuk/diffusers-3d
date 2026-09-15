@@ -37,32 +37,49 @@ The repository contains two things:
 
 ## What it does
 
-**Tensor-native 3D objects.** `MeshAsset`, `GaussianSplatAsset`, `SparseVoxelAsset`, and `OVoxelAsset` are
-dataclasses of tensors with explicit `transform`, `grid_transform`, and `coordinate_system` fields, validated on
-construction and movable with `.to(device, dtype)`. Representation-specific channels (PBR materials, dual-grid
-vertices, spherical harmonics) are first-class fields, not lossy conversions. Every pipeline returns an
-`Object3DPipelineOutput` whose first value is always a tuple of these objects.
+**3D outputs are typed tensors, not files.** A pipeline hands back `MeshAsset` (`vertices`, `faces`, optional
+`normals`/`uvs`/`colors` and a tuple of `PBRMaterial`s), `GaussianSplatAsset` (`means`, `log_scales`,
+`quaternions_wxyz`, `opacity_logits`, `sh_coefficients`), `SparseVoxelAsset` (`coordinates` + `features`), or
+`OVoxelAsset` (active cells plus dual-grid vertices, intersection flags, and per-cell base color, metallic,
+roughness, opacity, normals, emissive). Each one is a dataclass of `torch.Tensor`s that checks its own shapes when
+constructed, carries a 4x4 `transform` (object to world), a `grid_transform` where a grid is involved, and a
+`coordinate_system` enum, and moves with `.to(device, dtype)` like a model would. You decide when to turn it into a
+GLB, NPZ, or PLY, and which fields you are willing to lose in the process.
 
-**Diffusers-style pipelines for 3D models.** Model families are integrated as ordinary Diffusers models and
-pipelines. Components live in subfolders, configs are JSON, weights are safetensors, and `save_pretrained` /
-`from_pretrained` round-trip. Family conversion CLIs turn official releases into this layout once.
+**3D models look like any other Diffusers model.** A converted checkpoint is a directory with `model_index.json`
+and one subfolder per component, each holding a `config.json` and a `diffusion_pytorch_model.safetensors`. The flow
+models, decoders, and conditioners subclass `ModelMixin`; pipelines subclass `DiffusionPipeline`; schedulers
+subclass `SchedulerMixin`. So `from_pretrained`, `save_pretrained`, `.to()`, and CPU offload work without any
+3D-specific plumbing, and a fine-tuned pipeline saves back into the same layout it was loaded from.
 
-**Reviewed, verifiable integrations.** Each family records the exact upstream revision it reproduces and ships tiny
-CPU parity tests against it. Pipeline configs and asset metadata state what has been measured and what has not, so
-"supported" always has a specific meaning.
+**Each integration says what it reproduces and how it was checked.** A family README names the upstream repository
+and commit it was ported from. The test suite builds tiny versions of every model from `tiny_config()` and compares
+outputs and selected gradients against that pinned upstream code on CPU. Where a stage has not been run at production
+scale (for TRELLIS.2, the 1024 cascade and the compiled O-Voxel/PBR stages), the pipeline config records it under
+`capability_limitations` and the pipeline raises `NotImplementedError` with that reason rather than producing
+unverified output.
 
-**Secure Hub auto-loading.** `AutoPipelineForImageTo3D.from_pretrained(repo_or_path)` resolves the concrete
-pipeline from a schema-v2 sidecar that names every component's class, validates identities before downloading, fetches
-only eligible components, and never enables remote code.
+**Loading from the Hub without running remote code.** `AutoPipelineForImageTo3D.from_pretrained(repo_or_path)`
+reads an `object3d_model_index.json` sidecar that lists, for each component, its subfolder and the installed class
+that must load it. The loader checks those class names against the package before it downloads anything, downloads
+only the component folders the sidecar marks as eligible, and then calls the concrete pipeline class on the local
+snapshot. `trust_remote_code=True` is rejected; a reviewed family does not need it.
 
-**Optional geometry backends, never implicit.** Portable CPU tooling (trimesh, scikit-image, xatlas), accelerated
-CUDA kernels (spconv, FlexGEMM, CuMesh, gsplat, O-Voxel), and research-licensed dependencies (nvdiffrast) are
-discovered through a registry with provenance and license checks. Nothing is imported or selected silently; a backend
-is chosen explicitly and reports its own status.
+**Geometry libraries are opt-in and tracked.** CPU tools (trimesh, scikit-image, xatlas), CUDA kernels (spconv,
+FlexGEMM, CuMesh, gsplat, the compiled O-Voxel runtime), and research-licensed code (nvdiffrast) each sit behind a
+`BackendSpec` in a registry. A spec records the package, the supported device/dtype/Torch combinations, and, for
+source builds, the git URL and commit the wheel must have been built from. Nothing is imported at package import
+time; you construct a backend such as `TrimeshBackend()` when you need it, it verifies its own install, and
+restricted dependencies require an explicit license acknowledgement argument.
 
-**Recipe-gated fine-tuning.** Training goes through per-stage `TrainingRecipe3D` classes that fix the objective,
-the example type, and which components may be trained. `Object3DTrainer` handles Accelerate, optimizer, scheduling,
-and exact-resume checkpoints with a self-describing manifest. Generic, unreviewed targets are rejected.
+**Fine-tuning runs through a recipe, not a free-form loop.** `Trellis2SparseStructureFlowRecipe(pipeline)` fixes
+the flow-matching objective from the paper, the `Trellis2SparseStructureExample` type your dataset must return, the
+one component you may train (`sparse_structure_flow_model`), and the two that stay frozen (conditioner, decoder).
+`Object3DTrainer(recipe, dataset, FullFineTune(...), TrainingConfig3D(...))` sets up Accelerate, the optimizer and
+LR schedule, gradient clipping, and mixed precision, and writes checkpoints with a `diffusers_3d_training.json`
+manifest that names the recipe version, strategy, base model, dataset fingerprint, and a hash of the trainable
+parameter names, so a resume either matches exactly or fails with the first mismatch. Asking to train a component or
+strategy the recipe has not approved raises `TrainingPolicyError` before any parameter is touched.
 
 ## Supported models
 
@@ -85,11 +102,41 @@ Python 3.10+, PyTorch 2.6+, Transformers 5.5+, Accelerate 1.1+.
 
 ## Quickstart
 
-Convert an official TRELLIS.2 release once, then generate:
+### Why the checkpoint is converted first
+
+Microsoft publishes TRELLIS.2 in its own layout: a `pipeline.json` that names each model and its sampler settings,
+and a `ckpts/` folder with one `<name>.json` config and one `<name>.safetensors` file per model
+(`sparse_structure_flow_model`, `sparse_structure_decoder`, `shape_slat_flow_model_512`, ...). That is not
+something `from_pretrained` can read, and the release does not bundle its image encoder at all; it expects you to
+fetch `facebook/dinov3-vitl16-pretrain-lvd1689m` from the Hub, which is gated behind the DINOv3 license.
+
+`diffusers-3d-convert-trellis2` does the one-time translation:
+
+1. reads `pipeline.json` and checks it describes the released `Trellis2ImageTo3DPipeline` with the expected
+   components and a DINOv3 conditioner;
+2. for each supported model, instantiates the matching `diffusers_3d` class from the upstream config, loads the
+   upstream safetensors into it with `strict=True` (so any key mismatch fails the conversion), and writes it out as
+   a Diffusers subfolder with `config.json` + `diffusion_pytorch_model.safetensors`;
+3. copies the DINOv3 weights you downloaded (`--conditioner-path`) into a `conditioner/` subfolder as a
+   `Trellis2Dinov3Conditioner`, so the pipeline is self-contained afterwards;
+4. moves the sampler defaults and SLAT normalization statistics from `pipeline.json` into the pipeline config;
+5. writes `model_index.json` plus the `object3d_model_index.json` sidecar that the auto-loader uses to verify
+   component classes.
+
+By default only the reviewed sparse-structure components are converted. The 1024-resolution SLAT models are skipped
+and recorded as such, because that stage has not been run at production parity yet; `--include-experimental` opts in
+the tiny SLAT/decoder layouts. A `trellis2_conversion.json` report in the output directory lists what was converted,
+what was skipped and why, and the upstream commit the conversion targets.
 
 ```bash
-diffusers-3d-convert-trellis2 /path/to/TRELLIS.2 /path/to/trellis2 --conditioner-path /path/to/dinov3
+diffusers-3d-convert-trellis2 /path/to/TRELLIS.2 /path/to/trellis2 \
+    --conditioner-path /path/to/dinov3-vitl16-pretrain-lvd1689m
 ```
+
+You run this once per release. Everything after this point, including `save_pretrained` on a fine-tuned pipeline,
+stays in the Diffusers layout.
+
+### Generate
 
 ```python
 import torch
