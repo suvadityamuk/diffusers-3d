@@ -3,11 +3,13 @@ from __future__ import annotations
 import json
 
 import pytest
+import torch
 from safetensors.torch import save_file
+from transformers import Dinov2WithRegistersConfig, Dinov2WithRegistersModel
 
 from diffusers_3d import (
     AutoPipelineForImageTo3D,
-    Object3DLoadingError,
+    TrellisDinov2Conditioner,
     TrellisImageTo3DPipeline,
     TrellisSLatFlowModel,
     TrellisSLatGaussianDecoder,
@@ -60,27 +62,48 @@ def _pipeline_config(*, normalization_channels: int = 4):
     }
 
 
-def test_synthetic_portable_component_conversion_and_auto_load(
-    tmp_path,
-    tiny_trellis_components,
-):
+def test_synthetic_conversion_converts_slat_components_and_auto_loads(tmp_path, tiny_trellis_components):
     source = tmp_path / "source"
     source.mkdir()
-    conditioner, flow, decoder, _ = tiny_trellis_components()
+    conditioner, flow, decoder, _, slat_flow, _, gaussian_decoder = tiny_trellis_components(include_slat=True)
     _write_component(source, "ss_flow", "SparseStructureFlowModel", flow)
     _write_component(source, "ss_decoder", "SparseStructureDecoder", decoder)
+    _write_component(source, "slat_flow", "SLatFlowModel", slat_flow)
+    _write_component(source, "slat_gs", "SLatGaussianDecoder", gaussian_decoder)
     (source / "pipeline.json").write_text(json.dumps(_pipeline_config()), encoding="utf-8")
-    conditioner.save_pretrained(tmp_path / "conditioner")
+    # The released ``dinov2_vitl14_reg`` lives on the Hub as a Transformers ``Dinov2WithRegistersModel``; the
+    # converter accepts that folder directly and folds its register tokens into the conditioner.
+    dinov2 = Dinov2WithRegistersModel(
+        Dinov2WithRegistersConfig(
+            hidden_size=12,
+            num_hidden_layers=1,
+            num_attention_heads=3,
+            mlp_ratio=2,
+            image_size=8,
+            patch_size=4,
+            num_register_tokens=conditioner.num_register_tokens,
+        )
+    ).eval()
+    dinov2.save_pretrained(tmp_path / "dinov2")
 
     output = convert_trellis_checkpoint(
         source,
         tmp_path / "converted",
-        conditioner_path=tmp_path / "conditioner",
+        conditioner_path=tmp_path / "dinov2",
     )
     report = json.loads((output / "trellis_conversion.json").read_text(encoding="utf-8"))
     model_index = json.loads((output / "model_index.json").read_text(encoding="utf-8"))
     sidecar = json.loads((output / "object3d_model_index.json").read_text(encoding="utf-8"))
     assert sidecar["schema_version"] == 2
+    converted_conditioner = TrellisDinov2Conditioner.from_pretrained(output / "conditioner")
+    torch.testing.assert_close(converted_conditioner.register_tokens, dinov2.embeddings.register_tokens)
+    images = torch.rand(1, 3, 8, 8)
+    with torch.no_grad():
+        ours = converted_conditioner(images, value_range=None).embeddings
+        normalized = (images - converted_conditioner.image_mean) / converted_conditioner.image_std
+        # TRELLIS applies an unparameterized final norm instead of DINOv2's learned one: compare pre-norm tokens.
+        reference = dinov2.encoder(dinov2.embeddings(normalized)).last_hidden_state
+    torch.testing.assert_close(ours, torch.nn.functional.layer_norm(reference, (12,)))
     assert {component["name"] for component in sidecar["components"]} == {
         "conditioner",
         "gaussian_decoder",
@@ -94,45 +117,38 @@ def test_synthetic_portable_component_conversion_and_auto_load(
         value = model_index.get(component["name"], [None, None])
         if value != [None, None]:
             assert value == component["expected_class"].rsplit(".", 1)
-    assert set(report["components"]) == {"sparse_structure_decoder", "sparse_structure_flow_model"}
-    assert set(report["skipped_components"]) == {
-        "slat_decoder_gs",
-        "slat_decoder_mesh",
-        "slat_decoder_rf",
+    assert set(report["components"]) == {
+        "sparse_structure_decoder",
+        "sparse_structure_flow_model",
         "slat_flow_model",
+        "slat_decoder_gs",
     }
+    assert report["components"]["slat_flow_model"]["class"] == TrellisSLatFlowModel.__name__
+    assert report["components"]["slat_decoder_gs"]["class"] == TrellisSLatGaussianDecoder.__name__
+    assert set(report["skipped_components"]) == {"slat_decoder_mesh", "slat_decoder_rf"}
     assert "mesh_decoder" not in model_index
     loaded = AutoPipelineForImageTo3D.from_pretrained(output, local_files_only=True)
     assert type(loaded) is TrellisImageTo3DPipeline
-    assert loaded.slat_flow_model is None
-    assert loaded.gaussian_decoder is None
+    assert type(loaded.slat_flow_model) is TrellisSLatFlowModel
+    assert type(loaded.gaussian_decoder) is TrellisSLatGaussianDecoder
+    assert loaded.config.slat_mean == [0.0] * slat_flow.config.out_channels
 
 
-def test_synthetic_experimental_slat_conversion_is_opt_in(tmp_path, tiny_trellis_components):
+def test_converter_requires_every_referenced_component_pair(tmp_path, tiny_trellis_components):
     source = tmp_path / "source"
     source.mkdir()
-    conditioner, flow, decoder, _, slat_flow, _, gaussian_decoder = tiny_trellis_components(include_slat=True)
+    conditioner, flow, decoder, _ = tiny_trellis_components()
     _write_component(source, "ss_flow", "SparseStructureFlowModel", flow)
     _write_component(source, "ss_decoder", "SparseStructureDecoder", decoder)
-    _write_component(source, "slat_flow", "SLatFlowModel", slat_flow)
-    _write_component(source, "slat_gs", "SLatGaussianDecoder", gaussian_decoder)
     (source / "pipeline.json").write_text(json.dumps(_pipeline_config()), encoding="utf-8")
     conditioner.save_pretrained(tmp_path / "conditioner")
 
-    output = convert_trellis_checkpoint(
-        source,
-        tmp_path / "converted",
-        conditioner_path=tmp_path / "conditioner",
-        include_experimental=True,
-    )
-    report = json.loads((output / "trellis_conversion.json").read_text(encoding="utf-8"))
-    assert report["components"]["slat_flow_model"]["class"] == TrellisSLatFlowModel.__name__
-    assert report["components"]["slat_decoder_gs"]["class"] == TrellisSLatGaussianDecoder.__name__
-    loaded = TrellisImageTo3DPipeline.from_pretrained(output, local_files_only=True)
-    assert type(loaded.slat_flow_model) is TrellisSLatFlowModel
-    assert type(loaded.gaussian_decoder) is TrellisSLatGaussianDecoder
-    with pytest.raises(Object3DLoadingError, match="not eligible for automatic loading"):
-        AutoPipelineForImageTo3D.from_pretrained(output, local_files_only=True)
+    with pytest.raises(FileNotFoundError, match="slat_flow"):
+        convert_trellis_checkpoint(
+            source,
+            tmp_path / "converted",
+            conditioner_path=tmp_path / "conditioner",
+        )
 
 
 def test_converter_strictly_rejects_pipeline_component_drift(tmp_path):

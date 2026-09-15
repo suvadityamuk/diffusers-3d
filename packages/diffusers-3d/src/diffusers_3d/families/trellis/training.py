@@ -342,7 +342,7 @@ TRELLIS_SLAT_FROZEN_COMPONENT_POLICIES = (
 
 
 class TrellisSLatFlowRecipe(TrainingRecipe3D[TrellisImageTo3DPipeline, TrellisSLatExample, TrellisSLatBatch]):
-    """Experimental FULL-only objective for the portable no-sparse-convolution SLAT core."""
+    """FULL-only SLAT flow objective. Runs against the released layout but is not registered yet."""
 
     recipe_id = "trellis-slat-flow-experimental"
     recipe_version = "0.1"
@@ -402,9 +402,7 @@ class TrellisSLatFlowRecipe(TrainingRecipe3D[TrellisImageTo3DPipeline, TrellisSL
         if type(self.target) is not TrellisImageTo3DPipeline:
             raise TrainingTargetError("target must be the exact TRELLIS image-to-3D pipeline")
         if type(self.target.slat_flow_model) is not TrellisSLatFlowModel:
-            raise TrainingTargetError("target must contain the portable exact TrellisSLatFlowModel type")
-        if self.target.slat_flow_model.config.io_block_channels is not None:
-            raise TrainingTargetError("experimental SLAT training requires io_block_channels=None")
+            raise TrainingTargetError("target must contain the exact TrellisSLatFlowModel type")
 
     def compute_loss(self, batch: TrellisSLatBatch) -> TrainingStep3DOutput:
         if type(batch) is not TrellisSLatBatch:

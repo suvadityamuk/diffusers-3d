@@ -36,9 +36,8 @@ expression does not relicense any family code or model artifact.
 
 ## Current TRELLIS.2 limitations
 
-- The reviewed contract ends at CPU-capable sparse-structure output. Tiny SLAT and O-Voxel stages are experimental.
-- No full 4B checkpoint, 1024 cascade, production GPU quality, compiled O-Voxel mesh/render, or PBR GLB run has been
-  performed.
+- Every network runs in plain PyTorch, with tiny-weight parity against the pinned upstream code. No full 4B checkpoint,
+  production GPU quality, compiled O-Voxel mesh/render, or PBR GLB run has been performed in the test matrix.
 - O-Voxel schema/mixed lossless packing and deterministic lexicographic NPZ across the uint16 coordinate domain are
   pure package code. Explicit 30-bit Morton ordering remains available through coordinate 1023. Unit-domain PBR
   channels use uint8 while out-of-cell dual vertices and unbounded split weights retain float16/float32. NPZ files
@@ -104,8 +103,7 @@ installed fully-qualified class, component subfolder, optionality, review status
 For Hub IDs, the sidecar is validated before component download. The auto-loader then downloads only
 `model_index.json`, the sidecar, and eligible component folders into a local Hub snapshot, validates every Diffusers
 library/class tuple, and invokes the installed concrete pipeline class on that local path with remote code disabled.
-Experimental optional SLAT and decoder components are not eligible for this path; use the concrete family pipeline
-directly for explicitly experimental local artifacts.
+Components whose sidecar entry is marked ineligible are rejected before download.
 
 Schema-v1 sidecars are no longer accepted. Re-run the matching converter or save the reviewed pipeline with this
 package version to create a schema-v2 sidecar. `revision`, `cache_dir`, `token`, `local_files_only`, and `subfolder`

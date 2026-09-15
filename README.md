@@ -83,10 +83,15 @@ strategy the recipe has not approved raises `TrainingPolicyError` before any par
 
 ## Supported models
 
-| Family | Pipeline | Task | Reviewed output | Experimental stages |
+| Family | Pipeline | Task | Outputs | Needs a compiled backend |
 |---|---|---|---|---|
-| [TRELLIS](packages/diffusers-3d/src/diffusers_3d/families/trellis/README.md) | `TrellisImageTo3DPipeline` | image → 3D | sparse structure | SLAT, Gaussian splats |
-| [TRELLIS.2](packages/diffusers-3d/src/diffusers_3d/families/trellis2/README.md) | `Trellis2ImageTo3DPipeline` | image → 3D | sparse structure | shape/texture SLAT, O-Voxel, PBR mesh |
+| [TRELLIS](packages/diffusers-3d/src/diffusers_3d/families/trellis/README.md) | `TrellisImageTo3DPipeline` | image → 3D | sparse structure, SLAT, Gaussian splats | rendering the splats (gsplat) |
+| [TRELLIS.2](packages/diffusers-3d/src/diffusers_3d/families/trellis2/README.md) | `Trellis2ImageTo3DPipeline` | image → 3D | sparse structure, shape/texture SLAT, O-Voxel (dual grid + PBR) | meshing and GLB export (O-Voxel runtime) |
+
+Every network in both pipelines runs in plain PyTorch on CPU or GPU. The sparse convolutions, pooling, subdivision,
+and windowed attention that upstream implements with `spconv`, FlexGEMM, and `xformers` live in
+[`sparse_ops.py`](packages/diffusers-3d/src/diffusers_3d/families/trellis/sparse_ops.py) and are checked against the
+pinned upstream code numerically. TRELLIS's radiance-field and mesh decoders are not ported.
 
 ## Installation
 
@@ -123,10 +128,9 @@ fetch `facebook/dinov3-vitl16-pretrain-lvd1689m` from the Hub, which is gated be
 5. writes `model_index.json` plus the `object3d_model_index.json` sidecar that the auto-loader uses to verify
    component classes.
 
-By default only the reviewed sparse-structure components are converted. The 1024-resolution SLAT models are skipped
-and recorded as such, because that stage has not been run at production parity yet; `--include-experimental` opts in
-the tiny SLAT/decoder layouts. A `trellis2_conversion.json` report in the output directory lists what was converted,
-what was skipped and why, and the upstream commit the conversion targets.
+All eight released networks are converted: the conditioner, the sparse-structure flow and decoder, the 512 and 1024
+shape and texture SLAT flows, and the shape and PBR decoders. A `trellis2_conversion.json` report in the output
+directory lists what was converted and the upstream commit the conversion targets.
 
 ```bash
 diffusers-3d-convert-trellis2 /path/to/TRELLIS.2 /path/to/trellis2 \
@@ -147,25 +151,27 @@ pipeline = AutoPipelineForImageTo3D.from_pretrained("/path/to/trellis2").to("cud
 rgba = ...  # (4, H, W) float tensor in [0, 1]; alpha drives foreground cropping
 output = pipeline(
     ImageCondition(image=rgba),
-    formats=("sparse_structure",),
+    formats=("sparse_structure", "o_voxel"),
     sparse_structure_sampler_params={"steps": 12, "guidance_strength": 7.5},
     generator=torch.Generator("cuda").manual_seed(0),
 )
 
-voxels = output.objects[0]      # SparseVoxelAsset
-voxels.coordinates              # (N, 3) int64 grid indices
-voxels.features                 # (N, C) per-voxel channels
-voxels.metadata                 # {"family": "trellis2", "representation": "sparse_structure", "resolution": 32, ...}
+voxels, ovoxel = output.objects  # SparseVoxelAsset, OVoxelAsset
+voxels.coordinates               # (N, 3) int64 grid indices of the occupied coarse cells
+ovoxel.active_coordinates        # (M, 3) surface cells after the shape decoder's subdivision
+ovoxel.dual_grid_vertex_offsets  # (M, 3) dual-grid vertex per cell, plus split_weights for the tessellation
+ovoxel.base_color                # (M, 3) in [0, 1]; also metallic, roughness, opacity, normals, emissive
 ```
 
-The full walkthrough — loading, conditioning, batching, experimental stages, and saving each asset type — is the
-runnable [TRELLIS.2 example](packages/diffusers-3d/src/diffusers_3d/families/trellis2/examples/image_to_3d.py).
-It also has an offline mode built from tiny components, so the whole API can be exercised on CPU without a
-checkpoint:
+`formats` picks any of `sparse_structure`, `shape_slat`, `texture_slat`, `o_voxel`, and `mesh`; `pipeline_type`
+selects the released `512`, `1024`, `1024_cascade`, or `1536_cascade` preset. The full walkthrough — loading,
+conditioning, batching, and saving each asset type — is the runnable
+[TRELLIS.2 example](packages/diffusers-3d/src/diffusers_3d/families/trellis2/examples/image_to_3d.py). It also has an
+offline mode built from tiny components, so the whole API can be exercised on CPU without a checkpoint:
 
 ```bash
-python -m diffusers_3d.families.trellis2.examples.image_to_3d --tiny --output out/
-python -m diffusers_3d.families.trellis2.examples.image_to_3d --experimental --output out/   # + SLAT and O-Voxel stages
+python -m diffusers_3d.families.trellis2.examples.image_to_3d --tiny --output out/                # all stages
+python -m diffusers_3d.families.trellis2.examples.image_to_3d --tiny --sparse-only --output out/  # first stage only
 ```
 
 ## Fine-tuning

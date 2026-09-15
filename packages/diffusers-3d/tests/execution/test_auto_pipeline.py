@@ -15,6 +15,7 @@ from diffusers_3d import (
     Object3DPipelineRegistry,
     Object3DRegistrationError,
     Object3DTaskError,
+    ReviewStatus,
     TrellisDinov2Conditioner,
     TrellisFlowEulerScheduler,
     TrellisImageTo3DPipeline,
@@ -47,6 +48,24 @@ def tiny_trellis_pipeline():
         sparse_structure_decoder=TrellisSparseStructureDecoder(**TrellisSparseStructureDecoder.tiny_config()),
         sparse_structure_scheduler=TrellisFlowEulerScheduler(),
     )
+
+
+def mark_slat_flow_ineligible(monkeypatch):
+    """Re-declare ``slat_flow_model`` as an unreviewed, non-loadable component to exercise the loader gates."""
+
+    specs = tuple(
+        spec.__class__(
+            name=spec.name,
+            expected_class=spec.expected_class,
+            subfolder=spec.subfolder,
+            optional=spec.optional,
+            review_status=ReviewStatus.UNREVIEWED if spec.name == "slat_flow_model" else spec.review_status,
+            loading_eligible=spec.name != "slat_flow_model" and spec.loading_eligible,
+        )
+        for spec in TrellisImageTo3DPipeline.component_specs
+    )
+    monkeypatch.setattr(TrellisImageTo3DPipeline, "component_specs", specs)
+    monkeypatch.setattr(AutoPipelineFor3D, "_registry", reviewed_registry(TrellisImageTo3DPipeline))
 
 
 def update_model_index(directory, update):
@@ -230,6 +249,15 @@ def test_remote_loader_downloads_precise_snapshot_then_loads_installed_component
                 "variant/conditioner/*.json",
                 "variant/conditioner/*.safetensors",
                 "variant/conditioner/*.flashpack",
+                "variant/gaussian_decoder/*.json",
+                "variant/gaussian_decoder/*.safetensors",
+                "variant/gaussian_decoder/*.flashpack",
+                "variant/slat_flow_model/*.json",
+                "variant/slat_flow_model/*.safetensors",
+                "variant/slat_flow_model/*.flashpack",
+                "variant/slat_scheduler/*.json",
+                "variant/slat_scheduler/*.safetensors",
+                "variant/slat_scheduler/*.flashpack",
                 "variant/sparse_structure_decoder/*.json",
                 "variant/sparse_structure_decoder/*.safetensors",
                 "variant/sparse_structure_decoder/*.flashpack",
@@ -287,6 +315,7 @@ def test_local_loader_accepts_optional_none_and_round_trips_reviewed_pipeline(tm
 
 
 def test_local_loader_rejects_unexpected_experimental_component_after_load(tmp_path, monkeypatch):
+    mark_slat_flow_ineligible(monkeypatch)
     tiny_trellis_pipeline().save_pretrained(tmp_path)
     loaded_pipeline = tiny_trellis_pipeline()
     loaded_pipeline.slat_flow_model = object()
@@ -331,7 +360,8 @@ def test_local_loader_rejects_missing_required_component_after_load(tmp_path, mo
         AutoPipelineForImageTo3D.from_pretrained(tmp_path, local_files_only=True)
 
 
-def test_auto_loader_rejects_experimental_model_index_component_before_loading(tmp_path):
+def test_auto_loader_rejects_experimental_model_index_component_before_loading(tmp_path, monkeypatch):
+    mark_slat_flow_ineligible(monkeypatch)
     tiny_trellis_pipeline().save_pretrained(tmp_path)
     expected_class = "diffusers_3d.families.trellis.models.TrellisSLatFlowModel"
     module_name, _, class_name = expected_class.rpartition(".")

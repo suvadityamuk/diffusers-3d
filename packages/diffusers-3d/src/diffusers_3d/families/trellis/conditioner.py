@@ -158,6 +158,47 @@ class TrellisDinov2Conditioner(Object3DModel):
         conditioner.model.eval()
         return conditioner
 
+    @classmethod
+    def from_dinov2_with_registers_pretrained(
+        cls,
+        pretrained_model_name_or_path: str,
+        *,
+        image_size: int | None = None,
+        local_files_only: bool = False,
+        **kwargs: Any,
+    ) -> TrellisDinov2Conditioner:
+        """Load a Transformers ``Dinov2WithRegistersModel`` checkpoint.
+
+        ``facebook/dinov2-with-registers-large`` is the released ``dinov2_vitl14_reg`` that TRELLIS conditions on.
+        Its register tokens become this module's ``register_tokens`` and the rest of the state loads into the plain
+        ``Dinov2Model`` unchanged; the two forward passes agree exactly up to the final norm. ``image_size``
+        defaults to the checkpoint's own (518 for the released model).
+        """
+
+        from transformers import Dinov2WithRegistersModel
+
+        source = Dinov2WithRegistersModel.from_pretrained(
+            pretrained_model_name_or_path,
+            local_files_only=local_files_only,
+            **kwargs,
+        )
+        source_config = source.config.to_dict()
+        plain_keys = set(Dinov2Config().to_dict()) - {"model_type"}
+        dinov2_config = Dinov2Config(**{key: value for key, value in source_config.items() if key in plain_keys})
+        conditioner = cls(
+            dinov2_config=dinov2_config.to_dict(),
+            image_size=int(source_config["image_size"]) if image_size is None else image_size,
+            num_register_tokens=int(source_config["num_register_tokens"]),
+        )
+        state_dict = source.state_dict()
+        register_tokens = state_dict.pop("embeddings.register_tokens")
+        conditioner.model.load_state_dict(state_dict, strict=True)
+        with torch.no_grad():
+            conditioner.register_tokens.copy_(register_tokens)
+        conditioner.requires_grad_(False)
+        conditioner.eval()
+        return conditioner
+
     def forward(
         self,
         images: torch.Tensor,

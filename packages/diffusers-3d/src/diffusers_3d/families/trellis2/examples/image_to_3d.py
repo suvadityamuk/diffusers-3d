@@ -1,26 +1,28 @@
-"""Generate a 3D object from a single image with TRELLIS.2.
+"""Image to 3D with TRELLIS.2.
 
-This example walks through the public ``diffusers_3d`` API for the TRELLIS.2 family:
+The whole thing is three calls::
 
-1. build or load a ``Trellis2ImageTo3DPipeline``,
-2. wrap the input image in a typed ``ImageCondition``,
-3. run the pipeline and receive an ``Object3DPipelineOutput`` whose ``objects`` are
-   tensor-native assets (``SparseVoxelAsset``, ``OVoxelAsset``, ``MeshAsset``),
-4. write those assets to disk.
+    pipeline = Trellis2ImageTo3DPipeline.from_pretrained("/path/to/trellis2").to("cuda")
+    output = pipeline(ImageCondition(image=rgba))
+    ovoxel = output.objects[0]                      # OVoxelAsset: dual-grid shape + PBR channels
 
-Two ways to run it::
+The rest of this file is the surrounding detail: reading an image into an ``ImageCondition``, the
+sampler knobs, what comes back, and how to write each asset type to disk.
 
-    # Against a converted checkpoint (see ``diffusers-3d-convert-trellis2``).
+Run it::
+
+    # against a converted checkpoint (see ``diffusers-3d-convert-trellis2``)
     python -m diffusers_3d.families.trellis2.examples.image_to_3d \
-        --model /path/to/converted-trellis2 --image chair.png --output out/
+        --model /path/to/trellis2 --image chair.png --output out/
 
-    # Against the built-in tiny CPU pipeline. No downloads and random weights, so the
-    # output is not meaningful geometry, but every API call below is exercised.
+    # offline, on CPU, with random tiny weights; exercises every call but produces no real geometry
     python -m diffusers_3d.families.trellis2.examples.image_to_3d --tiny --output out/
+    python -m diffusers_3d.families.trellis2.examples.image_to_3d --tiny --sparse-only --output out/
 
-The reviewed TRELLIS.2 contract is the image-to-sparse-structure stage. Shape SLAT, texture
-SLAT, and O-Voxel stages are experimental and only available on tiny, backend-free components,
-which is why ``--experimental`` implies ``--tiny``.
+TRELLIS.2 is image-conditioned; there is no text-to-3D variant. A full checkpoint runs three
+stages: sparse structure (which voxels are occupied), shape and texture SLAT flows on those voxels,
+and the O-Voxel decoders that turn the SLATs into a dual-grid surface with PBR channels. ``formats``
+picks which of those intermediate and final assets come back.
 """
 
 from __future__ import annotations
@@ -41,91 +43,44 @@ from diffusers_3d import (
     Object3DPipelineOutput,
     OVoxelAsset,
     SparseVoxelAsset,
-    Trellis2Dinov3Conditioner,
-    Trellis2FlowEulerScheduler,
     Trellis2ImageTo3DPipeline,
-    Trellis2PBRSparseDecoder,
-    Trellis2ShapeDualGridDecoder,
-    Trellis2SLatFlowModel,
-    Trellis2SparseStructureDecoder,
-    Trellis2SparseStructureFlowModel,
     write_ovoxel_npz,
 )
 
-REVIEWED_FORMATS = ("sparse_structure",)
-EXPERIMENTAL_FORMATS = ("sparse_structure", "shape_slat", "texture_slat", "o_voxel")
+SPARSE_ONLY_FORMATS = ("sparse_structure",)
+ALL_STAGE_FORMATS = ("sparse_structure", "shape_slat", "texture_slat", "o_voxel")
 
 
 # ---------------------------------------------------------------------------
-# 1. Getting a pipeline
+# 1. Load
 # ---------------------------------------------------------------------------
 
 
-def load_pipeline(model: str, *, device: torch.device, dtype: torch.dtype) -> Trellis2ImageTo3DPipeline:
-    """Load a converted TRELLIS.2 checkpoint from a local directory or a Hub repository ID.
+def load_pipeline(model: str, *, device: str, dtype: torch.dtype) -> Trellis2ImageTo3DPipeline:
+    """A converted checkpoint loads like any Diffusers pipeline.
 
-    ``AutoPipelineForImageTo3D`` reads the schema-v2 sidecar, verifies every component's class
-    identity, downloads only reviewed components, and instantiates the concrete pipeline with
-    remote code disabled. The result is an ordinary Diffusers pipeline: ``.to()``,
-    ``save_pretrained()``, and offloading hooks all work.
+    ``model`` is a local directory or a Hub repository ID. ``AutoPipelineForImageTo3D`` reads the
+    ``object3d_model_index.json`` sidecar, verifies each component's class before downloading, and
+    returns the concrete pipeline. If you already know the family, the concrete class works too::
+
+        Trellis2ImageTo3DPipeline.from_pretrained(model)
     """
 
     pipeline = AutoPipelineForImageTo3D.from_pretrained(model)
-    if not isinstance(pipeline, Trellis2ImageTo3DPipeline):
-        raise TypeError(f"{model!r} does not resolve to a TRELLIS.2 pipeline, got {type(pipeline).__name__}")
     return pipeline.to(device=device, dtype=dtype)
 
 
-def build_tiny_pipeline(*, include_experimental: bool) -> Trellis2ImageTo3DPipeline:
-    """Assemble a TRELLIS.2 pipeline from randomly initialised tiny components.
-
-    Every TRELLIS.2 model class exposes ``tiny_config()``; this is the same construction the
-    package test-suite uses, so it runs on CPU in seconds and needs no checkpoints. Component
-    names here are the pipeline's constructor arguments and match the subfolders of a saved
-    checkpoint.
-    """
-
-    torch.manual_seed(0)
-    components: dict[str, object] = {
-        "conditioner": Trellis2Dinov3Conditioner(**Trellis2Dinov3Conditioner.tiny_config()),
-        "sparse_structure_flow_model": Trellis2SparseStructureFlowModel(
-            **Trellis2SparseStructureFlowModel.tiny_config()
-        ),
-        "sparse_structure_decoder": Trellis2SparseStructureDecoder(**Trellis2SparseStructureDecoder.tiny_config()),
-        "sparse_structure_scheduler": Trellis2FlowEulerScheduler(),
-    }
-    if include_experimental:
-        shape_flow = Trellis2SLatFlowModel(**Trellis2SLatFlowModel.tiny_config())
-        texture_flow = Trellis2SLatFlowModel(**Trellis2SLatFlowModel.tiny_config(texture=True))
-        components.update(
-            shape_slat_flow_model=shape_flow,
-            shape_slat_scheduler=Trellis2FlowEulerScheduler(),
-            shape_slat_decoder=Trellis2ShapeDualGridDecoder(**Trellis2ShapeDualGridDecoder.tiny_config()),
-            texture_slat_flow_model=texture_flow,
-            texture_slat_scheduler=Trellis2FlowEulerScheduler(),
-            pbr_decoder=Trellis2PBRSparseDecoder(**Trellis2PBRSparseDecoder.tiny_config()),
-            shape_slat_mean=[0.0] * shape_flow.config.out_channels,
-            shape_slat_std=[1.0] * shape_flow.config.out_channels,
-            texture_slat_mean=[0.0] * texture_flow.config.out_channels,
-            texture_slat_std=[1.0] * texture_flow.config.out_channels,
-        )
-    # ``default_pipeline_type`` selects the released sampler/cascade preset. ``"tiny"`` is the only
-    # preset that permits the experimental stages; converted checkpoints ship ``"1024_cascade"``.
-    return Trellis2ImageTo3DPipeline(**components, default_pipeline_type="tiny")
-
-
 # ---------------------------------------------------------------------------
-# 2. Conditioning
+# 2. Condition
 # ---------------------------------------------------------------------------
 
 
 def load_image_condition(path: str | Path) -> ImageCondition:
-    """Turn an image file into the typed condition the pipeline expects.
+    """``ImageCondition.image`` is a float ``(C, H, W)`` tensor in ``[0, 1]`` with 1, 3, or 4 channels.
 
-    ``ImageCondition.image`` is a float tensor of shape ``(C, H, W)`` in ``[0, 1]`` with 1, 3, or 4
-    channels. If an alpha channel (or a separate ``mask``) is present, the pipeline uses it to crop
-    and recenter the foreground the same way the released TRELLIS.2 code does. Plain RGB is treated
-    as an already background-removed frame; the pipeline never runs a background remover for you.
+    With an alpha channel (or a separate ``mask=``) the pipeline crops and recenters the foreground
+    the way the released TRELLIS.2 code does. Plain RGB is treated as already background-removed; the
+    pipeline never runs a background remover for you.
     """
 
     with Image.open(path) as image:
@@ -147,7 +102,7 @@ def synthetic_image_condition(size: int = 64) -> ImageCondition:
 
 
 # ---------------------------------------------------------------------------
-# 3. Generation
+# 3. Generate
 # ---------------------------------------------------------------------------
 
 
@@ -155,16 +110,18 @@ def generate(
     pipeline: Trellis2ImageTo3DPipeline,
     conditions: Sequence[ImageCondition],
     *,
-    formats: Sequence[str],
-    steps: int | None,
-    guidance_strength: float | None,
-    seed: int,
+    formats: Sequence[str] = ALL_STAGE_FORMATS,
+    steps: int | None = None,
+    guidance_strength: float | None = None,
+    seed: int = 0,
 ) -> Object3DPipelineOutput:
-    """Run the pipeline. Conditions are batched; one ``Object3D`` is returned per image per format.
+    """Call the pipeline. A list of conditions is a batch; you get one object per image per format.
 
-    Sampler settings are per-stage mappings. Anything omitted falls back to the released defaults
-    stored in ``pipeline.config`` (12 steps, guidance 7.5, rescale 0.7, interval (0.6, 1.0),
-    ``rescale_t`` 5.0 for the sparse-structure stage).
+    Sampler settings are per-stage dicts. Anything you leave out falls back to the released defaults
+    stored in ``pipeline.config`` (sparse structure: 12 steps, guidance 7.5, rescale 0.7, interval
+    (0.6, 1.0), ``rescale_t`` 5.0). ``pipeline(condition)`` with no keyword arguments is a valid call
+    and returns just the final O-Voxel; ``pipeline_type`` ("512", "1024", "1024_cascade", "1536_cascade")
+    selects the released resolution preset and defaults to the one stored in the checkpoint.
     """
 
     sampler_params: dict[str, float | int] = {}
@@ -172,7 +129,6 @@ def generate(
         sampler_params["steps"] = steps
     if guidance_strength is not None:
         sampler_params["guidance_strength"] = guidance_strength
-    generator = torch.Generator(device=pipeline._execution_device).manual_seed(seed)
 
     return pipeline(
         list(conditions),
@@ -180,17 +136,17 @@ def generate(
         sparse_structure_sampler_params=sampler_params,
         shape_slat_sampler_params=sampler_params,
         texture_slat_sampler_params=sampler_params,
-        generator=generator,
+        generator=torch.Generator(device=pipeline._execution_device).manual_seed(seed),
     )
 
 
 # ---------------------------------------------------------------------------
-# 4. Consuming the output
+# 4. Use the result
 # ---------------------------------------------------------------------------
 
 
 def label(asset: Object3D) -> str:
-    """Assets carry a JSON-safe ``metadata`` dict; ``representation`` and ``stage`` identify the origin."""
+    """Assets carry a JSON-safe ``metadata`` dict; ``representation`` and ``stage`` say where one came from."""
 
     representation = asset.metadata.get("representation") or type(asset).__name__
     stage = asset.metadata.get("stage")
@@ -198,8 +154,6 @@ def label(asset: Object3D) -> str:
 
 
 def describe(asset: Object3D) -> str:
-    """Assets are dataclasses of tensors plus a JSON-safe ``metadata`` dict describing provenance."""
-
     stage = label(asset)
     if isinstance(asset, SparseVoxelAsset):
         return (
@@ -217,11 +171,11 @@ def describe(asset: Object3D) -> str:
 
 
 def save(asset: Object3D, path: Path) -> Path:
-    """Write one asset to disk.
+    """Serialization is per representation.
 
-    Sparse voxels have no interchange format, so their tensors are saved with ``torch.save``.
-    O-Voxels use the package's pure-NumPy ``.npz`` codec, readable by the official TRELLIS.2
-    tooling. Meshes are exported through the optional trimesh backend when it is installed.
+    Sparse voxels have no interchange format, so their tensors go through ``torch.save``. O-Voxels use
+    the package's pure-NumPy ``.npz`` codec, which the official TRELLIS.2 tooling reads. Meshes export
+    through the optional trimesh backend.
     """
 
     if isinstance(asset, OVoxelAsset):
@@ -257,13 +211,11 @@ def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
     parser.add_argument("--dtype", choices=("float32", "float16", "bfloat16"), default="float32")
     parser.add_argument(
-        "--experimental",
+        "--sparse-only",
         action="store_true",
-        help="Also run the tiny shape SLAT, texture SLAT, and O-Voxel stages (implies --tiny).",
+        help="Stop after the sparse structure instead of running the SLAT and O-Voxel stages.",
     )
     args = parser.parse_args(argv)
-    if args.experimental:
-        args.tiny = True
     if not args.tiny and args.model is None:
         parser.error("pass --model to load a checkpoint or --tiny for the offline demo")
     return args
@@ -272,14 +224,14 @@ def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
 def main(argv: Sequence[str] | None = None) -> None:
     args = _parse_args(argv)
 
+    formats = SPARSE_ONLY_FORMATS if args.sparse_only else ALL_STAGE_FORMATS
     if args.tiny:
-        pipeline = build_tiny_pipeline(include_experimental=args.experimental)
-        formats = EXPERIMENTAL_FORMATS if args.experimental else REVIEWED_FORMATS
-        # Tiny conditioners take 8x8 inputs; the pipeline resizes to the conditioner's image size.
+        from .tiny_components import build_tiny_pipeline
+
+        pipeline = build_tiny_pipeline(include_slat=not args.sparse_only)
         steps = args.steps if args.steps is not None else 2
     else:
-        pipeline = load_pipeline(args.model, device=torch.device(args.device), dtype=getattr(torch, args.dtype))
-        formats = REVIEWED_FORMATS
+        pipeline = load_pipeline(args.model, device=args.device, dtype=getattr(torch, args.dtype))
         steps = args.steps
 
     conditions = [load_image_condition(path) for path in args.image] or [synthetic_image_condition()]

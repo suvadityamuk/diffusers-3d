@@ -74,7 +74,7 @@ def test_trellis2_schema_v2_manifest_records_exact_source_license_and_capability
     )
     assert execution_evidence.passed
     assert (
-        "production SLAT cascade, O-Voxel conversion, rendering, and quality are excluded"
+        "official full-checkpoint output quality, O-Voxel meshing, and rendering are excluded"
         in execution_evidence.reference
     )
     assert preprocessing_evidence.passed
@@ -103,22 +103,28 @@ def test_manifest_matches_only_reviewed_trellis2_registrations_and_training():
         Trellis2Dinov3Conditioner,
         Trellis2SparseStructureDecoder,
         Trellis2SparseStructureFlowModel,
+        Trellis2SLatFlowModel,
+        Trellis2ShapeDualGridDecoder,
+        Trellis2PBRSparseDecoder,
     }
     assert {registration.pipeline_class for registration in pipeline_registrations} == {Trellis2ImageTo3DPipeline}
     assert {registration.recipe_type for registration in recipe_registrations} == {Trellis2SparseStructureFlowRecipe}
 
-    registered_models = {registration.model_class for registration in _MODEL_REGISTRY}
+    # SLAT fine-tuning has no released-evidence recipes yet, so they stay unregistered.
     registered_recipes = {registration.recipe_type for registration in _TRAINING_RECIPE_REGISTRY}
-    for experimental in (Trellis2SLatFlowModel, Trellis2ShapeDualGridDecoder, Trellis2PBRSparseDecoder):
-        assert experimental not in registered_models
-    for experimental in (Trellis2ShapeSLatFlowRecipe, Trellis2TextureSLatFlowRecipe):
-        assert experimental not in registered_recipes
+    for recipe in (Trellis2ShapeSLatFlowRecipe, Trellis2TextureSLatFlowRecipe):
+        assert recipe not in registered_recipes
 
     for registration in model_registrations:
         assert components[registration.metadata.component_role] == registration.metadata.model_class
     pipeline_registration = pipeline_registrations[0]
     assert components["pipeline"] == pipeline_registration.metadata.pipeline_class
-    assert pipeline_registration.metadata.output_representations == ("sparse-structure",)
+    assert set(pipeline_registration.metadata.output_representations) == {
+        "mesh",
+        "o-voxel",
+        "slat",
+        "sparse-structure",
+    }
     assert (
         _PIPELINE_REGISTRY.resolve(
             Trellis2ImageTo3DPipeline.object3d_model_index(),

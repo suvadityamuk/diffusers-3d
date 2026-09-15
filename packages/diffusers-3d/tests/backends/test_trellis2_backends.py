@@ -222,6 +222,23 @@ def test_ovoxel_npz_preserves_generated_out_of_cell_dual_vertices_for_official_r
     )
 
 
+def test_ovoxel_npz_accepts_bfloat16_pipeline_outputs():
+    coordinates, attributes = _packed_official()
+    asset = ovoxel_asset_from_official(coordinates, attributes, resolution=8, packed=True)
+    asset.dual_grid_vertex_offsets = torch.tensor(
+        [[-0.5, 0.0, 1.5], [0.25, 0.5, 0.75], [1.25, -0.25, 1.0], [0.0, 1.0, 0.5]]
+    )
+    asset = asset.to(dtype=torch.bfloat16)
+    buffer = io.BytesIO()
+
+    write_ovoxel_npz(buffer, asset, compressed=False)
+    buffer.seek(0)
+    restored = read_ovoxel_npz(buffer, resolution=8)
+    order = torch.tensor([1, 2, 3, 0])
+    torch.testing.assert_close(restored.dual_grid_vertex_offsets, asset.dual_grid_vertex_offsets.float()[order])
+    torch.testing.assert_close(restored.base_color, asset.base_color.float()[order], atol=1 / 255, rtol=0)
+
+
 def test_ovoxel_reader_accepts_pre_release_metadata_without_exposing_it_as_attributes():
     coordinates, attributes = _packed_official()
     buffer = io.BytesIO()

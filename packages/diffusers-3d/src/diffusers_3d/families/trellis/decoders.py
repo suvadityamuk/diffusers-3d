@@ -19,12 +19,12 @@ from diffusers.models.modeling_utils import get_parameter_dtype
 from diffusers.utils import BaseOutput
 from torch import nn
 
-from ...backends import BACKEND_REGISTRY, BackendCapability
 from ...execution.metadata import ContributionStatus, ReviewStatus
 from ...execution.models import Object3DModel
 from ...objects import CoordinateSystem, GaussianSplatAsset, Object3DKind, SparseVoxelAsset
 from .models import TrellisAbsolutePositionEmbedder, TrellisAttention, TrellisFeedForwardNet, TrellisLayerNorm32
 from .sparse import TrellisSparseTensor, trellis_grid_transform
+from .sparse_ops import SparseWindowPartition, sparse_window_partition
 
 
 @dataclass
@@ -252,6 +252,12 @@ class TrellisSparseStructureDecoder(Object3DModel):
 
 
 class TrellisSparseTransformerBlock(nn.Module):
+    """Sparse self-attention block; ``attn_mode`` is ``"full"`` per batch item or ``"swin"`` per window.
+
+    Windowed attention pads each ``window_size`` cube to a dense sequence and masks the padding, which is
+    exactly what the released decoders compute with variable-length flash attention.
+    """
+
     def __init__(
         self,
         channels: int,
@@ -260,8 +266,18 @@ class TrellisSparseTransformerBlock(nn.Module):
         mlp_ratio: float,
         use_rope: bool,
         qk_rms_norm: bool,
+        attn_mode: str = "full",
+        window_size: int | None = None,
+        shift_window: int = 0,
     ) -> None:
         super().__init__()
+        if attn_mode not in {"full", "swin"}:
+            raise ValueError("attn_mode must be 'full' or 'swin'")
+        if attn_mode == "swin" and (window_size is None or window_size <= 0):
+            raise ValueError("swin attention requires a positive window_size")
+        self.attn_mode = attn_mode
+        self.window_size = window_size
+        self.shift_window = shift_window
         self.norm1 = TrellisLayerNorm32(channels, elementwise_affine=False, eps=1e-6)
         self.norm2 = TrellisLayerNorm32(channels, elementwise_affine=False, eps=1e-6)
         self.attn = TrellisAttention(
@@ -278,7 +294,20 @@ class TrellisSparseTransformerBlock(nn.Module):
         batch_indices: torch.Tensor,
         coordinates: torch.Tensor,
         batch_size: int,
+        partition: SparseWindowPartition | None = None,
     ) -> torch.Tensor:
+        if self.attn_mode == "swin":
+            if partition is None:
+                raise ValueError("swin attention requires a window partition")
+            windows = partition.pad(self.norm1(hidden_states))
+            attended = self.attn(
+                windows,
+                indices=partition.pad(coordinates) if self.attn.use_rope else None,
+                attention_mask=partition.key_mask,
+            )
+            hidden_states = hidden_states + partition.unpad(attended)
+            return hidden_states + self.mlp(self.norm2(hidden_states))
+
         output = torch.zeros_like(hidden_states)
         for batch_index in range(batch_size):
             positions = torch.nonzero(batch_indices == batch_index, as_tuple=False).reshape(-1)
@@ -309,14 +338,14 @@ def _hammersley_3d(index: int, count: int) -> tuple[float, float, float]:
 
 
 class TrellisSLatGaussianDecoder(Object3DModel):
-    """Portable full-attention SLAT Gaussian parameter decoder."""
+    """SLAT Gaussian parameter decoder (released layout: 12 shifted-window attention blocks, 32 splats/voxel)."""
 
     family_id = "trellis"
     component_role = "slat-gaussian-decoder"
     supported_object_kinds = (Object3DKind.GAUSSIAN_SPLAT,)
-    required_backends = ("spconv",)
-    contribution_status = ContributionStatus.EXPERIMENTAL_HUB
-    review_status = ReviewStatus.UNREVIEWED
+    required_backends = ()
+    contribution_status = ContributionStatus.REVIEWED_PACKAGE
+    review_status = ReviewStatus.REVIEWED
     _supports_gradient_checkpointing = True
     _no_split_modules = ["TrellisSparseTransformerBlock"]
     _repeated_blocks = ["TrellisSparseTransformerBlock"]
@@ -340,19 +369,10 @@ class TrellisSLatGaussianDecoder(Object3DModel):
         representation_config: dict[str, Any] | None = None,
     ) -> None:
         super().__init__()
-        del window_size
-        if attn_mode != "full":
-            BACKEND_REGISTRY.select(
-                BackendCapability.SPARSE_COMPUTE,
-                name="spconv",
-                device="cuda",
-                dtype="float16" if use_fp16 else "float32",
-                differentiable=True,
-            )
-            raise NotImplementedError(
-                "official TRELLIS windowed sparse Gaussian decoding requires a separately tested production sparse "
-                "backend; attn_mode='full' is the backend-free tiny path"
-            )
+        if attn_mode not in {"full", "swin"}:
+            raise ValueError("attn_mode must be 'full' or 'swin'; the released decoders use 'swin'")
+        if attn_mode == "swin" and (not isinstance(window_size, int) or window_size <= 0):
+            raise ValueError("swin attention requires a positive integer window_size")
         if pe_mode not in {"ape", "rope"}:
             raise ValueError("pe_mode must be 'ape' or 'rope'")
         if representation_config is None:
@@ -384,6 +404,7 @@ class TrellisSLatGaussianDecoder(Object3DModel):
         self.num_blocks = num_blocks
         self.num_heads = resolved_heads
         self.attn_mode = attn_mode
+        self.window_size = window_size
         self.pe_mode = pe_mode
         self.use_fp16 = use_fp16
         self.rep_config = representation_config
@@ -392,6 +413,7 @@ class TrellisSLatGaussianDecoder(Object3DModel):
         if pe_mode == "ape":
             self.pos_embedder = TrellisAbsolutePositionEmbedder(model_channels)
         self.input_layer = nn.Linear(latent_channels, model_channels)
+        # Released "swin" decoders alternate unshifted and half-window-shifted blocks.
         self.blocks = nn.ModuleList(
             [
                 TrellisSparseTransformerBlock(
@@ -400,8 +422,11 @@ class TrellisSLatGaussianDecoder(Object3DModel):
                     mlp_ratio=mlp_ratio,
                     use_rope=pe_mode == "rope",
                     qk_rms_norm=qk_rms_norm,
+                    attn_mode=attn_mode,
+                    window_size=window_size,
+                    shift_window=window_size // 2 * (index % 2) if attn_mode == "swin" else 0,
                 )
-                for _ in range(num_blocks)
+                for index in range(num_blocks)
             ]
         )
         self.out_channels = num_gaussians * 14
@@ -491,16 +516,23 @@ class TrellisSLatGaussianDecoder(Object3DModel):
         for batch_index in range(hidden_states.batch_size):
             mask = hidden_states.coordinates[:, 0] == batch_index
             coordinates = hidden_states.coordinates[mask, 1:].to(dtype=parameters.dtype)
-            values = parameters[mask].reshape(parameters[mask].shape[0], count, 14)
-            raw_xyz = values[..., 0:3] * float(learning_rates["_xyz"])
+            # Released layout groups channels by attribute, each holding all ``count`` Gaussians:
+            # [_xyz (count*3) | _features_dc (count*3) | _scaling (count*3) | _rotation (count*4) | _opacity (count)].
+            values = parameters[mask]
+            raw = {}
+            start = 0
+            for name, width in (("xyz", 3), ("features_dc", 3), ("scaling", 3), ("rotation", 4), ("opacity", 1)):
+                raw[name] = values[:, start : start + count * width].reshape(-1, count, width)
+                start += count * width
+            raw_xyz = raw["xyz"] * float(learning_rates["_xyz"])
             if bool(self.rep_config["perturb_offset"]):
                 raw_xyz = raw_xyz + self.offset_perturbation.to(dtype=raw_xyz.dtype)
             offsets = torch.tanh(raw_xyz) / self.resolution * 0.5 * float(self.rep_config["voxel_size"])
             means = (coordinates[:, None, :] + 0.5) / self.resolution + offsets - 0.5
-            features_dc = values[..., 3:6] * float(learning_rates["_features_dc"])
-            raw_scaling = values[..., 6:9] * float(learning_rates["_scaling"])
-            raw_rotation = values[..., 9:13] * float(learning_rates["_rotation"])
-            raw_opacity = values[..., 13:14] * float(learning_rates["_opacity"])
+            features_dc = raw["features_dc"] * float(learning_rates["_features_dc"])
+            raw_scaling = raw["scaling"] * float(learning_rates["_scaling"])
+            raw_rotation = raw["rotation"] * float(learning_rates["_rotation"])
+            raw_opacity = raw["opacity"] * float(learning_rates["_opacity"])
 
             scaling_bias = float(self.rep_config["scaling_bias"])
             activation = self.rep_config["scaling_activation"]
@@ -528,10 +560,10 @@ class TrellisSLatGaussianDecoder(Object3DModel):
                     active_sh_degree=0,
                     coordinate_system=CoordinateSystem.RIGHT_HANDED_Z_UP,
                     extras={
-                        "trellis_raw_xyz": values[..., 0:3].flatten(0, 1),
-                        "trellis_raw_scaling": values[..., 6:9].flatten(0, 1),
-                        "trellis_raw_rotation": values[..., 9:13].flatten(0, 1),
-                        "trellis_raw_opacity": values[..., 13:14].flatten(0, 1),
+                        "trellis_raw_xyz": raw["xyz"].flatten(0, 1),
+                        "trellis_raw_scaling": raw["scaling"].flatten(0, 1),
+                        "trellis_raw_rotation": raw["rotation"].flatten(0, 1),
+                        "trellis_raw_opacity": raw["opacity"].flatten(0, 1),
                     },
                     metadata={
                         "family": "trellis",
@@ -560,7 +592,15 @@ class TrellisSLatGaussianDecoder(Object3DModel):
         features = features.to(dtype=inner_dtype)
         batch_indices = hidden_states.coordinates[:, 0]
         coordinates = hidden_states.coordinates[:, 1:]
+        partitions: dict[int, SparseWindowPartition] = {}
+        if self.attn_mode == "swin":
+            for block in self.blocks:
+                if block.shift_window not in partitions:
+                    partitions[block.shift_window] = sparse_window_partition(
+                        hidden_states.coordinates, self.window_size, block.shift_window
+                    )
         for block in self.blocks:
+            partition = partitions.get(block.shift_window)
             if torch.is_grad_enabled() and self.gradient_checkpointing:
                 features = self._gradient_checkpointing_func(
                     block,
@@ -568,9 +608,10 @@ class TrellisSLatGaussianDecoder(Object3DModel):
                     batch_indices,
                     coordinates,
                     hidden_states.batch_size,
+                    partition,
                 )
             else:
-                features = block(features, batch_indices, coordinates, hidden_states.batch_size)
+                features = block(features, batch_indices, coordinates, hidden_states.batch_size, partition)
         features = F.layer_norm(features, features.shape[-1:])
         parameters = self.out_layer(features.to(dtype=hidden_states.dtype))
         assets = self._to_assets(hidden_states, parameters)

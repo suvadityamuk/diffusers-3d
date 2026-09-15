@@ -143,7 +143,7 @@
         "converter": "diffusers_3d.families.trellis.conversion.convert_trellis_checkpoint",
         "source_format": "local-diffusers-dinov2-conditioner",
         "target_format": "diffusers-safetensors",
-        "test": "tests/families/trellis/test_conversion.py::test_synthetic_portable_component_conversion_and_auto_load"
+        "test": "tests/families/trellis/test_conversion.py::test_synthetic_conversion_converts_slat_components_and_auto_loads"
       },
       "class_name": "diffusers_3d.families.trellis.conditioner.TrellisDinov2Conditioner",
       "parity": [
@@ -163,7 +163,7 @@
         "converter": "diffusers_3d.families.trellis.conversion.convert_trellis_checkpoint",
         "source_format": "upstream-component-json-safetensors",
         "target_format": "diffusers-pipeline-object3d-v2",
-        "test": "tests/families/trellis/test_conversion.py::test_synthetic_portable_component_conversion_and_auto_load"
+        "test": "tests/families/trellis/test_conversion.py::test_synthetic_conversion_converts_slat_components_and_auto_loads"
       },
       "class_name": "diffusers_3d.families.trellis.pipeline.TrellisImageTo3DPipeline",
       "parity": [
@@ -211,7 +211,7 @@
         "converter": "diffusers_3d.families.trellis.conversion.convert_trellis_checkpoint",
         "source_format": "upstream-component-json-safetensors",
         "target_format": "diffusers-safetensors",
-        "test": "tests/families/trellis/test_conversion.py::test_synthetic_portable_component_conversion_and_auto_load"
+        "test": "tests/families/trellis/test_conversion.py::test_synthetic_conversion_converts_slat_components_and_auto_loads"
       },
       "class_name": "diffusers_3d.families.trellis.decoders.TrellisSparseStructureDecoder",
       "parity": [
@@ -231,7 +231,7 @@
         "converter": "diffusers_3d.families.trellis.conversion.convert_trellis_checkpoint",
         "source_format": "upstream-component-json-safetensors",
         "target_format": "diffusers-safetensors",
-        "test": "tests/families/trellis/test_conversion.py::test_synthetic_portable_component_conversion_and_auto_load"
+        "test": "tests/families/trellis/test_conversion.py::test_synthetic_conversion_converts_slat_components_and_auto_loads"
       },
       "class_name": "diffusers_3d.families.trellis.models.TrellisSparseStructureFlowModel",
       "parity": [
@@ -245,6 +245,46 @@
         }
       ],
       "role": "sparse_structure_flow_model"
+    },
+    {
+      "checkpoint_conversion": {
+        "converter": "diffusers_3d.families.trellis.conversion.convert_trellis_checkpoint",
+        "source_format": "upstream-component-json-safetensors",
+        "target_format": "diffusers-safetensors",
+        "test": "tests/families/trellis/test_conversion.py::test_synthetic_conversion_converts_slat_components_and_auto_loads"
+      },
+      "class_name": "diffusers_3d.families.trellis.models.TrellisSLatFlowModel",
+      "parity": [
+        {
+          "atol": 1e-06,
+          "kind": "inference",
+          "passed": true,
+          "reference": "Pinned TRELLIS SLatFlowModel with sparse-convolution IO res blocks, average-pool downsampling (upstream n+1 mean), skip connections, and full attention; forward features and input gradients on a two-batch tiny CPU float32 configuration, with spconv and xformers replaced by dense conv3d and per-sequence SDPA references.",
+          "rtol": 1e-05,
+          "test": "tests/families/trellis/test_reference_parity.py::test_slat_flow_io_stages_match_pinned_reference"
+        }
+      ],
+      "role": "slat-denoiser"
+    },
+    {
+      "checkpoint_conversion": {
+        "converter": "diffusers_3d.families.trellis.conversion.convert_trellis_checkpoint",
+        "source_format": "upstream-component-json-safetensors",
+        "target_format": "diffusers-safetensors",
+        "test": "tests/families/trellis/test_conversion.py::test_synthetic_conversion_converts_slat_components_and_auto_loads"
+      },
+      "class_name": "diffusers_3d.families.trellis.decoders.TrellisSLatGaussianDecoder",
+      "parity": [
+        {
+          "atol": 1e-06,
+          "kind": "inference",
+          "passed": true,
+          "reference": "Pinned TRELLIS SLatGaussianDecoder with shifted-window (swin) attention and the attribute-grouped Gaussian head layout: positions, DC colour, and raw scaling / rotation / opacity per Gaussian on a tiny CPU float32 configuration.",
+          "rtol": 1e-05,
+          "test": "tests/families/trellis/test_reference_parity.py::test_swin_gaussian_decoder_matches_pinned_reference"
+        }
+      ],
+      "role": "slat-gaussian-decoder"
     }
   ],
   "integration_id": "trellis",

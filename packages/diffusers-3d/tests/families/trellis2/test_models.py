@@ -4,7 +4,6 @@ import pytest
 import torch
 
 from diffusers_3d import (
-    BackendUnavailableError,
     Trellis2SLatFlowModel,
     Trellis2SparseStructureFlowModel,
     TrellisSparseTensor,
@@ -29,8 +28,9 @@ def test_sparse_structure_flow_forward_backward_state_layout_and_save_load(tmp_p
     assert model.gradient_checkpointing
     assert model.input_layer.weight.grad is not None
     assert model.blocks[0].self_attn.to_qkv.weight.grad is not None
+    # RoPE phases are derived from the config, so they never appear in checkpoints.
+    assert "rope_phases" not in model.state_dict()
     assert {
-        "rope_phases",
         "t_embedder.mlp.0.weight",
         "adaLN_modulation.1.weight",
         "blocks.0.modulation",
@@ -90,6 +90,23 @@ def test_slat_flow_tiny_shape_and_texture_concat_forward_backward_and_save_load(
         texture_model(texture_input, timesteps, context, concat_cond=misaligned)
 
 
-def test_production_slat_path_requires_explicit_flex_gemm_support():
-    with pytest.raises((BackendUnavailableError, NotImplementedError), match="flex_gemm|FlexGEMM"):
-        Trellis2SLatFlowModel(**Trellis2SLatFlowModel.production_config())
+def test_production_slat_flow_layouts_match_the_released_checkpoints():
+    # Key counts and the input widths of the released 1.3B shape / texture SLAT denoisers.
+    with torch.device("meta"):
+        shape_model = Trellis2SLatFlowModel(**Trellis2SLatFlowModel.production_config())
+        texture_model = Trellis2SLatFlowModel(**Trellis2SLatFlowModel.production_config(texture=True))
+        cascade_model = Trellis2SLatFlowModel(**{**Trellis2SLatFlowModel.production_config(), "resolution": 64})
+    assert len(shape_model.state_dict()) == len(texture_model.state_dict()) == 640
+    assert shape_model.input_layer.weight.shape == (1536, 32)
+    assert texture_model.input_layer.weight.shape == (1536, 64)
+    assert set(shape_model.state_dict()) == set(cascade_model.state_dict())
+    assert shape_model.blocks[0].self_attn.to_qkv.weight.dtype is torch.bfloat16
+    assert shape_model.blocks[0].modulation.dtype is torch.float32
+
+
+def test_slat_flow_rope_is_unbounded_by_the_configured_resolution():
+    model = Trellis2SLatFlowModel(**Trellis2SLatFlowModel.tiny_config())
+    coordinates = torch.tensor([[0, 0, 0, 0], [0, 40, 41, 42]], dtype=torch.int64)
+    hidden_states = TrellisSparseTensor(coordinates, torch.randn(2, 4, generator=torch.Generator().manual_seed(0)))
+    output = model(hidden_states, torch.tensor([500.0]), torch.randn(1, 3, 12)).sample
+    assert output.features.shape == (2, 4)

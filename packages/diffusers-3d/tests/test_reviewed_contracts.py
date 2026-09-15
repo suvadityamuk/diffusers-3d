@@ -15,13 +15,19 @@ from diffusers_3d import (
     Trellis2Dinov3Conditioner,
     Trellis2FlowEulerScheduler,
     Trellis2ImageTo3DPipeline,
+    Trellis2PBRSparseDecoder,
+    Trellis2ShapeDualGridDecoder,
+    Trellis2SLatFlowModel,
     Trellis2SparseStructureDecoder,
     Trellis2SparseStructureFlowModel,
     TrellisDinov2Conditioner,
     TrellisFlowEulerScheduler,
     TrellisImageTo3DPipeline,
+    TrellisSLatFlowModel,
+    TrellisSLatGaussianDecoder,
     TrellisSparseStructureDecoder,
     TrellisSparseStructureFlowModel,
+    TrellisSparseTensor,
 )
 from diffusers_3d.families.registrations import production_execution_registrations
 
@@ -107,14 +113,121 @@ def _invoke_sparse_decoder(model: TrellisSparseStructureDecoder, batch_size: int
     return _output_tensor(model(hidden_states, return_dict=return_dict), return_dict=return_dict)
 
 
+# Three active voxels per batch item so sparse outputs regroup as (batch, voxels, channels).
+_VOXELS_PER_ITEM = 3
+
+
+def _sparse_latents(model: torch.nn.Module, batch_size: int, channels: int) -> TrellisSparseTensor:
+    device, dtype = _parameter_properties(model)
+    cells = torch.tensor([[0, 0, 0], [1, 2, 3], [3, 3, 1]], device=device)
+    coordinates = torch.cat(
+        [
+            torch.cat([torch.full((_VOXELS_PER_ITEM, 1), index, device=device), cells], dim=1)
+            for index in range(batch_size)
+        ]
+    )
+    features = torch.linspace(-1.0, 1.0, batch_size * _VOXELS_PER_ITEM * channels, device=device, dtype=dtype).reshape(
+        batch_size * _VOXELS_PER_ITEM, channels
+    )
+    return TrellisSparseTensor(coordinates, features)
+
+
+def _regroup(features: torch.Tensor, batch_size: int) -> torch.Tensor:
+    return features.reshape(batch_size, -1, features.shape[-1])
+
+
+def _invoke_slat_flow(model: torch.nn.Module, batch_size: int, return_dict: bool) -> torch.Tensor:
+    device, dtype = _parameter_properties(model)
+    hidden_states = _sparse_latents(model, batch_size, model.config.in_channels)
+    timesteps = torch.linspace(200.0, 800.0, batch_size, device=device, dtype=dtype)
+    context = torch.linspace(-0.5, 0.5, batch_size * 7 * model.config.cond_channels, device=device, dtype=dtype)
+    output = model(hidden_states, timesteps, context.reshape(batch_size, 7, -1), return_dict=return_dict)
+    return _regroup(_output_tensor(output, return_dict=return_dict).features, batch_size)
+
+
+def _invoke_texture_slat_flow(model: torch.nn.Module, batch_size: int, return_dict: bool) -> torch.Tensor:
+    device, dtype = _parameter_properties(model)
+    channels = model.config.in_channels // 2
+    hidden_states = _sparse_latents(model, batch_size, channels)
+    timesteps = torch.linspace(200.0, 800.0, batch_size, device=device, dtype=dtype)
+    context = torch.linspace(-0.5, 0.5, batch_size * 7 * model.config.cond_channels, device=device, dtype=dtype)
+    output = model(
+        hidden_states,
+        timesteps,
+        context.reshape(batch_size, 7, -1),
+        concat_cond=hidden_states.replace(hidden_states.features.flip(0)),
+        return_dict=return_dict,
+    )
+    return _regroup(_output_tensor(output, return_dict=return_dict).features, batch_size)
+
+
+def _assets(output: Any, *, return_dict: bool):
+    return output.assets if return_dict else output[0]
+
+
+def _invoke_gaussian_decoder(model: torch.nn.Module, batch_size: int, return_dict: bool) -> torch.Tensor:
+    assets = _assets(
+        model(_sparse_latents(model, batch_size, model.latent_channels), return_dict=return_dict),
+        return_dict=return_dict,
+    )
+    return torch.stack([torch.cat([asset.means, asset.log_scales, asset.opacity_logits], dim=1) for asset in assets])
+
+
+def _select_all_children(model: torch.nn.Module) -> None:
+    # Untrained subdivision heads sit at zero; bias them so every stage keeps all eight children and
+    # each batch item decodes to the same number of voxels.
+    with torch.no_grad():
+        for stage in model.blocks[:-1]:
+            stage[-1].to_subdiv.bias.fill_(10.0)
+
+
+def _invoke_shape_decoder(model: torch.nn.Module, batch_size: int, return_dict: bool) -> torch.Tensor:
+    _select_all_children(model)
+    assets = _assets(
+        model(_sparse_latents(model, batch_size, model.latent_channels), return_dict=return_dict),
+        return_dict=return_dict,
+    )
+    return torch.stack([torch.cat([asset.dual_grid_vertex_offsets, asset.split_weights], dim=1) for asset in assets])
+
+
+def _invoke_pbr_decoder(model: torch.nn.Module, batch_size: int, return_dict: bool) -> torch.Tensor:
+    shape_decoder = Trellis2ShapeDualGridDecoder(**Trellis2ShapeDualGridDecoder.tiny_config()).to(
+        *_parameter_properties(model)
+    )
+    _select_all_children(shape_decoder)
+    latents = _sparse_latents(model, batch_size, model.latent_channels)
+    with torch.no_grad():
+        shape = shape_decoder(latents)
+    assets = _assets(
+        model(latents, shape.assets, shape.subdivisions, return_dict=return_dict), return_dict=return_dict
+    )
+    return torch.stack(
+        [torch.cat([asset.base_color, asset.metallic, asset.roughness, asset.opacity], dim=1) for asset in assets]
+    )
+
+
 MODEL_CONTRACTS = (
     ModelContract(TrellisSparseStructureFlowModel, _invoke_trellis_flow),
     ModelContract(TrellisSparseStructureDecoder, _invoke_sparse_decoder),
+    ModelContract(TrellisSLatFlowModel, _invoke_slat_flow),
+    ModelContract(TrellisSLatGaussianDecoder, _invoke_gaussian_decoder),
     ModelContract(TrellisDinov2Conditioner, _invoke_conditioner),
     ModelContract(Trellis2SparseStructureFlowModel, _invoke_trellis_flow),
     ModelContract(Trellis2SparseStructureDecoder, _invoke_sparse_decoder),
+    ModelContract(Trellis2SLatFlowModel, _invoke_texture_slat_flow),
+    ModelContract(Trellis2ShapeDualGridDecoder, _invoke_shape_decoder),
+    ModelContract(Trellis2PBRSparseDecoder, _invoke_pbr_decoder),
     ModelContract(Trellis2Dinov3Conditioner, _invoke_conditioner),
 )
+# Sparse voxel models index by coordinates (unique / nonzero), so their shapes are data-dependent and
+# they cannot be captured as a single graph.
+SPARSE_MODEL_TYPES = {
+    TrellisSLatFlowModel,
+    TrellisSLatGaussianDecoder,
+    Trellis2SLatFlowModel,
+    Trellis2ShapeDualGridDecoder,
+    Trellis2PBRSparseDecoder,
+}
 
 
 def _model_contract_id(contract: ModelContract) -> str:
@@ -157,7 +270,7 @@ def test_reviewed_model_batch_dtype_device_return_dict_and_save_load(contract, t
 @pytest.mark.parametrize("contract", MODEL_CONTRACTS, ids=_model_contract_id)
 def test_reviewed_models_support_torch_compile_fullgraph_eager_backend(contract):
     model = contract.make().eval()
-    compiled = torch.compile(model, backend="eager", fullgraph=True)
+    compiled = torch.compile(model, backend="eager", fullgraph=contract.model_type not in SPARSE_MODEL_TYPES)
     with torch.no_grad():
         output = contract.invoke(compiled, 2, True)
     assert output.shape[0] == 2
@@ -170,6 +283,7 @@ GRADIENT_CHECKPOINTING_CONTRACTS = tuple(
     in {
         TrellisSparseStructureFlowModel,
         Trellis2SparseStructureFlowModel,
+        *SPARSE_MODEL_TYPES,
     }
 )
 
@@ -249,6 +363,9 @@ def test_reviewed_attention_models_support_processor_and_native_backend_hooks():
     expected = {
         TrellisSparseStructureFlowModel,
         Trellis2SparseStructureFlowModel,
+        TrellisSLatFlowModel,
+        TrellisSLatGaussianDecoder,
+        Trellis2SLatFlowModel,
     }
     found = set()
     for contract in MODEL_CONTRACTS:
@@ -294,7 +411,7 @@ def _trellis2_pipeline():
         sparse_structure_flow_model=Trellis2SparseStructureFlowModel(**Trellis2SparseStructureFlowModel.tiny_config()),
         sparse_structure_decoder=decoder,
         sparse_structure_scheduler=Trellis2FlowEulerScheduler(),
-        default_pipeline_type="tiny",
+        default_pipeline_type="512",
     )
 
 

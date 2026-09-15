@@ -1,12 +1,12 @@
 # TRELLIS image-to-3D
 
 This family integrates the MIT-licensed Microsoft TRELLIS implementation at
-revision `442aa1e1afb9014e80681d3bf604e8d728a86ee7`. The reviewed package path
-is the portable first-stage image-to-sparse-structure pipeline. Sparse SLAT and
-representation decoders are separately marked experimental and capability
-gated.
+revision `442aa1e1afb9014e80681d3bf604e8d728a86ee7`. The sparse-structure
+stage, the SLAT flow, and the Gaussian decoder run in plain PyTorch on any
+device; rendering the resulting splats delegates to the optional gsplat
+backend.
 
-## Reviewed portable path
+## Reviewed sparse-structure path
 
 - `TrellisSparseStructureFlowModel` preserves released parameter names and
   dense transformer math while using Diffusers attention dispatch. Tiny CPU
@@ -35,38 +35,41 @@ gated.
 
 The converter consumes local upstream component `.json`/`.safetensors` pairs
 and `pipeline.json`, then writes ordinary Diffusers component folders and
-object-3D metadata. Its default mode converts only the reviewed
-sparse-structure components. A local, already compatible
-`TrellisDinov2Conditioner` folder is required; conversion from the original
-Torch Hub `dinov2_vitl14_reg` state layout is not claimed.
+object-3D metadata. It converts the sparse-structure components, the SLAT
+flow model, and the Gaussian decoder. `--conditioner-path` takes either a
+saved `TrellisDinov2Conditioner` folder or the Transformers
+`dinov2_with_registers` checkpoint of the released `dinov2_vitl14_reg`
+(`facebook/dinov2-with-registers-large`); the register tokens fold into the
+conditioner and the token outputs match exactly. Conversion from the
+original Torch Hub state layout is not claimed.
 
-## Experimental sparse SLAT path
+## SLAT flow and Gaussian decoder
 
 `TrellisSparseTensor` is an immutable package bridge over `[batch, x, y, z]`
 coordinates and features. It losslessly round-trips `SparseVoxelAsset`
 metadata and supports released channelwise SLAT normalization.
 
-`TrellisSLatFlowModel` and `TrellisSLatGaussianDecoder` provide backend-free
-full-attention tiny configurations for CPU tests. The SLAT flow objective is
-implemented and tested with precomputed normalized sparse latents, but the
-recipe is deliberately not registered as reviewed training support.
+`TrellisSLatFlowModel` is the released structured-latent flow: submanifold
+sparse-convolution residual blocks that downsample into the transformer and
+upsample back out with skip connections, around a dense-attention core with
+RoPE. `TrellisSLatGaussianDecoder` is the released decoder with shifted-window
+("swin") sparse attention and the grouped-by-attribute Gaussian parameter
+layout. Sparse convolution, pooling, and window partitioning come from
+[`sparse_ops.py`](sparse_ops.py), which replaces `spconv` and `xformers` with
+plain PyTorch. The pooling reproduces upstream's `scatter_reduce(...,
+include_self=True)` mean, because the released weights were trained with it.
 
-These classes do not provide official production checkpoint parity:
+Tiny outputs of both models match the pinned upstream code with `spconv` and
+`xformers` shimmed to dense PyTorch, and released state-dict layouts are
+checked against the published safetensors headers. The SLAT flow training
+objective is implemented and tested, but the recipe is not registered yet.
 
-- Released SLAT flow checkpoints require sparse-convolution input/output
-  blocks and CUDA `spconv`. Production construction fails before inference
-  until those blocks have a separately tested implementation.
-- Released Gaussian decoder checkpoints use sparse Swin/window attention.
-  The tiny full-attention decoder tests canonical position, scale, quaternion,
-  opacity-logit, spherical-harmonic, and raw-parameter mappings only.
-- The TRELLIS sparse mesh-field network is not ported, so no mesh decoder,
-  component, or pipeline format is shipped.
-- `TrellisSLatRadianceFieldDecoder` is explicitly unsupported because the
-  package has no native radiance-field `Object3D` type.
+Not ported:
 
-The converter accepts `--include-experimental` only for synthetic/tiny
-SLAT-flow and Gaussian-decoder layouts. It records that production checkpoint
-parity has not passed.
+- The TRELLIS sparse mesh-field network, so no mesh decoder, component, or
+  pipeline format is shipped.
+- `TrellisSLatRadianceFieldDecoder`, because the package has no native
+  radiance-field `Object3D` type.
 
 ## Backend and license boundaries
 
@@ -111,13 +114,9 @@ the resized RGB and alpha tensors. Separate masks participate in alpha.
 ## Explicit limitations
 
 - No official full checkpoint, production-resolution GPU, render-quality, or
-  end-to-end two-stage parity run was performed.
-- The reviewed AutoPipeline registration advertises sparse-structure output
-  only. Tiny SLAT/Gaussian outputs are experimental and do not expand that
-  reviewed contract.
-- Production SLAT, production Gaussian decoding, mesh decoding, radiance-field
-  decoding, rendering, texture quality, and background removal are not
-  claimed.
+  end-to-end two-stage parity run was performed in this package's test matrix.
+- Mesh decoding, radiance-field decoding, rendering, texture quality, and
+  background removal are not claimed.
 - CI and conversion tests are offline CPU tests and download no model weights.
 
 Convert a local pipeline:
@@ -127,5 +126,6 @@ diffusers-3d-convert-trellis source/ output/ \
   --conditioner-path /local/path/to/trellis-dinov2-conditioner
 ```
 
-Add `--include-experimental` only when intentionally converting a compatible
-backend-free tiny SLAT layout.
+The converter writes the conditioner, sparse-structure flow and decoder, SLAT
+flow, and Gaussian decoder; the radiance-field and mesh decoders in the release
+are skipped.

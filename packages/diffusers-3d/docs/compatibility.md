@@ -63,8 +63,8 @@ The shipped reviewed families are TRELLIS and TRELLIS.2.
 
 | Family | License boundary | Tiny CPU evidence | Pinned-source parity | Production GPU / real checkpoint |
 |---|---|---|---|---|
-| TRELLIS | MIT upstream; Apache-2.0 glue; restricted renderers separate | Sparse structure plus experimental tiny SLAT equations, conversion, training, save/load | Sparse flow/decoder forward and flow backward | Not run |
-| TRELLIS.2 | MIT upstream; DINOv3 and nvdiffrast separately restricted | Reviewed sparse structure plus experimental tiny SLAT/O-Voxel/PBR channels, conversion, training, save/load | Sparse flow/decoder forward and flow backward | Not run |
+| TRELLIS | MIT upstream; Apache-2.0 glue; restricted renderers separate | Sparse structure, SLAT flow, Gaussian decoder, conversion, training, save/load | Sparse-structure flow/decoder, SLAT flow, and swin Gaussian decoder forward (spconv/xformers shimmed to dense PyTorch) | Manual run only, not CI: `microsoft/TRELLIS-image-large` (conditioner from `facebook/dinov2-with-registers-large`) converted and run on one A100 80GB in float16 (2026-09-14); returned recognizable 300k-500k Gaussian splats for two example images in about 6 s at 3.7 GB peak |
+| TRELLIS.2 | MIT upstream; DINOv3 and nvdiffrast separately restricted | Sparse structure, 512/1024 SLAT flows, shape and PBR decoders, conversion, training, save/load | Sparse-structure flow/decoder, SLAT flow, and shape/PBR decoder forward (FlexGEMM/xformers shimmed to dense PyTorch) | Manual run only, not CI: `microsoft/TRELLIS.2-4B` converted and run on one A100 80GB in bfloat16 (2026-09-14); `512` and `1024_cascade` returned recognizable O-Voxel objects for two example images in 7 s / 26 s at 18 GB / 32 GB peak |
 
 All converter tests use synthetic tiny state dictionaries. Pinned-source
 parity first verifies the exact commit, expected origin, clean worktree, and
@@ -78,7 +78,7 @@ published-checkpoint parity.
 Reviewed local and Hub auto-loading uses object-3D model-index schema version 2. Hub repository IDs are resolved to
 local immutable snapshots containing only the sidecar, Diffusers model index, and reviewed eligible component
 folders. Diffusers then imports exact classes from the installed `diffusers_3d` package with
-`trust_remote_code=False`. Schema-v1 sidecars and non-None experimental SLAT/decoder components are rejected by the
+`trust_remote_code=False`. Schema-v1 sidecars and components marked ineligible in the sidecar are rejected by the
 auto-loader.
 
 ## Commands

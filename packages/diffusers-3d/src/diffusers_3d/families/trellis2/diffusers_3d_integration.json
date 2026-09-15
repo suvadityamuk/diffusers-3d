@@ -120,7 +120,7 @@
         "converter": "diffusers_3d.families.trellis2.conversion.convert_trellis2_checkpoint",
         "source_format": "local-diffusers-dinov3-conditioner",
         "target_format": "diffusers-safetensors",
-        "test": "tests/families/trellis2/test_conversion.py::test_synthetic_reviewed_conversion_skips_production_experimental_weights_and_auto_loads"
+        "test": "tests/families/trellis2/test_conversion.py::test_synthetic_full_conversion_auto_loads_and_runs_every_stage"
       },
       "class_name": "diffusers_3d.families.trellis2.conditioner.Trellis2Dinov3Conditioner",
       "parity": [
@@ -140,7 +140,7 @@
         "converter": "diffusers_3d.families.trellis2.conversion.convert_trellis2_checkpoint",
         "source_format": "upstream-component-json-safetensors",
         "target_format": "diffusers-pipeline-object3d-v2",
-        "test": "tests/families/trellis2/test_conversion.py::test_synthetic_reviewed_conversion_skips_production_experimental_weights_and_auto_loads"
+        "test": "tests/families/trellis2/test_conversion.py::test_synthetic_full_conversion_auto_loads_and_runs_every_stage"
       },
       "class_name": "diffusers_3d.families.trellis2.pipeline.Trellis2ImageTo3DPipeline",
       "parity": [
@@ -148,7 +148,7 @@
           "atol": 0.0,
           "kind": "inference",
           "passed": true,
-          "reference": "Deterministic tiny CPU composition of DINOv3 conditioning, released 12-step defaults and Flow Euler equations, exact reused sparse-structure occupancy decoding, and upstream 1024_cascade max-pool-to-32 coordinate mapping; production SLAT cascade, O-Voxel conversion, rendering, and quality are excluded.",
+          "reference": "Deterministic tiny CPU composition of DINOv3 conditioning, released 12-step defaults and Flow Euler equations, exact reused sparse-structure occupancy decoding, and upstream 512 / 1024 / cascade coordinate mapping; official full-checkpoint output quality, O-Voxel meshing, and rendering are excluded.",
           "rtol": 0.0,
           "test": "tests/families/trellis2/test_pipeline.py::test_reviewed_sparse_structure_pipeline_is_deterministic_and_uses_released_defaults"
         },
@@ -188,7 +188,7 @@
         "converter": "diffusers_3d.families.trellis2.conversion.convert_trellis2_checkpoint",
         "source_format": "upstream-component-json-safetensors",
         "target_format": "diffusers-safetensors",
-        "test": "tests/families/trellis2/test_conversion.py::test_synthetic_reviewed_conversion_skips_production_experimental_weights_and_auto_loads"
+        "test": "tests/families/trellis2/test_conversion.py::test_synthetic_full_conversion_auto_loads_and_runs_every_stage"
       },
       "class_name": "diffusers_3d.families.trellis2.decoders.Trellis2SparseStructureDecoder",
       "parity": [
@@ -208,7 +208,7 @@
         "converter": "diffusers_3d.families.trellis2.conversion.convert_trellis2_checkpoint",
         "source_format": "upstream-component-json-safetensors",
         "target_format": "diffusers-safetensors",
-        "test": "tests/families/trellis2/test_conversion.py::test_synthetic_reviewed_conversion_skips_production_experimental_weights_and_auto_loads"
+        "test": "tests/families/trellis2/test_conversion.py::test_synthetic_full_conversion_auto_loads_and_runs_every_stage"
       },
       "class_name": "diffusers_3d.families.trellis2.models.Trellis2SparseStructureFlowModel",
       "parity": [
@@ -222,6 +222,66 @@
         }
       ],
       "role": "sparse_structure_flow_model"
+    },
+    {
+      "checkpoint_conversion": {
+        "converter": "diffusers_3d.families.trellis2.conversion.convert_trellis2_checkpoint",
+        "source_format": "upstream-component-json-safetensors",
+        "target_format": "diffusers-safetensors",
+        "test": "tests/families/trellis2/test_conversion.py::test_synthetic_full_conversion_auto_loads_and_runs_every_stage"
+      },
+      "class_name": "diffusers_3d.families.trellis2.models.Trellis2SLatFlowModel",
+      "parity": [
+        {
+          "atol": 1e-06,
+          "kind": "inference",
+          "passed": true,
+          "reference": "Pinned TRELLIS.2 SLatFlowModel (shape and texture concat_cond variants) with sparse RoPE over active voxels, shared modulation, and Q/K RMS norms; forward features and input gradients on a two-batch tiny CPU float32 configuration, with xformers replaced by per-sequence SDPA.",
+          "rtol": 1e-05,
+          "test": "tests/families/trellis2/test_reference_parity.py::test_tiny_slat_flow_matches_pinned_reference"
+        }
+      ],
+      "role": "slat_flow_model"
+    },
+    {
+      "checkpoint_conversion": {
+        "converter": "diffusers_3d.families.trellis2.conversion.convert_trellis2_checkpoint",
+        "source_format": "upstream-component-json-safetensors",
+        "target_format": "diffusers-safetensors",
+        "test": "tests/families/trellis2/test_conversion.py::test_synthetic_full_conversion_auto_loads_and_runs_every_stage"
+      },
+      "class_name": "diffusers_3d.families.trellis2.decoders.Trellis2ShapeDualGridDecoder",
+      "parity": [
+        {
+          "atol": 1e-06,
+          "kind": "inference",
+          "passed": true,
+          "reference": "Pinned TRELLIS.2 FlexiDualGridVaeDecoder: ConvNeXt blocks, channel-to-spatial upsampling with predicted subdivision, and the dual-grid vertex / intersection / split-weight heads on a tiny CPU float32 configuration, with FlexGEMM replaced by a dense conv3d reference.",
+          "rtol": 1e-05,
+          "test": "tests/families/trellis2/test_reference_parity.py::test_tiny_shape_and_pbr_decoders_match_pinned_reference"
+        }
+      ],
+      "role": "shape_slat_decoder"
+    },
+    {
+      "checkpoint_conversion": {
+        "converter": "diffusers_3d.families.trellis2.conversion.convert_trellis2_checkpoint",
+        "source_format": "upstream-component-json-safetensors",
+        "target_format": "diffusers-safetensors",
+        "test": "tests/families/trellis2/test_conversion.py::test_synthetic_full_conversion_auto_loads_and_runs_every_stage"
+      },
+      "class_name": "diffusers_3d.families.trellis2.decoders.Trellis2PBRSparseDecoder",
+      "parity": [
+        {
+          "atol": 1e-06,
+          "kind": "inference",
+          "passed": true,
+          "reference": "Pinned TRELLIS.2 SparseUnetVaeDecoder guided by the shape decoder's subdivision masks; base colour, metallic, roughness, and alpha after the released 0.5x+0.5 mapping on a tiny CPU float32 configuration, with FlexGEMM replaced by a dense conv3d reference.",
+          "rtol": 1e-05,
+          "test": "tests/families/trellis2/test_reference_parity.py::test_tiny_shape_and_pbr_decoders_match_pinned_reference"
+        }
+      ],
+      "role": "tex_slat_decoder"
     }
   ],
   "integration_id": "trellis2",

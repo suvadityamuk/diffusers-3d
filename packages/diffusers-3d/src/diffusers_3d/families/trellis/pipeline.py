@@ -21,6 +21,7 @@ from ...execution.metadata import (
 )
 from ...execution.pipelines import Object3DPipeline
 from ...objects import (
+    GaussianSplatAsset,
     Latent3DOutput,
     Object3D,
     Object3DKind,
@@ -35,13 +36,17 @@ from .sparse import TrellisSparseTensor
 
 
 class TrellisImageTo3DPipeline(Object3DPipeline):
-    """Two-stage TRELLIS image pipeline with a reviewed portable sparse-structure path."""
+    """Two-stage TRELLIS image pipeline: sparse structure -> SLAT -> Gaussian splats, in plain PyTorch.
+
+    The released mesh and radiance-field SLAT decoders are not ported; ``formats`` covers
+    ``"sparse_structure"``, ``"slat"``, and ``"gaussian"``.
+    """
 
     family_id = "trellis"
     task_ids = ("image-to-3d",)
-    output_object_types = (SparseVoxelAsset,)
-    output_representations = ("sparse-structure",)
-    object_kinds = (Object3DKind.SPARSE_VOXEL,)
+    output_object_types = (SparseVoxelAsset, GaussianSplatAsset)
+    output_representations = ("sparse-structure", "slat", "gaussian-splat")
+    object_kinds = (Object3DKind.SPARSE_VOXEL, Object3DKind.GAUSSIAN_SPLAT)
     required_backends = ()
     contribution_status = ContributionStatus.REVIEWED_PACKAGE
     review_status = ReviewStatus.REVIEWED
@@ -83,24 +88,24 @@ class TrellisImageTo3DPipeline(Object3DPipeline):
             expected_class=fully_qualified_class_name(TrellisSLatFlowModel),
             subfolder="slat_flow_model",
             optional=True,
-            review_status=ReviewStatus.UNREVIEWED,
-            loading_eligible=False,
+            review_status=ReviewStatus.REVIEWED,
+            loading_eligible=True,
         ),
         Object3DComponentSpec(
             name="slat_scheduler",
             expected_class=fully_qualified_class_name(TrellisFlowEulerScheduler),
             subfolder="slat_scheduler",
             optional=True,
-            review_status=ReviewStatus.UNREVIEWED,
-            loading_eligible=False,
+            review_status=ReviewStatus.REVIEWED,
+            loading_eligible=True,
         ),
         Object3DComponentSpec(
             name="gaussian_decoder",
             expected_class=fully_qualified_class_name(TrellisSLatGaussianDecoder),
             subfolder="gaussian_decoder",
             optional=True,
-            review_status=ReviewStatus.UNREVIEWED,
-            loading_eligible=False,
+            review_status=ReviewStatus.REVIEWED,
+            loading_eligible=True,
         ),
     )
     model_cpu_offload_seq = (
@@ -400,7 +405,7 @@ class TrellisImageTo3DPipeline(Object3DPipeline):
         self,
         image: ImageCondition | Sequence[ImageCondition] | torch.Tensor,
         *,
-        formats: tuple[str, ...] | list[str] = ("sparse_structure",),
+        formats: tuple[str, ...] | list[str] | None = None,
         sparse_structure_num_inference_steps: int = 25,
         slat_num_inference_steps: int = 25,
         guidance_scale: float = 5.0,
@@ -412,6 +417,10 @@ class TrellisImageTo3DPipeline(Object3DPipeline):
         return_latents: bool = True,
         return_dict: bool = True,
     ) -> Object3DPipelineOutput | tuple[tuple[Object3D, ...], Latent3DOutput | None]:
+        """Generate; ``formats`` defaults to ``"gaussian"`` when the decoder is loaded, else ``"sparse_structure"``."""
+
+        if formats is None:
+            formats = ("gaussian",) if self.gaussian_decoder is not None else ("sparse_structure",)
         formats = tuple(formats)
         allowed_formats = {"sparse_structure", "slat", "gaussian"}
         if not formats or len(set(formats)) != len(formats) or set(formats).difference(allowed_formats):

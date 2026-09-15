@@ -350,7 +350,7 @@ TRELLIS2_SHAPE_SLAT_FROZEN_COMPONENT_POLICIES = (
 
 
 class Trellis2ShapeSLatFlowRecipe(TrainingRecipe3D[Trellis2ImageTo3DPipeline, Trellis2SLatExample, Trellis2SLatBatch]):
-    """Unregistered experimental uniform-t shape-SLAT objective."""
+    """Uniform-t shape-SLAT objective. Runs against the released layout but is not registered yet."""
 
     recipe_id = "trellis2-shape-slat-flow-experimental"
     recipe_version = "0.1"
@@ -395,9 +395,7 @@ class Trellis2ShapeSLatFlowRecipe(TrainingRecipe3D[Trellis2ImageTo3DPipeline, Tr
         if type(self.target) is not Trellis2ImageTo3DPipeline:
             raise TrainingTargetError("target must be the exact TRELLIS.2 image-to-3D pipeline")
         if type(self.target.shape_slat_flow_model) is not Trellis2SLatFlowModel:
-            raise TrainingTargetError("target must contain the exact tiny Trellis2SLatFlowModel shape component")
-        if self.target.shape_slat_flow_model.config.require_flex_gemm:
-            raise TrainingTargetError("experimental training requires the backend-free tiny shape-SLAT core")
+            raise TrainingTargetError("target must contain the exact Trellis2SLatFlowModel shape component")
 
     def compute_loss(self, batch: Trellis2SLatBatch) -> TrainingStep3DOutput:
         if type(batch) is not Trellis2SLatBatch:
@@ -510,7 +508,7 @@ class Trellis2TextureSLatFlowRecipe(
         Trellis2TextureSLatBatch,
     ]
 ):
-    """Unregistered experimental coordinate-aligned uniform-t texture objective."""
+    """Coordinate-aligned uniform-t texture-SLAT objective. Not registered yet."""
 
     recipe_id = "trellis2-texture-slat-flow-experimental"
     recipe_version = "0.1"
@@ -562,9 +560,7 @@ class Trellis2TextureSLatFlowRecipe(
         if type(self.target) is not Trellis2ImageTo3DPipeline:
             raise TrainingTargetError("target must be the exact TRELLIS.2 image-to-3D pipeline")
         if type(self.target.texture_slat_flow_model) is not Trellis2SLatFlowModel:
-            raise TrainingTargetError("target must contain the exact tiny Trellis2SLatFlowModel texture component")
-        if self.target.texture_slat_flow_model.config.require_flex_gemm:
-            raise TrainingTargetError("experimental training requires the backend-free tiny texture-SLAT core")
+            raise TrainingTargetError("target must contain the exact Trellis2SLatFlowModel texture component")
 
     def compute_loss(self, batch: Trellis2TextureSLatBatch) -> TrainingStep3DOutput:
         if type(batch) is not Trellis2TextureSLatBatch:

@@ -22,11 +22,11 @@ from diffusers.models.modeling_utils import get_parameter_dtype
 from diffusers.utils import BaseOutput
 from torch import nn
 
-from ...backends import BACKEND_REGISTRY, BackendCapability
 from ...execution.metadata import ContributionStatus, ReviewStatus
 from ...execution.models import Object3DModel
 from ...objects import Object3DKind
 from .sparse import TrellisSparseTensor
+from .sparse_ops import SparseConv3d, sparse_downsample, sparse_upsample, submanifold_neighbors
 
 
 @dataclass
@@ -177,6 +177,7 @@ class TrellisAttnProcessor:
         hidden_states: torch.Tensor,
         context: torch.Tensor | None = None,
         indices: torch.Tensor | None = None,
+        attention_mask: torch.Tensor | None = None,
     ) -> torch.Tensor:
         batch_size, sequence_length, _ = hidden_states.shape
         if attn._type == "self":
@@ -215,6 +216,7 @@ class TrellisAttnProcessor:
             query,
             key,
             value,
+            attn_mask=attention_mask,
             backend=self._attention_backend,
             parallel_config=self._parallel_config,
         )
@@ -266,8 +268,9 @@ class TrellisAttention(nn.Module, AttentionModuleMixin):
         hidden_states: torch.Tensor,
         context: torch.Tensor | None = None,
         indices: torch.Tensor | None = None,
+        attention_mask: torch.Tensor | None = None,
     ) -> torch.Tensor:
-        return self.processor(self, hidden_states, context, indices)
+        return self.processor(self, hidden_states, context, indices, attention_mask)
 
 
 class TrellisFeedForwardNet(nn.Module):
@@ -357,6 +360,72 @@ class TrellisModulatedTransformerCrossBlock(nn.Module):
         residual = residual * (1 + scale_mlp.unsqueeze(1)) + shift_mlp.unsqueeze(1)
         residual = self.mlp(residual)
         return hidden_states + residual * gate_mlp.unsqueeze(1)
+
+
+class TrellisSparseConv3d(nn.Module):
+    """Submanifold convolution stored under ``conv.weight`` like the spconv modules TRELLIS was trained with."""
+
+    def __init__(self, in_channels: int, out_channels: int, kernel_size: int = 3) -> None:
+        super().__init__()
+        self.conv = SparseConv3d(in_channels, out_channels, kernel_size)
+
+    def forward(
+        self,
+        coordinates: torch.Tensor,
+        features: torch.Tensor,
+        *,
+        neighbors: torch.Tensor | None = None,
+    ) -> torch.Tensor:
+        return self.conv(coordinates, features, neighbors=neighbors)
+
+
+class TrellisSparseResBlock3d(nn.Module):
+    """Timestep-modulated sparse residual block from the TRELLIS SLAT flow IO stages.
+
+    Resampling is done by the owning model right before the block runs (upstream applies it as the first
+    operation of the block), so ``downsample`` / ``upsample`` only record which stage this block sits in.
+    """
+
+    def __init__(
+        self,
+        channels: int,
+        emb_channels: int,
+        out_channels: int | None = None,
+        *,
+        downsample: bool = False,
+        upsample: bool = False,
+    ) -> None:
+        super().__init__()
+        if downsample and upsample:
+            raise ValueError("a residual block cannot both downsample and upsample")
+        out_channels = channels if out_channels is None else out_channels
+        self.channels = channels
+        self.out_channels = out_channels
+        self.downsample = downsample
+        self.upsample = upsample
+        self.norm1 = TrellisLayerNorm32(channels, elementwise_affine=True, eps=1e-6)
+        self.norm2 = TrellisLayerNorm32(out_channels, elementwise_affine=False, eps=1e-6)
+        self.conv1 = TrellisSparseConv3d(channels, out_channels)
+        self.conv2 = TrellisSparseConv3d(out_channels, out_channels)
+        nn.init.zeros_(self.conv2.conv.weight)
+        nn.init.zeros_(self.conv2.conv.bias)
+        self.emb_layers = nn.Sequential(nn.SiLU(), nn.Linear(emb_channels, 2 * out_channels, bias=True))
+        self.skip_connection = nn.Linear(channels, out_channels) if channels != out_channels else nn.Identity()
+
+    def forward(
+        self,
+        coordinates: torch.Tensor,
+        features: torch.Tensor,
+        modulation: torch.Tensor,
+        *,
+        neighbors: torch.Tensor | None = None,
+    ) -> torch.Tensor:
+        batch_indices = coordinates[:, 0].to(torch.int64)
+        scale, shift = self.emb_layers(modulation).to(dtype=features.dtype).chunk(2, dim=1)
+        hidden_states = self.conv1(coordinates, F.silu(self.norm1(features)), neighbors=neighbors)
+        hidden_states = self.norm2(hidden_states) * (1 + scale[batch_indices]) + shift[batch_indices]
+        hidden_states = self.conv2(coordinates, F.silu(hidden_states), neighbors=neighbors)
+        return hidden_states + self.skip_connection(features)
 
 
 def _patchify_3d(hidden_states: torch.Tensor, patch_size: int) -> torch.Tensor:
@@ -626,22 +695,24 @@ class TrellisSparseStructureFlowModel(Object3DModel, PeftAdapterMixin):
 
 
 class TrellisSLatFlowModel(Object3DModel, PeftAdapterMixin):
-    """Portable full-attention TRELLIS SLAT flow core.
+    """TRELLIS structured-latent flow transformer with its sparse-convolution IO stages.
 
-    Official sparse-convolution IO blocks are capability-gated. The backend-free
-    path is intended for tiny CPU parity and does not claim production checkpoint
-    coverage for those blocks.
+    Matches the released ``SLatFlowModel`` layout: a linear input layer, ``num_io_res_blocks`` residual
+    blocks per ``io_block_channels`` stage (the last one average-pools by two), full-attention DiT blocks
+    at the pooled resolution, and mirrored upsampling blocks with skip connections. The sparse operators
+    are pure PyTorch, so the model runs on any device; ``io_block_channels=None`` gives the IO-free core
+    used by the tiny tests.
     """
 
     family_id = "trellis"
     component_role = "slat-denoiser"
     supported_object_kinds = (Object3DKind.SPARSE_VOXEL,)
-    required_backends = ("spconv",)
-    contribution_status = ContributionStatus.EXPERIMENTAL_HUB
-    review_status = ReviewStatus.UNREVIEWED
+    required_backends = ()
+    contribution_status = ContributionStatus.REVIEWED_PACKAGE
+    review_status = ReviewStatus.REVIEWED
 
     _supports_gradient_checkpointing = True
-    _no_split_modules = ["TrellisModulatedTransformerCrossBlock"]
+    _no_split_modules = ["TrellisModulatedTransformerCrossBlock", "TrellisSparseResBlock3d"]
     _repeated_blocks = ["TrellisModulatedTransformerCrossBlock"]
 
     @register_to_config
@@ -668,19 +739,6 @@ class TrellisSLatFlowModel(Object3DModel, PeftAdapterMixin):
         qk_rms_norm_cross: bool = False,
     ) -> None:
         super().__init__()
-        if io_block_channels is not None:
-            BACKEND_REGISTRY.select(
-                BackendCapability.SPARSE_COMPUTE,
-                name="spconv",
-                device="cuda",
-                dtype="float16" if use_fp16 else "float32",
-                differentiable=True,
-            )
-            raise NotImplementedError(
-                "official TRELLIS sparse-convolution IO blocks require the separately tested spconv production "
-                "implementation; use io_block_channels=None only for the portable full-attention core"
-            )
-        del num_io_res_blocks, use_skip_connection
         if min(resolution, in_channels, model_channels, cond_channels, out_channels, num_blocks, patch_size) <= 0:
             raise ValueError("model dimensions must be positive")
         if pe_mode not in {"ape", "rope"}:
@@ -688,6 +746,12 @@ class TrellisSLatFlowModel(Object3DModel, PeftAdapterMixin):
         resolved_heads = model_channels // num_head_channels if num_heads is None else num_heads
         if resolved_heads <= 0 or model_channels % resolved_heads:
             raise ValueError("model_channels must be divisible by num_heads")
+        io_channels = None if io_block_channels is None else [int(value) for value in io_block_channels]
+        if io_channels is not None:
+            if num_io_res_blocks <= 0 or min(io_channels, default=1) <= 0:
+                raise ValueError("num_io_res_blocks and io_block_channels must be positive")
+            if patch_size != 2 ** len(io_channels):
+                raise ValueError("io_block_channels must contain one stage per power of two in patch_size")
 
         self.resolution = resolution
         self.in_channels = in_channels
@@ -699,6 +763,7 @@ class TrellisSLatFlowModel(Object3DModel, PeftAdapterMixin):
         self.patch_size = patch_size
         self.pe_mode = pe_mode
         self.use_fp16 = use_fp16
+        self.use_skip_connection = use_skip_connection
         self.share_mod = share_mod
         self.gradient_checkpointing = use_checkpoint
 
@@ -710,8 +775,29 @@ class TrellisSLatFlowModel(Object3DModel, PeftAdapterMixin):
             )
         if pe_mode == "ape":
             self.pos_embedder = TrellisAbsolutePositionEmbedder(model_channels)
-        self.input_layer = nn.Linear(in_channels, model_channels)
+        io_width = model_channels if io_channels is None else io_channels[0]
+        self.input_layer = nn.Linear(in_channels, io_width)
         self.input_blocks = nn.ModuleList()
+        self.out_blocks = nn.ModuleList()
+        if io_channels is not None:
+            for channels, next_channels in zip(io_channels, io_channels[1:] + [model_channels]):
+                self.input_blocks.extend(
+                    TrellisSparseResBlock3d(channels, model_channels, channels) for _ in range(num_io_res_blocks - 1)
+                )
+                self.input_blocks.append(
+                    TrellisSparseResBlock3d(channels, model_channels, next_channels, downsample=True)
+                )
+            skip_factor = 2 if use_skip_connection else 1
+            for channels, previous_channels in zip(
+                reversed(io_channels), [model_channels] + list(reversed(io_channels[1:]))
+            ):
+                self.out_blocks.append(
+                    TrellisSparseResBlock3d(previous_channels * skip_factor, model_channels, channels, upsample=True)
+                )
+                self.out_blocks.extend(
+                    TrellisSparseResBlock3d(channels * skip_factor, model_channels, channels)
+                    for _ in range(num_io_res_blocks - 1)
+                )
         self.blocks = nn.ModuleList(
             [
                 TrellisModulatedTransformerCrossBlock(
@@ -727,11 +813,12 @@ class TrellisSLatFlowModel(Object3DModel, PeftAdapterMixin):
                 for _ in range(num_blocks)
             ]
         )
-        self.out_blocks = nn.ModuleList()
-        self.out_layer = nn.Linear(model_channels, out_channels)
+        self.out_layer = nn.Linear(io_width, out_channels)
         self._initialize_weights()
         if use_fp16:
+            self.input_blocks.to(dtype=torch.float16)
             self.blocks.to(dtype=torch.float16)
+            self.out_blocks.to(dtype=torch.float16)
 
     @classmethod
     def production_config(cls) -> dict[str, Any]:
@@ -750,6 +837,19 @@ class TrellisSLatFlowModel(Object3DModel, PeftAdapterMixin):
             "pe_mode": "ape",
             "qk_rms_norm": True,
             "use_fp16": True,
+        }
+
+    @classmethod
+    def small_config(cls) -> dict[str, Any]:
+        """Production layout at toy width: exercises the IO stages, pooling, and skip connections on CPU."""
+
+        return {
+            **cls.tiny_config(),
+            "resolution": 8,
+            "model_channels": 16,
+            "patch_size": 2,
+            "num_io_res_blocks": 2,
+            "io_block_channels": [8],
         }
 
     @classmethod
@@ -817,19 +917,34 @@ class TrellisSLatFlowModel(Object3DModel, PeftAdapterMixin):
             raise ValueError("timestep must be scalar or contain one value per batch item")
 
         output_dtype = hidden_states.dtype
-        features = self.input_layer(hidden_states.features)
-        if self.pe_mode == "ape":
-            position_embedding = self.pos_embedder(hidden_states.coordinates[:, 1:])
-            features = features + position_embedding.to(dtype=features.dtype)
+        inner_dtype = get_parameter_dtype(self.blocks)
+        features = self.input_layer(hidden_states.features).to(dtype=inner_dtype)
         modulation = self.t_embedder(timestep)
         if self.share_mod:
             modulation = self.adaLN_modulation(modulation)
-        inner_dtype = get_parameter_dtype(self.blocks)
-        features = features.to(dtype=inner_dtype)
         modulation = modulation.to(dtype=inner_dtype)
         encoder_hidden_states = encoder_hidden_states.to(dtype=inner_dtype)
-        batch_indices = hidden_states.coordinates[:, 0]
-        spatial_coordinates = hidden_states.coordinates[:, 1:]
+
+        # IO stages: residual blocks at full resolution, average-pooling by two at the end of each stage.
+        # The pooled coordinates and the inverse index are kept so the output stages can unpool exactly.
+        coordinates = hidden_states.coordinates
+        neighbors = submanifold_neighbors(coordinates) if self.input_blocks else None
+        skips: list[torch.Tensor] = []
+        pyramid: list[tuple[torch.Tensor, torch.Tensor | None, torch.Tensor]] = []
+        for block in self.input_blocks:
+            if block.downsample:
+                fine_coordinates, fine_neighbors = coordinates, neighbors
+                # Released weights expect upstream's ``n + 1`` mean (see ``sparse_downsample``).
+                coordinates, features, inverse = sparse_downsample(coordinates, features, count_zero_buffer=True)
+                pyramid.append((fine_coordinates, fine_neighbors, inverse))
+                neighbors = submanifold_neighbors(coordinates)
+            features = block(coordinates, features, modulation, neighbors=neighbors)
+            skips.append(features)
+
+        if self.pe_mode == "ape":
+            features = features + self.pos_embedder(coordinates[:, 1:]).to(dtype=inner_dtype)
+        batch_indices = coordinates[:, 0]
+        spatial_coordinates = coordinates[:, 1:]
         for block in self.blocks:
             if torch.is_grad_enabled() and self.gradient_checkpointing:
                 features = self._gradient_checkpointing_func(
@@ -848,6 +963,15 @@ class TrellisSLatFlowModel(Object3DModel, PeftAdapterMixin):
                     batch_indices,
                     spatial_coordinates,
                 )
+
+        for block, skip in zip(self.out_blocks, reversed(skips)):
+            if self.use_skip_connection:
+                features = torch.cat([features, skip], dim=-1)
+            if block.upsample:
+                coordinates, neighbors, inverse = pyramid.pop()
+                features = sparse_upsample(features, inverse)
+            features = block(coordinates, features, modulation, neighbors=neighbors)
+
         features = F.layer_norm(features, features.shape[-1:])
         features = self.out_layer(features.to(dtype=output_dtype))
         sample = hidden_states.replace(features)

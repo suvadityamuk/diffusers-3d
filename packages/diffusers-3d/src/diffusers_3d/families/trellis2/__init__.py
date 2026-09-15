@@ -1,4 +1,4 @@
-"""Reviewed portable and experimental capability-gated Microsoft TRELLIS.2 components."""
+"""Microsoft TRELLIS.2 components: sparse-structure stage, SLAT flows, O-Voxel decoders, and pipeline."""
 
 from importlib import import_module
 

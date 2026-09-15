@@ -7,16 +7,18 @@ def trellis_execution_registrations(
     model_registration_type: type[Any],
     pipeline_registration_type: type[Any],
 ) -> tuple[tuple[Any, ...], tuple[Any, ...]]:
-    """Register the schema-v2 pipeline with only portable components eligible for auto-loading."""
+    """Register the schema-v2 pipeline and every reviewed component (sparse structure, SLAT, Gaussian)."""
 
     from .conditioner import TrellisDinov2Conditioner
-    from .decoders import TrellisSparseStructureDecoder
-    from .models import TrellisSparseStructureFlowModel
+    from .decoders import TrellisSLatGaussianDecoder, TrellisSparseStructureDecoder
+    from .models import TrellisSLatFlowModel, TrellisSparseStructureFlowModel
     from .pipeline import TrellisImageTo3DPipeline
 
     models = (
         TrellisSparseStructureFlowModel,
         TrellisSparseStructureDecoder,
+        TrellisSLatFlowModel,
+        TrellisSLatGaussianDecoder,
         TrellisDinov2Conditioner,
     )
     return (

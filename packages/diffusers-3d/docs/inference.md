@@ -26,8 +26,9 @@ diffusers-3d-convert-trellis2 /path/to/TRELLIS.2-release /path/to/trellis2 \
 
 The output is a standard Diffusers pipeline directory (`model_index.json` plus one subfolder per component) with an
 extra `object3d_model_index.json` sidecar. The sidecar records the exact class of each component and which ones are
-eligible for automatic loading. By default only the reviewed sparse-structure components are converted;
-`--include-experimental` adds SLAT and decoder components for tiny layouts only.
+eligible for automatic loading. Every released component is converted: the DINOv3 conditioner, the sparse-structure
+flow and decoder, the 512 and 1024 shape and texture SLAT flows, and the shape (dual-grid) and PBR decoders. A
+`trellis2_conversion.json` report in the output directory lists what was written.
 
 ## 2. Load a pipeline
 
@@ -44,7 +45,7 @@ only eligible component folders (for Hub IDs), and instantiates the concrete cla
 `revision`, `cache_dir`, `token`, `local_files_only`, and `subfolder` are accepted. `trust_remote_code=True` is an
 error; reviewed families never need it.
 
-The concrete class works too, and is required for local artifacts that include experimental components:
+The concrete class works too:
 
 ```python
 from diffusers_3d import Trellis2ImageTo3DPipeline
@@ -81,21 +82,27 @@ A bare tensor is also accepted and is wrapped in an `ImageCondition` for you. Pa
 ```python
 output = pipeline(
     condition,
-    formats=("sparse_structure",),
+    formats=("sparse_structure", "o_voxel"),
     sparse_structure_sampler_params={"steps": 12, "guidance_strength": 7.5},
     generator=torch.Generator("cuda").manual_seed(0),
 )
 ```
 
-- `formats` names the representations to return, in order. The reviewed TRELLIS.2 contract is `"sparse_structure"`.
-  `"shape_slat"`, `"texture_slat"`, `"o_voxel"`, and `"mesh"` are experimental and currently only run with
-  `pipeline_type="tiny"` on backend-free tiny components; asking for them on a converted `1024_cascade` checkpoint
-  raises `NotImplementedError` with the reason.
+A TRELLIS.2 run has three stages. The sparse-structure flow decides which voxels of a coarse grid are occupied. The
+shape and texture SLAT flows then denoise one latent per occupied voxel (the cascade presets run a 512 stage, upsample
+the grid with the shape decoder, and run a 1024 stage on the result). Finally the shape decoder subdivides the SLAT into
+a dual-grid surface and the PBR decoder paints it.
+
+- `formats` names the representations to return, in order, from `"sparse_structure"`, `"shape_slat"`,
+  `"texture_slat"`, `"o_voxel"`, and `"mesh"`. It defaults to `("o_voxel",)` when the texture stage is loaded and to
+  `("sparse_structure",)` otherwise. `"mesh"` runs O-Voxel meshing through `OVoxelBackend` and needs the compiled
+  runtime; every other format runs in plain PyTorch on CPU or GPU.
 - `*_sampler_params` are per-stage mappings. Omitted keys fall back to the released defaults serialized in
   `pipeline.config` (for the sparse-structure stage: 12 steps, guidance strength 7.5, guidance rescale 0.7,
   guidance interval `(0.6, 1.0)`, `rescale_t` 5.0).
-- `pipeline_type` picks the released preset (`"512"`, `"1024"`, `"1024_cascade"`, `"1536_cascade"`, `"tiny"`) and
-  defaults to `pipeline.config.default_pipeline_type`.
+- `pipeline_type` picks the released preset (`"512"`, `"1024"`, `"1024_cascade"`, `"1536_cascade"`) and defaults to
+  `pipeline.config.default_pipeline_type`, which the converter sets to `"1024_cascade"`. `max_num_tokens` caps the
+  cascade's second-stage grid the way the upstream pipeline does.
 - `generator` gives reproducible noise. `sparse_structure_latents` lets you supply the initial noise yourself.
 - `return_latents=False` drops the latent tensor from the output; `return_dict=False` returns
   `(objects, latents)`.
@@ -122,10 +129,10 @@ Which asset type you get depends on the format:
 
 | `formats` entry | Asset | Notes |
 |---|---|---|
-| `sparse_structure` | `SparseVoxelAsset` | Reviewed. Occupancy grid decoded from dense latents. |
-| `shape_slat`, `texture_slat` | `SparseVoxelAsset` | Experimental tiny stages. `metadata["stage"]` is `"shape"` or `"texture"`. |
-| `o_voxel` | `OVoxelAsset` | Experimental. Full PBR channel layout (`base_color`, `metallic`, `roughness`, `opacity`, `normals`, `emissive`, dual-grid fields). |
-| `mesh` | `MeshAsset` | Experimental; extracted through `OVoxelBackend`, which needs the compiled O-Voxel runtime. |
+| `sparse_structure` | `SparseVoxelAsset` | Occupancy grid decoded from dense latents. |
+| `shape_slat`, `texture_slat` | `SparseVoxelAsset` | Denoised structured latents on the final stage's grid. `metadata["stage"]` is `"shape"` or `"texture"`. |
+| `o_voxel` | `OVoxelAsset` | Dual-grid surface plus PBR channels (`base_color`, `metallic`, `roughness`, `opacity`, `normals`, `emissive`). |
+| `mesh` | `MeshAsset` | Extracted through `OVoxelBackend`, which needs the compiled O-Voxel runtime. |
 
 ## 6. Save assets
 
@@ -149,15 +156,29 @@ available.
 
 ## TRELLIS (v1) differences
 
-`TrellisImageTo3DPipeline` accepts `formats` from `{"sparse_structure", "slat", "gaussian"}` and uses flat keyword
-arguments instead of per-stage mappings: `sparse_structure_num_inference_steps`, `slat_num_inference_steps`,
-`guidance_scale`, `guidance_interval`, `rescale_t`. `"gaussian"` returns a `GaussianSplatAsset`; rasterizing it
-requires the optional `gsplat` backend. Convert official checkpoints with `diffusers-3d-convert-trellis`, which takes
-the same arguments as the TRELLIS.2 converter.
+`TrellisImageTo3DPipeline` accepts `formats` from `{"sparse_structure", "slat", "gaussian"}` (default `"gaussian"`
+when the decoder is loaded) and uses flat keyword arguments instead of per-stage mappings:
+`sparse_structure_num_inference_steps`, `slat_num_inference_steps`, `guidance_scale`, `guidance_interval`, `rescale_t`.
+`"gaussian"` returns a `GaussianSplatAsset` from the windowed-attention Gaussian decoder; rasterizing it requires the
+optional `gsplat` backend. The released radiance-field and mesh decoders are not ported. Convert official checkpoints with `diffusers-3d-convert-trellis`, which takes
+the same arguments as the TRELLIS.2 converter. Its `--conditioner-path` is the released `dinov2_vitl14_reg`, published
+on the Hub as `facebook/dinov2-with-registers-large`:
+
+```bash
+hf download microsoft/TRELLIS-image-large --local-dir /path/to/TRELLIS-image-large
+hf download facebook/dinov2-with-registers-large --local-dir /path/to/dinov2-with-registers-large
+diffusers-3d-convert-trellis \
+    --source-directory /path/to/TRELLIS-image-large \
+    --output-directory /path/to/trellis-diffusers \
+    --conditioner-path /path/to/dinov2-with-registers-large
+```
 
 ## What is and is not covered
 
-The reviewed inference contract for both families ends at CPU-capable sparse-structure output with measured tiny
-parity against the pinned upstream implementation. Full-resolution GPU quality, the 1024 cascade with production
-SLAT/O-Voxel stages, and compiled mesh/PBR export have not been run in this package's test matrix. See
-[compatibility.md](compatibility.md) and the family READMEs for the exact evidence behind each claim.
+Every network in both pipelines (conditioners, sparse-structure flows and decoders, SLAT flows, the Gaussian decoder,
+and the shape and PBR decoders) runs in plain PyTorch on any device. Sparse convolutions, pooling, subdivision, and
+windowed attention are implemented in `families/trellis/sparse_ops.py` and checked numerically against the pinned
+upstream code with tiny weights, with the upstream CUDA kernels (`spconv`, FlexGEMM, `xformers`) replaced by dense
+PyTorch equivalents in the test. What has not been run in this package's test matrix is full-resolution GPU generation
+on the released weights and the compiled mesh/GLB export path. See [compatibility.md](compatibility.md) and the family
+READMEs for the exact evidence behind each claim.

@@ -21,7 +21,6 @@ from diffusers.models.modeling_utils import get_parameter_dtype
 from diffusers.utils import BaseOutput
 from torch import nn
 
-from ...backends import BACKEND_REGISTRY, BackendCapability
 from ...execution.metadata import ContributionStatus, ReviewStatus
 from ...execution.models import Object3DModel
 from ...objects import Object3DKind
@@ -463,7 +462,8 @@ class Trellis2SparseStructureFlowModel(_Trellis2FlowInitialization, Object3DMode
                 model_channels // resolved_heads,
                 rope_freq=tuple(float(item) for item in rope_freq),
             )
-            self.register_buffer("rope_phases", rope(coordinates))
+            # Derived from the config; the released checkpoints do not store it.
+            self.register_buffer("rope_phases", rope(coordinates), persistent=False)
         self.input_layer = nn.Linear(in_channels, model_channels)
         self.blocks = nn.ModuleList(
             [
@@ -586,14 +586,19 @@ class Trellis2SparseStructureFlowModel(_Trellis2FlowInitialization, Object3DMode
 
 
 class Trellis2SLatFlowModel(_Trellis2FlowInitialization, Object3DModel):
-    """Experimental backend-free tiny core for TRELLIS.2 shape and texture SLAT."""
+    """TRELLIS.2 shape / texture SLAT flow transformer (released ``SLatFlowModel`` layout).
+
+    Unlike TRELLIS, the TRELLIS.2 SLAT denoiser has no sparse-convolution stages: it is a linear input
+    layer, RoPE full-attention DiT blocks over the active voxels, and a linear output layer, so it needs
+    no compiled sparse backend. The texture variant concatenates the shape SLAT as ``concat_cond``.
+    """
 
     family_id = "trellis2"
     component_role = "slat_flow_model"
     supported_object_kinds = (Object3DKind.SPARSE_VOXEL, Object3DKind.O_VOXEL)
-    required_backends = ("flex_gemm",)
-    contribution_status = ContributionStatus.EXPERIMENTAL_HUB
-    review_status = ReviewStatus.UNREVIEWED
+    required_backends = ()
+    contribution_status = ContributionStatus.REVIEWED_PACKAGE
+    review_status = ReviewStatus.REVIEWED
     _supports_gradient_checkpointing = True
     _no_split_modules = ["Trellis2ModulatedTransformerCrossBlock"]
     _repeated_blocks = ["Trellis2ModulatedTransformerCrossBlock"]
@@ -618,21 +623,8 @@ class Trellis2SLatFlowModel(_Trellis2FlowInitialization, Object3DModel):
         initialization: str = "scaled",
         qk_rms_norm: bool = True,
         qk_rms_norm_cross: bool = True,
-        require_flex_gemm: bool = True,
     ) -> None:
         super().__init__()
-        if require_flex_gemm:
-            BACKEND_REGISTRY.select(
-                BackendCapability.SPARSE_COMPUTE,
-                name="flex_gemm",
-                device="cuda",
-                dtype=dtype,
-                differentiable=True,
-            )
-            raise NotImplementedError(
-                "production TRELLIS.2 sparse IO requires a pinned, parity-tested FlexGEMM integration; "
-                "require_flex_gemm=False is only the backend-free tiny full-attention core"
-            )
         if min(resolution, in_channels, model_channels, cond_channels, out_channels, num_blocks) <= 0:
             raise ValueError("model dimensions must be positive")
         if pe_mode not in {"ape", "rope"} or initialization not in {"vanilla", "scaled"}:
@@ -705,7 +697,6 @@ class Trellis2SLatFlowModel(_Trellis2FlowInitialization, Object3DModel):
             "qk_rms_norm": True,
             "qk_rms_norm_cross": True,
             "dtype": "bfloat16",
-            "require_flex_gemm": True,
         }
 
     @classmethod
@@ -725,7 +716,6 @@ class Trellis2SLatFlowModel(_Trellis2FlowInitialization, Object3DModel):
             "qk_rms_norm": True,
             "qk_rms_norm_cross": True,
             "dtype": "float32",
-            "require_flex_gemm": False,
         }
 
     def forward(
@@ -748,8 +738,8 @@ class Trellis2SLatFlowModel(_Trellis2FlowInitialization, Object3DModel):
             input_features = torch.cat([input_features, concat_cond.features], dim=-1)
         if input_features.shape[1] != self.in_channels:
             raise ValueError(f"combined sparse input must have {self.in_channels} feature channels")
-        if bool((hidden_states.coordinates[:, 1:] >= self.resolution).any()):
-            raise ValueError("hidden_states coordinates fall outside the configured resolution")
+        # ``resolution`` is nominal: RoPE and the sinusoidal APE are unbounded, and the released 1536 cascade
+        # runs the 1024 model on a 96^3 grid.
         batch_size = hidden_states.batch_size
         if encoder_hidden_states.ndim != 3 or encoder_hidden_states.shape != (
             batch_size,

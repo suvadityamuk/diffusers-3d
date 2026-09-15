@@ -29,8 +29,9 @@ dataset for actual training.
 | `TrellisSparseStructureFlowRecipe` | TRELLIS | `sparse_structure_flow_model` | conditioner, decoder | full | `TrellisSparseStructureExample` |
 
 Both reviewed recipes train the image-to-sparse-structure flow model on precomputed dense latents. The SLAT recipes
-(`TrellisSLatFlowRecipe`, `Trellis2ShapeSLatFlowRecipe`, `Trellis2TextureSLatFlowRecipe`) exist as code but are
-experimental and unregistered, so the trainer rejects them. No LoRA recipe is registered yet; passing `LoRAFineTune`
+(`TrellisSLatFlowRecipe`, `Trellis2ShapeSLatFlowRecipe`, `Trellis2TextureSLatFlowRecipe`) run against the ported SLAT
+flow models and are covered by unit tests, but they are not registered yet, so `Object3DTrainer` rejects them until
+they go through review. No LoRA recipe is registered yet; passing `LoRAFineTune`
 to either reviewed recipe raises `TrainingPolicyError`. The authoritative list is each family's
 `registrations.py` (`trellis_training_registrations`, `trellis2_training_registrations`).
 
@@ -204,14 +205,14 @@ See [inference.md](inference.md) for what to do with the pipeline from here.
 
 ## Smoke-testing without a checkpoint
 
-Every TRELLIS.2 model class has a `tiny_config()`. The example script's `build_tiny_pipeline()` assembles a
+Every TRELLIS.2 model class has a `tiny_config()`. `build_tiny_pipeline()` in the examples package assembles a
 CPU-runnable pipeline from them, which is the fastest way to validate a dataset class or training script before
 committing GPU time:
 
 ```python
-from diffusers_3d.families.trellis2.examples.image_to_3d import build_tiny_pipeline
+from diffusers_3d.families.trellis2.examples.tiny_components import build_tiny_pipeline
 
-pipeline = build_tiny_pipeline(include_experimental=False)
+pipeline = build_tiny_pipeline(include_slat=False)  # include_slat=True adds the SLAT and O-Voxel stages
 recipe = Trellis2SparseStructureFlowRecipe(pipeline)
 # tiny latents are (2, 2, 2, 2); tiny conditioners take any image size and resize to 8x8
 ```

@@ -1,4 +1,4 @@
-"""Convert local TRELLIS.2 component JSON/safetensors pairs into Diffusers folders."""
+"""Convert a released TRELLIS.2 checkpoint layout into a Diffusers pipeline folder."""
 
 from __future__ import annotations
 
@@ -21,39 +21,40 @@ from .scheduler import Trellis2FlowEulerScheduler
 
 TRELLIS2_REFERENCE_REVISION = "75fbf0183001ed9876c8dbb35de6b68552ee08bd"
 
+_SLAT_FLOW_TYPES = {
+    "SLatFlowModel": Trellis2SLatFlowModel,
+    "ElasticSLatFlowModel": Trellis2SLatFlowModel,
+}
 _COMPONENT_TYPES = {
-    "sparse_structure_flow_model": {
-        "SparseStructureFlowModel": Trellis2SparseStructureFlowModel,
-    },
-    "sparse_structure_decoder": {
-        "SparseStructureDecoder": Trellis2SparseStructureDecoder,
-    },
-    "shape_slat_flow_model_512": {
-        "SLatFlowModel": Trellis2SLatFlowModel,
-        "ElasticSLatFlowModel": Trellis2SLatFlowModel,
-    },
-    "tex_slat_flow_model_512": {
-        "SLatFlowModel": Trellis2SLatFlowModel,
-        "ElasticSLatFlowModel": Trellis2SLatFlowModel,
-    },
-    "shape_slat_decoder": {
-        "FlexiDualGridVaeDecoder": Trellis2ShapeDualGridDecoder,
-    },
-    "tex_slat_decoder": {
-        "SparseUnetVaeDecoder": Trellis2PBRSparseDecoder,
-    },
+    "sparse_structure_flow_model": {"SparseStructureFlowModel": Trellis2SparseStructureFlowModel},
+    "sparse_structure_decoder": {"SparseStructureDecoder": Trellis2SparseStructureDecoder},
+    "shape_slat_flow_model_512": _SLAT_FLOW_TYPES,
+    "shape_slat_flow_model_1024": _SLAT_FLOW_TYPES,
+    "tex_slat_flow_model_512": _SLAT_FLOW_TYPES,
+    "tex_slat_flow_model_1024": _SLAT_FLOW_TYPES,
+    "shape_slat_decoder": {"FlexiDualGridVaeDecoder": Trellis2ShapeDualGridDecoder},
+    "tex_slat_decoder": {"SparseUnetVaeDecoder": Trellis2PBRSparseDecoder},
 }
-_EXPERIMENTAL_COMPONENTS = {
-    "shape_slat_flow_model_512",
-    "tex_slat_flow_model_512",
-    "shape_slat_decoder",
-    "tex_slat_decoder",
+# Released ``pipeline.json`` model keys -> pipeline component subfolders.
+_OUTPUT_NAMES = {
+    "sparse_structure_flow_model": "sparse_structure_flow_model",
+    "sparse_structure_decoder": "sparse_structure_decoder",
+    "shape_slat_flow_model_512": "shape_slat_flow_model",
+    "shape_slat_flow_model_1024": "shape_slat_flow_model_1024",
+    "shape_slat_decoder": "shape_slat_decoder",
+    "tex_slat_flow_model_512": "texture_slat_flow_model",
+    "tex_slat_flow_model_1024": "texture_slat_flow_model_1024",
+    "tex_slat_decoder": "pbr_decoder",
 }
-_UNSUPPORTED_CASCADE_COMPONENTS = {
+_REQUIRED_COMPONENTS = {"sparse_structure_flow_model", "sparse_structure_decoder"}
+_OPTIONAL_OUTPUTS = (
+    "shape_slat_flow_model",
     "shape_slat_flow_model_1024",
-    "tex_slat_flow_model_1024",
-}
-_UPSTREAM_COMPONENTS = set(_COMPONENT_TYPES) | _UNSUPPORTED_CASCADE_COMPONENTS
+    "shape_slat_decoder",
+    "texture_slat_flow_model",
+    "texture_slat_flow_model_1024",
+    "pbr_decoder",
+)
 _PIPELINE_ARGUMENTS = {
     "default_pipeline_type",
     "image_cond_model",
@@ -95,12 +96,6 @@ def _component_source(root: Path, reference: str) -> Path:
     raise FileNotFoundError(f"TRELLIS.2 component pair does not exist for reference {reference!r}")
 
 
-def _portable_experimental_config(component_key: str, config: Mapping[str, Any]) -> bool:
-    if component_key.endswith("flow_model_512"):
-        return config.get("require_flex_gemm") is False
-    return config.get("portable_tiny") is True
-
-
 def _save_component(
     component_key: str,
     source_stem: Path,
@@ -129,6 +124,14 @@ def _save_component(
         )
     model.save_pretrained(destination, safe_serialization=safe_serialization)
     return model_type, model_config
+
+
+def _load_conditioner(path: Path) -> Trellis2Dinov3Conditioner:
+    """Accept a saved ``Trellis2Dinov3Conditioner`` folder or a raw Transformers DINOv3 checkpoint folder."""
+
+    if _load_json(path / "config.json").get("model_type") == "dinov3_vit":
+        return Trellis2Dinov3Conditioner.from_dinov3_pretrained(str(path), local_files_only=True)
+    return Trellis2Dinov3Conditioner.from_pretrained(path, local_files_only=True)
 
 
 def _validate_sampler(value: object, *, name: str) -> tuple[float, dict[str, Any]]:
@@ -193,9 +196,15 @@ def convert_trellis2_checkpoint(
     *,
     conditioner_path: str | Path,
     safe_serialization: bool = True,
-    include_experimental: bool = False,
 ) -> Path:
-    """Convert reviewed components and explicitly compatible tiny experimental components."""
+    """Convert a released TRELLIS.2 ``pipeline.json`` plus component pairs into a Diffusers pipeline folder.
+
+    Every model named in ``pipeline.json`` is converted; the two sparse-structure components are required, the
+    SLAT flow models and decoders are optional (a pipeline without them only produces sparse structures).
+    Component references are resolved relative to ``source_directory`` and then as-is, so cross-repository
+    references such as the TRELLIS image-large sparse-structure decoder work once that file pair is present.
+    ``conditioner_path`` may be a saved conditioner or a downloaded ``facebook/dinov3-*`` checkpoint folder.
+    """
 
     source = Path(source_directory)
     pipeline_path = source / "pipeline.json"
@@ -215,8 +224,8 @@ def convert_trellis2_checkpoint(
     models = args["models"]
     if not isinstance(models, Mapping):
         raise ValueError("pipeline args.models must be a mapping")
-    missing = _UPSTREAM_COMPONENTS.difference(models)
-    unknown = set(models).difference(_UPSTREAM_COMPONENTS)
+    missing = _REQUIRED_COMPONENTS.difference(models)
+    unknown = set(models).difference(_COMPONENT_TYPES)
     if missing or unknown:
         raise ValueError(f"pipeline component mismatch: missing={sorted(missing)}, unknown={sorted(unknown)}")
 
@@ -224,108 +233,63 @@ def convert_trellis2_checkpoint(
     destination.mkdir(parents=True, exist_ok=True)
     component_index: dict[str, list[str | None]] = {}
     component_report: dict[str, dict[str, Any]] = {}
-    skipped_components: dict[str, str] = {}
-    output_names = {
-        "sparse_structure_flow_model": "sparse_structure_flow_model",
-        "sparse_structure_decoder": "sparse_structure_decoder",
-        "shape_slat_flow_model_512": "shape_slat_flow_model",
-        "shape_slat_decoder": "shape_slat_decoder",
-        "tex_slat_flow_model_512": "texture_slat_flow_model",
-        "tex_slat_decoder": "pbr_decoder",
-    }
     for component_key, reference in models.items():
         if not isinstance(reference, str) or not reference:
             raise ValueError(f"pipeline model reference {component_key!r} must be a non-empty string")
-        if component_key in _UNSUPPORTED_CASCADE_COMPONENTS:
-            skipped_components[component_key] = (
-                "the full 1024 cascade is unsupported until production sparse/GPU parity is measured"
-            )
-            continue
-        if component_key in _EXPERIMENTAL_COMPONENTS:
-            if not include_experimental:
-                skipped_components[component_key] = "experimental O-Voxel conversion was not explicitly requested"
-                continue
-            source_stem = _component_source(source, reference)
-            _, component_config = _load_component_descriptor(source_stem.with_suffix(".json"))
-            if not _portable_experimental_config(component_key, component_config):
-                skipped_components[component_key] = (
-                    "official production sparse weights are intentionally not loaded by the backend-free tiny class"
-                )
-                continue
-        else:
-            source_stem = _component_source(source, reference)
+        output_name = _OUTPUT_NAMES[component_key]
         model_type, model_config = _save_component(
             component_key,
-            source_stem,
-            destination / output_names[component_key],
+            _component_source(source, reference),
+            destination / output_name,
             safe_serialization=safe_serialization,
         )
-        component_index[output_names[component_key]] = [model_type.__module__, model_type.__name__]
-        component_report[component_key] = {
+        component_index[output_name] = [model_type.__module__, model_type.__name__]
+        component_report[output_name] = {
             "source": reference,
-            "target": output_names[component_key],
+            "target": output_name,
             "class": model_type.__name__,
             "config": model_config,
         }
 
-    conditioner = Trellis2Dinov3Conditioner.from_pretrained(conditioner_path, local_files_only=True)
+    conditioner = _load_conditioner(Path(conditioner_path))
     conditioner.save_pretrained(destination / "conditioner", safe_serialization=safe_serialization)
     component_index["conditioner"] = [Trellis2Dinov3Conditioner.__module__, Trellis2Dinov3Conditioner.__name__]
 
     sampler_values = {}
-    for source_name, output_name in (
-        ("sparse_structure_sampler", "sparse_structure_scheduler"),
-        ("shape_slat_sampler", "shape_slat_scheduler"),
-        ("tex_slat_sampler", "texture_slat_scheduler"),
+    for source_name, output_name, required_component in (
+        ("sparse_structure_sampler", "sparse_structure_scheduler", "sparse_structure_flow_model"),
+        ("shape_slat_sampler", "shape_slat_scheduler", "shape_slat_flow_model"),
+        ("tex_slat_sampler", "texture_slat_scheduler", "texture_slat_flow_model"),
     ):
         sigma_min, parameters = _validate_sampler(args[source_name], name=source_name)
         sampler_values[source_name] = parameters
-        required_component = {
-            "sparse_structure_scheduler": "sparse_structure_flow_model",
-            "shape_slat_scheduler": "shape_slat_flow_model",
-            "texture_slat_scheduler": "texture_slat_flow_model",
-        }[output_name]
-        if required_component in component_index:
+        has_component = required_component in component_index or f"{required_component}_1024" in component_index
+        if has_component:
             scheduler = Trellis2FlowEulerScheduler(sigma_min=sigma_min)
             scheduler.save_pretrained(destination / output_name)
-            component_index[output_name] = [
-                Trellis2FlowEulerScheduler.__module__,
-                Trellis2FlowEulerScheduler.__name__,
-            ]
+            component_index[output_name] = [Trellis2FlowEulerScheduler.__module__, Trellis2FlowEulerScheduler.__name__]
         else:
             component_index[output_name] = [None, None]
-
-    for optional in ("shape_slat_flow_model", "shape_slat_decoder", "texture_slat_flow_model", "pbr_decoder"):
+    for optional in _OPTIONAL_OUTPUTS:
         component_index.setdefault(optional, [None, None])
 
-    shape_mean, shape_std = _validate_normalization(
-        args["shape_slat_normalization"],
-        name="shape_slat_normalization",
-    )
-    texture_mean, texture_std = _validate_normalization(
-        args["tex_slat_normalization"],
-        name="tex_slat_normalization",
-    )
-    if "shape_slat_flow_model" in component_report:
-        channels = int(component_report["shape_slat_flow_model"]["config"]["out_channels"])
-        if len(shape_mean) != channels:
-            raise ValueError("shape SLAT normalization must match converted flow output channels")
-    else:
-        shape_mean = shape_std = None
-    if "texture_slat_flow_model" in component_report:
-        channels = int(component_report["texture_slat_flow_model"]["config"]["out_channels"])
-        if len(texture_mean) != channels:
-            raise ValueError("texture SLAT normalization must match converted flow output channels")
-    else:
-        texture_mean = texture_std = None
+    def normalization(name: str, *flow_names: str) -> tuple[list[float] | None, list[float] | None]:
+        mean, std = _validate_normalization(args[name], name=name)
+        converted = [component_report[flow] for flow in flow_names if flow in component_report]
+        if not converted:
+            return None, None
+        for flow in converted:
+            if len(mean) != int(flow["config"]["out_channels"]):
+                raise ValueError(f"{name} must match the converted flow output channels")
+        return mean, std
 
-    limitations = {
-        "reviewed_formats": ["sparse_structure"],
-        "experimental_formats": ["shape_slat", "texture_slat", "o_voxel", "mesh"],
-        "production_1024_cascade": "unsupported_until_flex_gemm_ovoxel_gpu_parity",
-        "official_full_checkpoint_parity": False,
-        "production_gpu_quality_verified": False,
-    }
+    shape_mean, shape_std = normalization(
+        "shape_slat_normalization", "shape_slat_flow_model", "shape_slat_flow_model_1024"
+    )
+    texture_mean, texture_std = normalization(
+        "tex_slat_normalization", "texture_slat_flow_model", "texture_slat_flow_model_1024"
+    )
+    default_pipeline_type = Trellis2ImageTo3DPipeline._validate_pipeline_type(args["default_pipeline_type"])
     model_index: dict[str, Any] = {
         "_class_name": Trellis2ImageTo3DPipeline.__name__,
         "_diffusers_version": diffusers_version,
@@ -334,11 +298,14 @@ def convert_trellis2_checkpoint(
         "shape_slat_std": shape_std,
         "texture_slat_mean": texture_mean,
         "texture_slat_std": texture_std,
-        "default_pipeline_type": args["default_pipeline_type"],
+        "default_pipeline_type": default_pipeline_type,
         "sparse_structure_sampler_defaults": sampler_values["sparse_structure_sampler"],
         "shape_slat_sampler_defaults": sampler_values["shape_slat_sampler"],
         "texture_slat_sampler_defaults": sampler_values["tex_slat_sampler"],
-        "capability_limitations": limitations,
+        "capability_limitations": {
+            "official_full_checkpoint_parity": False,
+            "production_gpu_quality_verified": False,
+        },
     }
     (destination / "model_index.json").write_text(
         json.dumps(model_index, indent=2, sort_keys=True) + "\n",
@@ -355,10 +322,7 @@ def convert_trellis2_checkpoint(
         "components": component_report,
         "reference_revision": TRELLIS2_REFERENCE_REVISION,
         "samplers": sampler_values,
-        "skipped_components": skipped_components,
         "source_pipeline": str(pipeline_path.resolve()),
-        "reviewed_sparse_structure_conversion": True,
-        "production_sparse_ovoxel_checkpoint_parity": False,
         "production_gpu_quality_verified": False,
     }
     (destination / "trellis2_conversion.json").write_text(
@@ -373,7 +337,6 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("source_directory", type=Path)
     parser.add_argument("output_directory", type=Path)
     parser.add_argument("--conditioner-path", type=Path, required=True)
-    parser.add_argument("--include-experimental", action="store_true")
     parser.add_argument("--no-safe-serialization", action="store_true")
     args = parser.parse_args(argv)
     convert_trellis2_checkpoint(
@@ -381,7 +344,6 @@ def main(argv: list[str] | None = None) -> int:
         args.output_directory,
         conditioner_path=args.conditioner_path,
         safe_serialization=not args.no_safe_serialization,
-        include_experimental=args.include_experimental,
     )
     return 0
 

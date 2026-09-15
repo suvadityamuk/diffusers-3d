@@ -4,7 +4,6 @@ import pytest
 import torch
 
 from diffusers_3d import (
-    BackendUnavailableError,
     TrellisSLatFlowModel,
     TrellisSparseStructureFlowModel,
     TrellisSparseTensor,
@@ -107,6 +106,39 @@ def test_state_names_match_pinned_trellis_layouts():
     assert not any(key.startswith("input_blocks.") or key.startswith("out_blocks.") for key in sparse_keys)
 
 
-def test_production_slat_sparse_convolution_path_is_explicitly_gated():
-    with pytest.raises((BackendUnavailableError, NotImplementedError), match="spconv|sparse-convolution"):
-        TrellisSLatFlowModel(**TrellisSLatFlowModel.production_config())
+def test_slat_flow_io_stages_forward_and_released_key_layout(tmp_path):
+    model = TrellisSLatFlowModel(**TrellisSLatFlowModel.small_config())
+    with torch.no_grad():
+        model.out_layer.weight.normal_(std=0.02)
+        for block in (*model.input_blocks, *model.out_blocks):
+            block.conv2.conv.weight.normal_(std=0.02)
+    assert [block.downsample for block in model.input_blocks] == [False, True]
+    assert [block.upsample for block in model.out_blocks] == [True, False]
+    keys = model.state_dict()
+    # spconv layout: (out, k, k, k, in) under ``conv.weight``; skip connections double the input width.
+    assert keys["input_blocks.1.conv1.conv.weight"].shape == (16, 3, 3, 3, 8)
+    assert keys["out_blocks.0.conv1.conv.weight"].shape == (8, 3, 3, 3, 32)
+    assert keys["out_blocks.0.skip_connection.weight"].shape == (8, 32)
+    assert keys["out_layer.weight"].shape == (4, 8)
+
+    generator = torch.Generator().manual_seed(12)
+    coordinates = torch.nonzero(torch.rand(2, 8, 8, 8, generator=generator) < 0.3)
+    hidden_states = TrellisSparseTensor(coordinates, torch.randn(coordinates.shape[0], 4, generator=generator))
+    timesteps = torch.tensor([200.0, 800.0])
+    context = torch.randn(2, 7, model.config.cond_channels, generator=generator)
+    output = model(hidden_states, timesteps, context).sample
+    assert torch.equal(output.coordinates, coordinates)
+    assert output.features.shape == hidden_states.features.shape
+    output.features.square().mean().backward()
+    assert model.input_blocks[1].conv1.conv.weight.grad is not None
+    assert model.out_blocks[0].skip_connection.weight.grad is not None
+
+    model.eval().save_pretrained(tmp_path)
+    loaded = TrellisSLatFlowModel.from_pretrained(tmp_path).eval()
+    with torch.no_grad():
+        torch.testing.assert_close(loaded(hidden_states, timesteps, context).sample.features, output.features)
+
+
+def test_slat_flow_rejects_mismatched_io_stages():
+    with pytest.raises(ValueError, match="io_block_channels"):
+        TrellisSLatFlowModel(**{**TrellisSLatFlowModel.small_config(), "patch_size": 4})

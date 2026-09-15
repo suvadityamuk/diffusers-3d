@@ -33,6 +33,22 @@ def identity_transform() -> torch.Tensor:
     return torch.eye(4, dtype=torch.float32)
 
 
+def follow_device(primary: torch.Tensor, transform: torch.Tensor) -> torch.Tensor:
+    """Place a 4x4 transform on ``primary``'s device.
+
+    Assets default ``transform`` / ``grid_transform`` to a CPU identity, and a model producing tensors on an
+    accelerator should not have to pass them explicitly; a transform is metadata-sized, so moving it is cheap.
+    """
+
+    if (
+        isinstance(transform, torch.Tensor)
+        and isinstance(primary, torch.Tensor)
+        and transform.device != primary.device
+    ):
+        return transform.to(primary.device)
+    return transform
+
+
 def normalize_coordinate_system(value: CoordinateSystem | str) -> CoordinateSystem:
     try:
         return CoordinateSystem(value)

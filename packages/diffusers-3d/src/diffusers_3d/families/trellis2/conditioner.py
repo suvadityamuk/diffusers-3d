@@ -127,15 +127,29 @@ class Trellis2Dinov3Conditioner(Object3DModel):
         conditioner.model.eval()
         return conditioner
 
+    def _resolve_image_size(self, image_size: int | None) -> int:
+        if image_size is None:
+            return self.image_size
+        patch_size = self.model.config.patch_size
+        if not isinstance(image_size, int) or isinstance(image_size, bool) or image_size <= 0:
+            raise ValueError("image_size must be a positive integer")
+        if image_size % patch_size:
+            raise ValueError("image_size must be divisible by the DINOv3 patch size")
+        return image_size
+
     def forward(
         self,
         images: torch.Tensor,
         *,
+        image_size: int | None = None,
         value_range: tuple[float, float] | None = (0.0, 1.0),
         return_dict: bool = True,
     ) -> Trellis2ConditionerOutput | tuple[torch.Tensor]:
+        """Encode ``images``; ``image_size`` overrides the configured side (the released 1024 stages use 1024)."""
+
         if images.ndim != 4 or images.shape[1] != 3:
             raise ValueError("images must have shape (batch, 3, height, width)")
+        image_size = self._resolve_image_size(image_size)
         parameter = next(self.model.parameters())
         images = images.to(device=parameter.device, dtype=parameter.dtype)
         if value_range is not None:
@@ -143,10 +157,10 @@ class Trellis2Dinov3Conditioner(Object3DModel):
             if not math.isfinite(low) or not math.isfinite(high) or low >= high:
                 raise ValueError("value_range must contain finite increasing bounds")
             images = (images - low) / (high - low)
-        if images.shape[-2:] != (self.image_size, self.image_size):
+        if images.shape[-2:] != (image_size, image_size):
             images = F.interpolate(
                 images,
-                size=(self.image_size, self.image_size),
+                size=(image_size, image_size),
                 mode="bilinear",
                 align_corners=False,
                 antialias=True,
@@ -161,10 +175,15 @@ class Trellis2Dinov3Conditioner(Object3DModel):
             return (embeddings,)
         return Trellis2ConditionerOutput(embeddings=embeddings)
 
+    def num_tokens_for(self, image_size: int | None = None) -> int:
+        config = self.model.config
+        return (self._resolve_image_size(image_size) // config.patch_size) ** 2 + 1 + config.num_register_tokens
+
     def unconditional_embedding(
         self,
         batch_size: int,
         *,
+        image_size: int | None = None,
         device: torch.device | str | None = None,
         dtype: torch.dtype | None = None,
     ) -> torch.Tensor:
@@ -173,7 +192,7 @@ class Trellis2Dinov3Conditioner(Object3DModel):
         parameter = next(self.model.parameters())
         return torch.zeros(
             batch_size,
-            self.num_tokens,
+            self.num_tokens_for(image_size),
             self.model.config.hidden_size,
             device=parameter.device if device is None else device,
             dtype=parameter.dtype if dtype is None else dtype,

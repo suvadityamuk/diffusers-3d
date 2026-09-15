@@ -37,7 +37,6 @@ _COMPONENT_TYPES = {
         "ElasticSLatGaussianDecoder": TrellisSLatGaussianDecoder,
     },
 }
-_EXPERIMENTAL_COMPONENTS = {"slat_flow_model", "slat_decoder_gs"}
 _UNSUPPORTED_COMPONENTS = {"slat_decoder_mesh", "slat_decoder_rf"}
 _UPSTREAM_COMPONENTS = set(_COMPONENT_TYPES) | _UNSUPPORTED_COMPONENTS
 _PIPELINE_ARGUMENTS = {
@@ -169,15 +168,26 @@ def _validate_normalization(value: object) -> tuple[list[float], list[float]]:
     return mean, std
 
 
+def _load_conditioner(path: Path) -> TrellisDinov2Conditioner:
+    """Accept a saved ``TrellisDinov2Conditioner`` folder or a Transformers ``dinov2_with_registers`` checkpoint."""
+
+    if _load_json(path / "config.json").get("model_type") == "dinov2_with_registers":
+        return TrellisDinov2Conditioner.from_dinov2_with_registers_pretrained(str(path), local_files_only=True)
+    return TrellisDinov2Conditioner.from_pretrained(path, local_files_only=True)
+
+
 def convert_trellis_checkpoint(
     source_directory: str | Path,
     output_directory: str | Path,
     *,
     conditioner_path: str | Path,
     safe_serialization: bool = True,
-    include_experimental: bool = False,
 ) -> Path:
-    """Convert a local upstream pipeline without importing TRELLIS at runtime."""
+    """Convert a local upstream pipeline without importing TRELLIS at runtime.
+
+    The sparse-structure components, the SLAT flow model, and the Gaussian decoder are converted; the released
+    mesh and radiance-field decoders have no object-native counterpart yet and are recorded as skipped.
+    """
 
     source = Path(source_directory)
     pipeline_path = source / "pipeline.json"
@@ -220,9 +230,6 @@ def convert_trellis_checkpoint(
                 "the package has no reviewed object-native decoder for this upstream component"
             )
             continue
-        if component_key in _EXPERIMENTAL_COMPONENTS and not include_experimental:
-            skipped_components[component_key] = "experimental sparse SLAT conversion was not explicitly requested"
-            continue
         model_type, model_config = _save_component(
             component_key,
             _component_source(source, reference),
@@ -237,10 +244,7 @@ def convert_trellis_checkpoint(
             "config": model_config,
         }
 
-    conditioner = TrellisDinov2Conditioner.from_pretrained(
-        conditioner_path,
-        local_files_only=True,
-    )
+    conditioner = _load_conditioner(Path(conditioner_path))
     conditioner.save_pretrained(destination / "conditioner", safe_serialization=safe_serialization)
     component_index["conditioner"] = [TrellisDinov2Conditioner.__module__, TrellisDinov2Conditioner.__name__]
 
@@ -308,8 +312,7 @@ def convert_trellis_checkpoint(
         },
         "skipped_components": skipped_components,
         "source_pipeline": str(pipeline_path.resolve()),
-        "production_slat_checkpoint_parity": False,
-        "production_gaussian_checkpoint_parity": False,
+        "production_gpu_quality_verified": False,
     }
     (destination / "trellis_conversion.json").write_text(
         json.dumps(report, indent=2, sort_keys=True) + "\n",
@@ -323,7 +326,6 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("source_directory", type=Path)
     parser.add_argument("output_directory", type=Path)
     parser.add_argument("--conditioner-path", type=Path, required=True)
-    parser.add_argument("--include-experimental", action="store_true")
     parser.add_argument("--no-safe-serialization", action="store_true")
     args = parser.parse_args(argv)
     convert_trellis_checkpoint(
@@ -331,7 +333,6 @@ def main(argv: list[str] | None = None) -> int:
         args.output_directory,
         conditioner_path=args.conditioner_path,
         safe_serialization=not args.no_safe_serialization,
-        include_experimental=args.include_experimental,
     )
     return 0
 

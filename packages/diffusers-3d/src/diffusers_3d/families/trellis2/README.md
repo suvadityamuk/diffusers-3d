@@ -2,16 +2,17 @@
 
 This family integrates the MIT-licensed Microsoft TRELLIS.2 implementation at
 revision `75fbf0183001ed9876c8dbb35de6b68552ee08bd`. It is a distinct
-`trellis2` family. The reviewed package contract is the portable
-image-to-sparse-structure stage; sparse SLAT, O-Voxel decoding, mesh conversion,
-and PBR/GLB postprocess remain explicitly experimental or capability-gated.
+`trellis2` family. The whole released network stack (sparse-structure stage,
+512/1024 shape and texture SLAT flows, shape and PBR decoders) runs in plain
+PyTorch; mesh conversion and PBR/GLB postprocess delegate to the compiled
+O-Voxel runtime and stay capability-gated.
 
 A runnable end-to-end example lives in
 [`examples/image_to_3d.py`](examples/image_to_3d.py); see
 [docs/inference.md](../../../../docs/inference.md) and
 [docs/finetuning.md](../../../../docs/finetuning.md) for the usage guides.
 
-## Reviewed portable path
+## Reviewed sparse-structure path
 
 - `Trellis2SparseStructureFlowModel` preserves the released state layout,
   RoPE, shared modulation, scaled initialization, and self/cross-attention Q/K
@@ -26,14 +27,12 @@ A runnable end-to-end example lives in
 - `Trellis2FlowEulerScheduler` implements the TRELLIS.2
   `w*conditional + (1-w)*negative` CFG equation, x0 guidance rescale and
   interval, rational `rescale_t`, `t*1000` model input, and Euler updates.
-- `Trellis2ImageTo3DPipeline` always supports
-  `formats=("sparse_structure",)` on CPU and round-trips through standard
-  Diffusers save/load and `AutoPipelineForImageTo3D`. Released defaults are 12
-  steps with the per-stage strengths, rescale values, intervals, and 1024
-  cascade configuration serialized in the pipeline config. The upstream sparse
-  target mapping is preserved: `512`, `1024_cascade`, and `1536_cascade` pool
-  decoded occupancy to resolution 32, while `1024` uses 64. Portable tiny
-  pipelines use their decoder's native output resolution.
+- `Trellis2ImageTo3DPipeline` round-trips through standard Diffusers save/load
+  and `AutoPipelineForImageTo3D`. Released defaults are 12 steps with the
+  per-stage strengths, rescale values, intervals, and 1024 cascade
+  configuration serialized in the pipeline config. The upstream sparse target
+  mapping is preserved: `512`, `1024_cascade`, and `1536_cascade` pool decoded
+  occupancy by 2, while `1024` keeps the decoder's native grid.
 - Typed RGBA alpha and separate masks are quantized to uint8 before the pinned
   `>0.8 * 255` foreground crop. The cropped RGBA image is premultiplied on
   black before Pillow LANCZOS resizes RGB to the conditioner size, matching
@@ -75,27 +74,28 @@ provenance-verified O-Voxel build and explicit
 `accept_nvdiffrast_research_license=True`. Pure schema and `.npz` paths never
 import that runtime.
 
-## Experimental sparse and PBR stages
+## SLAT flows and O-Voxel decoders
 
-`Trellis2SLatFlowModel` provides a backend-free tiny full-attention core. The
-texture form accepts a coordinate-aligned `concat_cond` shape SLAT. Production
-construction requires FlexGEMM selection and then raises
-`NotImplementedError` until released sparse input/output blocks have measured
-checkpoint parity.
+`Trellis2SLatFlowModel` is the released full-attention sparse transformer with
+RoPE over voxel coordinates, shared modulation, and Q/K RMS norms. The texture
+form takes a coordinate-aligned `concat_cond` shape SLAT. The 512 and 1024
+checkpoints load with `strict=True`; the `rope_phases` buffer is derived from
+the config and is not part of the state dict, matching upstream.
 
-`Trellis2ShapeDualGridDecoder` and `Trellis2PBRSparseDecoder` implement
-deterministic tiny contracts that return native `OVoxelAsset` values and
-preserve the complete material-channel layout. They do not claim official
-checkpoint parity. Production decoders require the released sparse UNet,
-FlexGEMM, and compiled O-Voxel runtime.
+`Trellis2ShapeDualGridDecoder` and `Trellis2PBRSparseDecoder` are the released
+sparse UNets: ConvNeXt blocks, channel-to-spatial upsampling, and a
+subdivision head per stage that predicts which children to keep. The PBR
+decoder reuses the shape decoder's subdivision masks so both write the same
+cells of one `OVoxelAsset`. `upsample_coordinates` runs the shape decoder's
+first stages to grow the grid for the cascade presets. Sparse convolution,
+pooling, and subdivision come from `families/trellis/sparse_ops.py` and run
+on any device; tiny outputs match the pinned upstream code with FlexGEMM and
+xformers replaced by dense PyTorch in the test.
 
-The pipeline can expose tiny shape SLAT, texture SLAT, and O-Voxel stages and
-can return a `MeshAsset` through the explicit O-Voxel backend. GLB/trimesh
-postprocess is not a pipeline `formats` value: call
-`postprocess_ovoxel(asset, output_format="glb")` explicitly when the optional,
-license-gated stack is available. The serialized 1024 cascade fails explicitly
-when a production SLAT/O-Voxel stage is requested, until sparse/GPU parity is
-measured.
+`formats` accepts `sparse_structure`, `shape_slat`, `texture_slat`, `o_voxel`,
+and `mesh` (through the explicit O-Voxel backend). GLB postprocess is not a
+`formats` value: call `postprocess_ovoxel(asset, output_format="glb")` when
+the optional, license-gated stack is available.
 
 ## Backend and license boundaries
 
@@ -120,9 +120,10 @@ measured.
 
 `diffusers-3d-convert-trellis2` consumes an official `pipeline.json`, local
 component JSON/safetensors pairs, and a local compatible DINOv3 conditioner
-folder. The default conversion includes only reviewed sparse-structure
-components. `--include-experimental` accepts only matching portable-tiny
-layouts and never treats production sparse checkpoints as compatible.
+folder. It converts every released component (conditioner, sparse-structure
+flow and decoder, the 512 and 1024 shape and texture SLAT flows, and the shape
+and PBR decoders); a release that ships only the sparse-structure stage is
+also accepted.
 
 `Trellis2SparseStructureFlowRecipe` is registered for full-model training only
 with precomputed dense sparse-structure latents and a frozen conditioner and
@@ -133,9 +134,9 @@ decoder:
 target `(1-sigma_min)noise-x0`, model timestep `t*1000`, and conditioning
 dropout probability `0.1`.
 
-Tiny shape and texture SLAT recipes use uniform timesteps and precomputed
-normalized coordinate-aligned sparse latents, but remain experimental and
-unregistered. All recipe collators separately follow the pinned dataset
+The shape and texture SLAT recipes use uniform timesteps and precomputed
+normalized coordinate-aligned sparse latents; they run against the ported
+flow models but are not registered yet. All recipe collators separately follow the pinned dataset
 transform exactly once: the bbox includes every nonzero alpha pixel, uses the
 unscaled floating half-size before integer truncation, resizes RGBA with
 LANCZOS, and multiplies the resized RGB and alpha tensors. Separate masks
@@ -143,12 +144,12 @@ participate in alpha. No LoRA or SC-VAE recipe is claimed.
 
 ## Explicit limitations
 
-- No official full 4B checkpoint, full 1024 cascade, production-resolution GPU,
-  compiled O-Voxel mesh conversion, voxel rendering, PBR GLB export, or visual
-  quality run was performed.
-- Official production parity is claimed only for the reviewed portable
-  sparse-structure model/decoder equations measured by the pinned tiny tests,
-  not for experimental SLAT or O-Voxel networks.
+- No official full 4B checkpoint, production-resolution GPU, compiled O-Voxel
+  mesh conversion, voxel rendering, PBR GLB export, or visual quality run was
+  performed in this package's test matrix.
+- Parity is measured with tiny weights against the pinned upstream code on
+  CPU, for every network. Released state-dict layouts are checked against the
+  published safetensors headers.
 - Background removal and production DINOv3 checkpoint acquisition are outside
   the offline CPU contract.
 

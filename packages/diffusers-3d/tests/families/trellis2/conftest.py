@@ -39,7 +39,7 @@ class TinyTrellis2PrecomputedLatentDataset:
 
 @pytest.fixture
 def tiny_trellis2_components():
-    def make(*, include_experimental: bool = False):
+    def make(*, include_slat: bool = False):
         torch.manual_seed(0)
         conditioner = Trellis2Dinov3Conditioner(**Trellis2Dinov3Conditioner.tiny_config())
         torch.manual_seed(1)
@@ -52,7 +52,7 @@ def tiny_trellis2_components():
             sparse_structure_decoder.out_layer[-1].weight.zero_()
             sparse_structure_decoder.out_layer[-1].bias.fill_(1.0)
         sparse_structure_scheduler = Trellis2FlowEulerScheduler()
-        if not include_experimental:
+        if not include_slat:
             return (
                 conditioner,
                 sparse_structure_flow_model,
@@ -94,7 +94,7 @@ def tiny_trellis2_pipeline(tiny_trellis2_components):
         sparse_structure_flow_model=flow,
         sparse_structure_decoder=decoder,
         sparse_structure_scheduler=scheduler,
-        default_pipeline_type="tiny",
+        default_pipeline_type="512",
     )
 
 
@@ -111,23 +111,29 @@ def tiny_trellis2_full_pipeline(tiny_trellis2_components):
         texture_flow,
         texture_scheduler,
         pbr_decoder,
-    ) = tiny_trellis2_components(include_experimental=True)
+    ) = tiny_trellis2_components(include_slat=True)
+    torch.manual_seed(7)
+    shape_flow_1024 = Trellis2SLatFlowModel(**Trellis2SLatFlowModel.tiny_config())
+    torch.manual_seed(8)
+    texture_flow_1024 = Trellis2SLatFlowModel(**Trellis2SLatFlowModel.tiny_config(texture=True))
     return Trellis2ImageTo3DPipeline(
         conditioner=conditioner,
         sparse_structure_flow_model=flow,
         sparse_structure_decoder=decoder,
         sparse_structure_scheduler=scheduler,
         shape_slat_flow_model=shape_flow,
+        shape_slat_flow_model_1024=shape_flow_1024,
         shape_slat_scheduler=shape_scheduler,
         shape_slat_decoder=shape_decoder,
         texture_slat_flow_model=texture_flow,
+        texture_slat_flow_model_1024=texture_flow_1024,
         texture_slat_scheduler=texture_scheduler,
         pbr_decoder=pbr_decoder,
         shape_slat_mean=[0.0] * shape_flow.config.out_channels,
         shape_slat_std=[1.0] * shape_flow.config.out_channels,
         texture_slat_mean=[0.0] * texture_flow.config.out_channels,
         texture_slat_std=[1.0] * texture_flow.config.out_channels,
-        default_pipeline_type="tiny",
+        default_pipeline_type="512",
     )
 
 

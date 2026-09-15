@@ -364,6 +364,11 @@ def official_tensors_from_ovoxel_asset(
         attributes["emissive"] = asset.emissive
     if asset.split_weights is not None:
         attributes["split_weight"] = asset.split_weights.reshape(-1, 1)
+    # NumPy has no bfloat16; float32 holds every bfloat16 value exactly, so a bf16 pipeline output still serializes.
+    attributes = {
+        name: value.to(dtype=torch.float32) if value.dtype == torch.bfloat16 else value
+        for name, value in attributes.items()
+    }
     if packed:
         packed_attributes = {}
         for name, value in attributes.items():

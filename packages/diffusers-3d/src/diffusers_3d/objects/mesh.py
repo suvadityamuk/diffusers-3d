@@ -8,6 +8,7 @@ from diffusers.utils import BaseOutput
 from ._validation import (
     Object3DValidationError,
     TensorShapeError,
+    follow_device,
     identity_transform,
     normalize_coordinate_system,
     normalize_extras,
@@ -40,6 +41,7 @@ class MeshAsset(BaseOutput, TensorDataMixin):
 
     def __post_init__(self) -> None:
         self.coordinate_system = normalize_coordinate_system(self.coordinate_system)
+        self.transform = follow_device(self.vertices, self.transform)
         self.materials = tuple(self.materials)
         self.extras = normalize_extras(self.extras)
         self.metadata = normalize_metadata(self.metadata)

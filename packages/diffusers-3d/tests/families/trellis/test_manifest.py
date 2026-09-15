@@ -95,18 +95,19 @@ def test_manifest_matches_exact_reviewed_trellis_registrations():
         TrellisDinov2Conditioner,
         TrellisSparseStructureDecoder,
         TrellisSparseStructureFlowModel,
+        TrellisSLatFlowModel,
+        TrellisSLatGaussianDecoder,
     }
     assert {registration.pipeline_class for registration in pipeline_registrations} == {TrellisImageTo3DPipeline}
     assert {registration.recipe_type for registration in recipe_registrations} == {TrellisSparseStructureFlowRecipe}
-    assert TrellisSLatFlowModel not in {registration.model_class for registration in _MODEL_REGISTRY}
-    assert TrellisSLatGaussianDecoder not in {registration.model_class for registration in _MODEL_REGISTRY}
+    # SLAT fine-tuning has no released-evidence recipe yet, so it stays unregistered.
     assert TrellisSLatFlowRecipe not in {registration.recipe_type for registration in _TRAINING_RECIPE_REGISTRY}
 
     for registration in model_registrations:
         assert components[registration.metadata.component_role] == registration.metadata.model_class
     pipeline_registration = pipeline_registrations[0]
     assert components["pipeline"] == pipeline_registration.metadata.pipeline_class
-    assert pipeline_registration.metadata.output_representations == ("sparse-structure",)
+    assert set(pipeline_registration.metadata.output_representations) == {"gaussian-splat", "slat", "sparse-structure"}
     assert (
         _PIPELINE_REGISTRY.resolve(
             TrellisImageTo3DPipeline.object3d_model_index(),
