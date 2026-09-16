@@ -2,7 +2,10 @@
 
 The whole thing is three calls::
 
-    pipeline = Trellis2ImageTo3DPipeline.from_pretrained("/path/to/trellis2").to("cuda")
+    conditioner = Trellis2Dinov3Conditioner.from_dinov3_pretrained("facebook/dinov3-vitl16-pretrain-lvd1689m")
+    pipeline = AutoPipelineForImageTo3D.from_pretrained(
+        "suvadityamuk/TRELLIS.2-4B-diffusers-3d", conditioner=conditioner
+    ).to("cuda")
     output = pipeline(ImageCondition(image=rgba))
     ovoxel = output.objects[0]                      # OVoxelAsset: dual-grid shape + PBR channels
 
@@ -11,9 +14,13 @@ sampler knobs, what comes back, and how to write each asset type to disk.
 
 Run it::
 
-    # against a converted checkpoint (see ``diffusers-3d-convert-trellis2``)
+    # against the published conversion (the gated DINOv3 conditioner is fetched separately)
     python -m diffusers_3d.families.trellis2.examples.image_to_3d \
-        --model /path/to/trellis2 --image chair.png --output out/
+        --model suvadityamuk/TRELLIS.2-4B-diffusers-3d --image chair.png --output out/
+
+    # against a folder you converted yourself with ``diffusers-3d-convert-trellis2`` (conditioner included)
+    python -m diffusers_3d.families.trellis2.examples.image_to_3d \
+        --model /path/to/trellis2 --no-conditioner-download --image chair.png --output out/
 
     # offline, on CPU, with random tiny weights; exercises every call but produces no real geometry
     python -m diffusers_3d.families.trellis2.examples.image_to_3d --tiny --output out/
@@ -43,6 +50,7 @@ from diffusers_3d import (
     Object3DPipelineOutput,
     OVoxelAsset,
     SparseVoxelAsset,
+    Trellis2Dinov3Conditioner,
     Trellis2ImageTo3DPipeline,
     write_ovoxel_npz,
 )
@@ -56,7 +64,9 @@ ALL_STAGE_FORMATS = ("sparse_structure", "shape_slat", "texture_slat", "o_voxel"
 # ---------------------------------------------------------------------------
 
 
-def load_pipeline(model: str, *, device: str, dtype: torch.dtype) -> Trellis2ImageTo3DPipeline:
+def load_pipeline(
+    model: str, *, device: str, dtype: torch.dtype, conditioner_repo: str | None
+) -> Trellis2ImageTo3DPipeline:
     """A converted checkpoint loads like any Diffusers pipeline.
 
     ``model`` is a local directory or a Hub repository ID. ``AutoPipelineForImageTo3D`` reads the
@@ -64,9 +74,16 @@ def load_pipeline(model: str, *, device: str, dtype: torch.dtype) -> Trellis2Ima
     returns the concrete pipeline. If you already know the family, the concrete class works too::
 
         Trellis2ImageTo3DPipeline.from_pretrained(model)
+
+    The published repository leaves out the DINOv3 conditioner because its weights are gated under
+    Meta's license; ``conditioner_repo`` names the gated Hub repository to build it from, and passing
+    the object to ``from_pretrained`` uses it instead of a ``conditioner/`` subfolder.
     """
 
-    pipeline = AutoPipelineForImageTo3D.from_pretrained(model)
+    components = {}
+    if conditioner_repo is not None:
+        components["conditioner"] = Trellis2Dinov3Conditioner.from_dinov3_pretrained(conditioner_repo)
+    pipeline = AutoPipelineForImageTo3D.from_pretrained(model, **components)
     return pipeline.to(device=device, dtype=dtype)
 
 
@@ -202,6 +219,16 @@ def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     source = parser.add_mutually_exclusive_group()
     source.add_argument("--model", help="Converted TRELLIS.2 checkpoint directory or Hub repository ID.")
+    parser.add_argument(
+        "--conditioner",
+        default="facebook/dinov3-vitl16-pretrain-lvd1689m",
+        help="Gated DINOv3 repository to build the conditioner from when --model does not ship one.",
+    )
+    parser.add_argument(
+        "--no-conditioner-download",
+        action="store_true",
+        help="Load the conditioner from the --model folder instead (a local conversion includes it).",
+    )
     source.add_argument("--tiny", action="store_true", help="Use randomly initialised tiny CPU components.")
     parser.add_argument("--image", action="append", default=[], help="Input image; repeat for a batch.")
     parser.add_argument("--output", type=Path, default=Path("trellis2-output"), help="Directory for assets.")
@@ -231,7 +258,12 @@ def main(argv: Sequence[str] | None = None) -> None:
         pipeline = build_tiny_pipeline(include_slat=not args.sparse_only)
         steps = args.steps if args.steps is not None else 2
     else:
-        pipeline = load_pipeline(args.model, device=args.device, dtype=getattr(torch, args.dtype))
+        pipeline = load_pipeline(
+            args.model,
+            device=args.device,
+            dtype=getattr(torch, args.dtype),
+            conditioner_repo=None if args.no_conditioner_download else args.conditioner,
+        )
         steps = args.steps
 
     conditions = [load_image_condition(path) for path in args.image] or [synthetic_image_condition()]

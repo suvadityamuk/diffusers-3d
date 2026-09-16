@@ -108,7 +108,33 @@ Python 3.10+, PyTorch 2.6+, Transformers 5.5+, Accelerate 1.1+.
 
 ## Quickstart
 
-### Why the checkpoint is converted first
+### Converted checkpoints on the Hub
+
+The released checkpoints are already converted into the Diffusers layout and published, so the normal path is to
+load them directly:
+
+| Repository | Pipeline | Notes |
+|---|---|---|
+| [`suvadityamuk/TRELLIS-image-large-diffusers-3d`](https://huggingface.co/suvadityamuk/TRELLIS-image-large-diffusers-3d) | `TrellisImageTo3DPipeline` | complete, including the DINOv2 conditioner |
+| [`suvadityamuk/TRELLIS-text-large-diffusers-3d`](https://huggingface.co/suvadityamuk/TRELLIS-text-large-diffusers-3d) | `TrellisTextTo3DPipeline` | complete, including the CLIP conditioner |
+| [`suvadityamuk/TRELLIS.2-4B-diffusers-3d`](https://huggingface.co/suvadityamuk/TRELLIS.2-4B-diffusers-3d) | `Trellis2ImageTo3DPipeline` | everything except the DINOv3 conditioner, which is gated under Meta's license and is passed in at load time |
+
+```python
+import torch
+from diffusers_3d import AutoPipelineForImageTo3D, Trellis2Dinov3Conditioner
+
+conditioner = Trellis2Dinov3Conditioner.from_dinov3_pretrained("facebook/dinov3-vitl16-pretrain-lvd1689m")
+pipeline = AutoPipelineForImageTo3D.from_pretrained(
+    "suvadityamuk/TRELLIS.2-4B-diffusers-3d", conditioner=conditioner, dtype=torch.bfloat16
+).to("cuda")
+```
+
+The auto-loader reads the `object3d_model_index.json` sidecar first, checks every declared component class against
+the installed package, downloads only those subfolders, and never enables remote code. A component passed as a
+keyword argument (`conditioner=...`) is used instead of a subfolder, which is how the gated encoder stays out of the
+public repository. `scripts/publish_hub_checkpoints.py` is the script that produced these repositories.
+
+### Converting a checkpoint yourself
 
 Microsoft publishes TRELLIS.2 in its own layout: a `pipeline.json` that names each model and its sampler settings,
 and a `ckpts/` folder with one `<name>.json` config and one `<name>.safetensors` file per model
@@ -116,7 +142,7 @@ and a `ckpts/` folder with one `<name>.json` config and one `<name>.safetensors`
 something `from_pretrained` can read, and the release does not bundle its image encoder at all; it expects you to
 fetch `facebook/dinov3-vitl16-pretrain-lvd1689m` from the Hub, which is gated behind the DINOv3 license.
 
-`diffusers-3d-convert-trellis2` does the one-time translation:
+`diffusers-3d-convert-trellis2` does the one-time translation (this is what produced the Hub repositories above):
 
 1. reads `pipeline.json` and checks it describes the released `Trellis2ImageTo3DPipeline` with the expected
    components and a DINOv3 conditioner;
@@ -138,8 +164,7 @@ diffusers-3d-convert-trellis2 /path/to/TRELLIS.2 /path/to/trellis2 \
     --conditioner-path /path/to/dinov3-vitl16-pretrain-lvd1689m
 ```
 
-You run this once per release. Everything after this point, including `save_pretrained` on a fine-tuned pipeline,
-stays in the Diffusers layout.
+Everything after this point, including `save_pretrained` on a fine-tuned pipeline, stays in the Diffusers layout.
 
 ### Generate
 
@@ -147,7 +172,9 @@ stays in the Diffusers layout.
 import torch
 from diffusers_3d import AutoPipelineForImageTo3D, ImageCondition
 
-pipeline = AutoPipelineForImageTo3D.from_pretrained("/path/to/trellis2").to("cuda")
+pipeline = AutoPipelineForImageTo3D.from_pretrained(
+    "suvadityamuk/TRELLIS.2-4B-diffusers-3d", conditioner=conditioner, dtype=torch.bfloat16
+).to("cuda")  # or a locally converted folder
 
 rgba = ...  # (4, H, W) float tensor in [0, 1]; alpha drives foreground cropping
 output = pipeline(

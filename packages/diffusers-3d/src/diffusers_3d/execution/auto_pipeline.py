@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import importlib
 import os
-from collections.abc import Mapping
+from collections.abc import Collection, Mapping
 from pathlib import Path
 from typing import Any, ClassVar
 
@@ -43,14 +43,16 @@ def _pipeline_directory(
     return path
 
 
-def _snapshot_allow_patterns(metadata: Object3DModelIndex, subfolder: str | None) -> list[str]:
+def _snapshot_allow_patterns(
+    metadata: Object3DModelIndex, subfolder: str | None, *, skip: Collection[str] = ()
+) -> list[str]:
     prefix = "" if subfolder is None else f"{subfolder}/"
     patterns = [
         f"{prefix}{DiffusionPipeline.config_name}",
         f"{prefix}{OBJECT3D_MODEL_INDEX_NAME}",
     ]
     for component in metadata.components:
-        if component.loading_eligible:
+        if component.loading_eligible and component.name not in skip:
             folder = f"{prefix}{component.subfolder}"
             patterns.extend(
                 (
@@ -141,7 +143,12 @@ class AutoPipelineFor3D:
         trust_remote_code: bool = False,
         **kwargs: Any,
     ) -> Object3DPipeline | ModularObject3DPipeline:
-        """Load only exact reviewed installed classes from a validated local snapshot."""
+        """Load only exact reviewed installed classes from a validated local snapshot.
+
+        Keyword arguments named after declared components (``conditioner=...``) supply those components as objects,
+        the way ``DiffusionPipeline.from_pretrained`` accepts them; their subfolders are neither downloaded nor
+        required. Use this for components whose weights are distributed separately, such as gated conditioners.
+        """
 
         if trust_remote_code:
             raise Object3DLoadingError(
@@ -179,6 +186,14 @@ class AutoPipelineFor3D:
             )
 
         pipeline_class = cls._registry.resolve(metadata, selected_task)
+        provided_components = {component.name for component in metadata.components if component.name in kwargs}
+        for name in provided_components:
+            expected_type = _expected_component_type(next(c for c in metadata.components if c.name == name))
+            if type(kwargs[name]) is not expected_type:
+                raise Object3DLoadingError(
+                    f"Provided component {name!r} has type {fully_qualified_class_name(type(kwargs[name]))!r}; "
+                    f"expected exact reviewed class {fully_qualified_class_name(expected_type)!r}"
+                )
         forbidden_delegate_options = {"custom_pipeline", "custom_revision", "dduf_file", "load_connected_pipeline"}
         supplied_forbidden_options = sorted(forbidden_delegate_options.intersection(kwargs))
         if supplied_forbidden_options:
@@ -199,7 +214,7 @@ class AutoPipelineFor3D:
                     cache_dir=cache_dir,
                     token=token,
                     local_files_only=local_files_only,
-                    allow_patterns=_snapshot_allow_patterns(metadata, normalized_subfolder),
+                    allow_patterns=_snapshot_allow_patterns(metadata, normalized_subfolder, skip=provided_components),
                 )
             except Exception as error:
                 raise Object3DLoadingError(
@@ -215,6 +230,7 @@ class AutoPipelineFor3D:
         metadata.validate_diffusers_model_index(
             local_pipeline_directory / DiffusionPipeline.config_name,
             pipeline_class_name=pipeline_class.__name__,
+            provided_components=provided_components,
         )
         delegate_kwargs = dict(kwargs)
         delegate_kwargs["local_files_only"] = True

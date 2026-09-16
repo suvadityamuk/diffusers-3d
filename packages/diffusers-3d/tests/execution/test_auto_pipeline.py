@@ -320,6 +320,30 @@ def test_local_loader_accepts_optional_none_and_round_trips_reviewed_pipeline(tm
     assert loaded.object3d_model_index() == original.object3d_model_index()
 
 
+def test_local_loader_accepts_a_component_the_caller_provides_instead_of_a_subfolder(tmp_path):
+    import shutil
+
+    original = tiny_trellis_pipeline()
+    original.save_pretrained(tmp_path)
+    # A published pipeline may leave out a component whose weights are distributed separately (gated conditioner).
+    shutil.rmtree(tmp_path / "conditioner")
+
+    with pytest.raises(Object3DLoadingError, match="pass the component object"):
+        AutoPipelineForImageTo3D.from_pretrained(tmp_path, local_files_only=True)
+    with pytest.raises(Object3DLoadingError, match="expected exact reviewed class"):
+        AutoPipelineForImageTo3D.from_pretrained(
+            tmp_path, local_files_only=True, conditioner=original.sparse_structure_flow_model
+        )
+
+    loaded = AutoPipelineForImageTo3D.from_pretrained(
+        tmp_path, local_files_only=True, conditioner=original.conditioner
+    )
+
+    assert type(loaded) is TrellisImageTo3DPipeline
+    assert loaded.conditioner is original.conditioner
+    assert type(loaded.sparse_structure_flow_model) is type(original.sparse_structure_flow_model)
+
+
 def test_local_loader_rejects_unexpected_experimental_component_after_load(tmp_path, monkeypatch):
     mark_slat_flow_ineligible(monkeypatch)
     tiny_trellis_pipeline().save_pretrained(tmp_path)

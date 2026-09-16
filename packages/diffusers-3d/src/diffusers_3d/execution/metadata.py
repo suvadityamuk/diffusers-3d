@@ -4,7 +4,7 @@ import json
 import os
 import re
 import tempfile
-from collections.abc import Mapping
+from collections.abc import Collection, Mapping
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path, PurePosixPath
@@ -444,8 +444,14 @@ class Object3DModelIndex:
         *,
         pipeline_class_name: str,
         enforce_loading_eligibility: bool = True,
+        provided_components: Collection[str] = (),
     ) -> Mapping[str, object]:
-        """Validate exact Diffusers component tuples without importing repository code."""
+        """Validate exact Diffusers component tuples without importing repository code.
+
+        ``provided_components`` names components the caller supplies as objects (for example a conditioner whose
+        weights are gated and cannot ship with the pipeline); their subfolder need not exist, but the model index
+        must still declare the exact reviewed class.
+        """
 
         model_index_path = Path(path)
         try:
@@ -496,9 +502,10 @@ class Object3DModelIndex:
                     f"Experimental component {component.name!r} is not eligible for automatic loading"
                 )
             component_path = model_index_path.parent / component.subfolder
-            if not component_path.is_dir():
+            if component.name not in provided_components and not component_path.is_dir():
                 raise Object3DLoadingError(
-                    f"Diffusers component {component.name!r} is missing declared subfolder {component.subfolder!r}"
+                    f"Diffusers component {component.name!r} is missing declared subfolder {component.subfolder!r}; "
+                    "pass the component object to from_pretrained() if it is distributed separately"
                 )
             expected_library, _, expected_name = component.expected_class.rpartition(".")
             if [library, class_name] != [expected_library, expected_name]:

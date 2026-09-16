@@ -15,6 +15,9 @@ on:
       flavor:
         description: Hugging Face Jobs hardware flavor
         default: a100-large
+      hub_namespace:
+        description: Load the published converted pipelines from this namespace instead of converting (empty = convert)
+        default: ""
   schedule:
     - cron: "17 6 * * 1"
 
@@ -39,11 +42,12 @@ jobs:
           REVISION: ${{ github.sha }}
           STAGES: ${{ inputs.stages || 'status,trellis2,trellis,text' }}
           FLAVOR: ${{ inputs.flavor || 'a100-large' }}
+          HUB_NAMESPACE: ${{ inputs.hub_namespace || '' }}
         run: |
           set -euo pipefail
           # The devel image ships nvcc, which FlexGEMM, CuMesh, nvdiffrast, and O-Voxel need to build.
           output="$(hf jobs run --detach --flavor "$FLAVOR" --timeout 2h --secrets HF_TOKEN \
-            --env REPOSITORY="$REPOSITORY" --env REVISION="$REVISION" --env STAGES="$STAGES" \
+            --env REPOSITORY="$REPOSITORY" --env REVISION="$REVISION" --env STAGES="$STAGES" --env HUB_NAMESPACE="$HUB_NAMESPACE" \
             pytorch/pytorch:2.8.0-cuda12.9-cudnn9-devel bash -c '
               set -euo pipefail
               apt-get update -qq > /dev/null && apt-get install -y -qq git ninja-build libgl1 libglib2.0-0 > /dev/null
@@ -53,7 +57,8 @@ jobs:
               python -m pip install -q . "./packages/diffusers-3d[portable]" "transformers>=5.5" \
                 accelerate safetensors pillow "huggingface_hub>=1.0"
               ACCEPT_NVDIFFRAST_RESEARCH_LICENSE=1 bash packages/diffusers-3d/scripts/install_gpu_backends.sh
-              python packages/diffusers-3d/scripts/gpu_smoke.py --work /work/cache --output /work/out --stages "$STAGES"
+              python packages/diffusers-3d/scripts/gpu_smoke.py --work /work/cache --output /work/out --stages "$STAGES" \
+                ${HUB_NAMESPACE:+--hub-namespace "$HUB_NAMESPACE"}
               cat /work/out/report.json
             ')"
           echo "$output"

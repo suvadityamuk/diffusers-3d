@@ -159,7 +159,10 @@ the resized RGB and alpha tensors. Separate masks participate in alpha.
   renderer with `diffoctreerast`, and background removal are not claimed.
 - CI and conversion tests are offline CPU tests and download no model weights.
 
-Convert a local pipeline:
+The converted releases are published as
+`suvadityamuk/TRELLIS-image-large-diffusers-3d` and
+`suvadityamuk/TRELLIS-text-large-diffusers-3d`, conditioners included, and
+load with the auto-loaders directly. To convert a local release yourself:
 
 ```bash
 diffusers-3d-convert-trellis source/ output/ \

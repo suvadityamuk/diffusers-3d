@@ -119,12 +119,20 @@ the optional, license-gated stack is available.
 
 ## Conversion and training
 
+The converted 4B release is published as
+`suvadityamuk/TRELLIS.2-4B-diffusers-3d`. It contains every component except
+the DINOv3 conditioner, whose weights are gated under Meta's license: build it
+with `Trellis2Dinov3Conditioner.from_dinov3_pretrained(...)` and pass it as
+`conditioner=` to `from_pretrained`, which then neither downloads nor requires
+the `conditioner/` subfolder.
+
 `diffusers-3d-convert-trellis2` consumes an official `pipeline.json`, local
 component JSON/safetensors pairs, and a local compatible DINOv3 conditioner
 folder. It converts every released component (conditioner, sparse-structure
 flow and decoder, the 512 and 1024 shape and texture SLAT flows, and the shape
 and PBR decoders); a release that ships only the sparse-structure stage is
-also accepted.
+also accepted. `scripts/publish_hub_checkpoints.py` is the conversion behind
+the published repository.
 
 `Trellis2SparseStructureFlowRecipe` is registered for full-model training only
 with precomputed dense sparse-structure latents and a frozen conditioner and
@@ -135,9 +143,9 @@ decoder:
 target `(1-sigma_min)noise-x0`, model timestep `t*1000`, and conditioning
 dropout probability `0.1`.
 
-The shape and texture SLAT recipes use uniform timesteps and precomputed
-normalized coordinate-aligned sparse latents; they run against the ported
-flow models but are not registered yet. All recipe collators separately follow the pinned dataset
+`Trellis2ShapeSLatFlowRecipe` and `Trellis2TextureSLatFlowRecipe` are
+registered as well; they use uniform timesteps and precomputed normalized
+coordinate-aligned sparse latents. All recipe collators separately follow the pinned dataset
 transform exactly once: the bbox includes every nonzero alpha pixel, uses the
 unscaled floating half-size before integer truncation, resizes RGBA with
 LANCZOS, and multiplies the resized RGB and alpha tensors. Separate masks

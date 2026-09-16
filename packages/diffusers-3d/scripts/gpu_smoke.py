@@ -1,8 +1,8 @@
 """GPU smoke test: run both TRELLIS families on the released weights and exercise every compiled backend.
 
 This is the manual/scheduled counterpart of the CPU test suite (see ``.github/workflows/diffusers_3d_gpu_smoke.yml``
-for how it runs on Hugging Face Jobs). It converts the official checkpoints, generates from one image and one
-prompt, pushes the outputs through gsplat, the O-Voxel runtime, CuMesh, the PBR facade, the texture baker, and the
+for how it runs on Hugging Face Jobs). It converts the official checkpoints (or loads the published
+conversions with ``--hub-namespace``), generates from one image and one prompt, pushes the outputs through gsplat, the O-Voxel runtime, CuMesh, the PBR facade, the texture baker, and the
 radiance-field renderer, checks a few invariants (finite tensors, non-empty geometry, non-blank renders), and
 writes ``report.json`` plus preview PNGs and GLBs to ``--output``. It exits non-zero when any stage fails.
 
@@ -23,6 +23,9 @@ from dataclasses import replace
 from pathlib import Path
 
 import torch
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from checkpoint_sources import RELEASES, convert_release, download  # noqa: E402
 
 EXAMPLE_IMAGE_URL = (
     "https://raw.githubusercontent.com/microsoft/TRELLIS/442aa1e1afb9014e80681d3bf604e8d728a86ee7/"
@@ -101,66 +104,31 @@ def check(condition: bool, message: str) -> None:
         raise AssertionError(message)
 
 
-# ------------------------------------------------------------------------------------------------ conversion
+# ------------------------------------------------------------------------------------------------ checkpoints
+
+HUB_REPOSITORIES = {
+    "trellis-image": "TRELLIS-image-large-diffusers-3d",
+    "trellis-text": "TRELLIS-text-large-diffusers-3d",
+    "trellis2": "TRELLIS.2-4B-diffusers-3d",
+}
 
 
-def download(repo_id: str, work: Path, allow_patterns: list[str] | None = None) -> Path:
-    from huggingface_hub import snapshot_download
+def pipeline_source(name: str, work: Path, hub_namespace: str | None) -> str | Path:
+    """Converted local folder, or the published ``namespace/repo`` when ``--hub-namespace`` is given."""
 
-    return Path(snapshot_download(repo_id, local_dir=work / repo_id.replace("/", "__"), allow_patterns=allow_patterns))
-
-
-def materialize_shared_components(source: Path) -> None:
-    """Fetch components a release references from another Hub repo (``owner/repo/ckpts/name``) into ``source``.
-
-    Both converters resolve references relative to the source folder, so placing the pair at
-    ``source/owner/repo/ckpts/name.*`` makes the released ``pipeline.json`` convertible unchanged.
-    """
-
-    from huggingface_hub import snapshot_download
-
-    pipeline = json.loads((source / "pipeline.json").read_text())
-    for reference in pipeline["args"]["models"].values():
-        parts = reference.split("/")
-        if len(parts) < 3 or (source / reference).with_suffix(".json").is_file():
-            continue
-        repo_id, member = "/".join(parts[:2]), "/".join(parts[2:])
-        snapshot_download(repo_id, local_dir=source / parts[0] / parts[1], allow_patterns=[f"{member}.*"])
+    if hub_namespace is None:
+        return convert_release(name, work)
+    return f"{hub_namespace}/{HUB_REPOSITORIES[name]}"
 
 
-def convert_trellis2(work: Path) -> Path:
-    from diffusers_3d.families.trellis2.conversion import convert_trellis2_checkpoint
+def dinov3_conditioner(work: Path, device, dtype):
+    """The gated DINOv3 conditioner is never republished, so published TRELLIS.2 repos need it supplied."""
 
-    target = work / "converted" / "trellis2"
-    if not (target / "model_index.json").is_file():
-        source = download("microsoft/TRELLIS.2-4B", work)
-        materialize_shared_components(source)
-        conditioner = download("facebook/dinov3-vitl16-pretrain-lvd1689m", work)
-        convert_trellis2_checkpoint(source, target, conditioner_path=conditioner)
-    return target
+    from diffusers_3d import Trellis2Dinov3Conditioner
 
-
-def convert_trellis(work: Path) -> Path:
-    from diffusers_3d.families.trellis.conversion import convert_trellis_checkpoint
-
-    target = work / "converted" / "trellis"
-    if not (target / "model_index.json").is_file():
-        source = download("microsoft/TRELLIS-image-large", work)
-        conditioner = download("facebook/dinov2-with-registers-large", work)
-        convert_trellis_checkpoint(source, target, conditioner_path=conditioner)
-    return target
-
-
-def convert_trellis_text(work: Path) -> Path:
-    from diffusers_3d.families.trellis.conversion import convert_trellis_checkpoint
-
-    target = work / "converted" / "trellis-text"
-    if not (target / "model_index.json").is_file():
-        source = download("microsoft/TRELLIS-text-large", work)
-        materialize_shared_components(source)
-        conditioner = download("openai/clip-vit-large-patch14", work, ["*.json", "*.txt", "model.safetensors"])
-        convert_trellis_checkpoint(source, target, conditioner_path=conditioner)
-    return target
+    return Trellis2Dinov3Conditioner.from_dinov3_pretrained(
+        str(download(RELEASES["trellis2"]["conditioner"], work)), local_files_only=True
+    ).to(device, dtype)
 
 
 # ------------------------------------------------------------------------------------------------ stages
@@ -183,12 +151,15 @@ def stage_status(report: dict, device) -> None:
     report["backends"] = statuses
 
 
-def stage_trellis2(work: Path, out: Path, report: dict, condition, *, dtype, device) -> None:
-    from diffusers_3d import Trellis2ImageTo3DPipeline
+def stage_trellis2(work: Path, out: Path, report: dict, condition, *, dtype, device, hub_namespace) -> None:
+    from diffusers_3d import AutoPipelineForImageTo3D
     from diffusers_3d.backends import CuMeshBackend, OVoxelBackend, Trellis2PBRPostprocessFacade, TrimeshBackend
 
     record = report.setdefault("trellis2", {})
-    pipeline = Trellis2ImageTo3DPipeline.from_pretrained(convert_trellis2(work), dtype=dtype).to(device)
+    components = {} if hub_namespace is None else {"conditioner": dinov3_conditioner(work, device, dtype)}
+    pipeline = AutoPipelineForImageTo3D.from_pretrained(
+        pipeline_source("trellis2", work, hub_namespace), dtype=dtype, **components
+    ).to(device)
     ovoxel_backend = OVoxelBackend(device=device, accept_nvdiffrast_research_license=True)
     cumesh = CuMeshBackend(device=device)
     trimesh_backend = TrimeshBackend()
@@ -258,13 +229,15 @@ def stage_trellis2(work: Path, out: Path, report: dict, condition, *, dtype, dev
     torch.cuda.empty_cache()
 
 
-def stage_trellis(work: Path, out: Path, report: dict, condition, *, dtype, device) -> None:
-    from diffusers_3d import GaussianSplatAsset, MeshAsset, RadianceFieldAsset, TrellisImageTo3DPipeline
+def stage_trellis(work: Path, out: Path, report: dict, condition, *, dtype, device, hub_namespace) -> None:
+    from diffusers_3d import AutoPipelineForImageTo3D, GaussianSplatAsset, MeshAsset, RadianceFieldAsset
     from diffusers_3d.backends import GsplatBackend, TrellisGlbPostprocessFacade, TrimeshBackend
     from diffusers_3d.backends.radiance_field import render_radiance_field
 
     record = report.setdefault("trellis", {})
-    pipeline = TrellisImageTo3DPipeline.from_pretrained(convert_trellis(work), dtype=dtype).to(device)
+    pipeline = AutoPipelineForImageTo3D.from_pretrained(
+        pipeline_source("trellis-image", work, hub_namespace), dtype=dtype
+    ).to(device)
     with timed(record, "generate"):
         output = pipeline(
             condition,
@@ -322,12 +295,14 @@ def stage_trellis(work: Path, out: Path, report: dict, condition, *, dtype, devi
     torch.cuda.empty_cache()
 
 
-def stage_text(work: Path, out: Path, report: dict, *, dtype, device) -> None:
-    from diffusers_3d import TextCondition, TrellisTextTo3DPipeline
+def stage_text(work: Path, out: Path, report: dict, *, dtype, device, hub_namespace) -> None:
+    from diffusers_3d import AutoPipelineForTextTo3D, TextCondition
     from diffusers_3d.backends import GsplatBackend
 
     record = report.setdefault("text", {})
-    pipeline = TrellisTextTo3DPipeline.from_pretrained(convert_trellis_text(work), dtype=dtype).to(device)
+    pipeline = AutoPipelineForTextTo3D.from_pretrained(
+        pipeline_source("trellis-text", work, hub_namespace), dtype=dtype
+    ).to(device)
     with timed(record, "generate"):
         output = pipeline(
             TextCondition(text=PROMPT), formats=("gaussian",), generator=torch.Generator(device).manual_seed(0)
@@ -354,6 +329,11 @@ def main() -> int:
     parser.add_argument("--stages", default="status,trellis2,trellis,text", help="comma-separated subset")
     parser.add_argument("--dtype", default="bfloat16", choices=["bfloat16", "float16", "float32"])
     parser.add_argument("--image", default=EXAMPLE_IMAGE_URL, help="RGBA image path or URL")
+    parser.add_argument(
+        "--hub-namespace",
+        default=None,
+        help="load the published converted pipelines from this Hub namespace instead of converting locally",
+    )
     args = parser.parse_args()
 
     if not torch.cuda.is_available():
@@ -364,14 +344,20 @@ def main() -> int:
     args.work.mkdir(parents=True, exist_ok=True)
     args.output.mkdir(parents=True, exist_ok=True)
     stages = [stage.strip() for stage in args.stages.split(",") if stage.strip()]
-    report: dict = {"stages": stages, "dtype": args.dtype, "errors": {}}
+    report: dict = {"stages": stages, "dtype": args.dtype, "hub_namespace": args.hub_namespace, "errors": {}}
     condition = load_image(args.image, args.work) if {"trellis2", "trellis"} & set(stages) else None
 
     runners = {
         "status": lambda: stage_status(report, device),
-        "trellis2": lambda: stage_trellis2(args.work, args.output, report, condition, dtype=dtype, device=device),
-        "trellis": lambda: stage_trellis(args.work, args.output, report, condition, dtype=dtype, device=device),
-        "text": lambda: stage_text(args.work, args.output, report, dtype=dtype, device=device),
+        "trellis2": lambda: stage_trellis2(
+            args.work, args.output, report, condition, dtype=dtype, device=device, hub_namespace=args.hub_namespace
+        ),
+        "trellis": lambda: stage_trellis(
+            args.work, args.output, report, condition, dtype=dtype, device=device, hub_namespace=args.hub_namespace
+        ),
+        "text": lambda: stage_text(
+            args.work, args.output, report, dtype=dtype, device=device, hub_namespace=args.hub_namespace
+        ),
     }
     for stage in stages:
         if stage not in runners:

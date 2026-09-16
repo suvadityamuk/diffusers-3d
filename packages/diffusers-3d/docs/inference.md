@@ -15,7 +15,16 @@ python -m diffusers_3d.families.trellis2.examples.image_to_3d --model /path/to/t
 
 ## 1. Get a checkpoint
 
-Official TRELLIS.2 releases are not in the Diffusers layout. Convert them once with the packaged CLI, pointing at the
+Converted checkpoints are published on the Hub, so the usual path is to load one directly (section 2):
+
+| Repository | Pipeline | Contents |
+|---|---|---|
+| `suvadityamuk/TRELLIS-image-large-diffusers-3d` | `TrellisImageTo3DPipeline` | every component, DINOv2 conditioner included |
+| `suvadityamuk/TRELLIS-text-large-diffusers-3d` | `TrellisTextTo3DPipeline` | every component, CLIP conditioner included |
+| `suvadityamuk/TRELLIS.2-4B-diffusers-3d` | `Trellis2ImageTo3DPipeline` | every component except the gated DINOv3 conditioner |
+
+`scripts/publish_hub_checkpoints.py` produced them with the converters below, so converting yourself gives the same
+result. Official TRELLIS.2 releases are not in the Diffusers layout; the packaged CLI translates one, pointing at the
 release's `pipeline.json` directory and at a locally downloaded DINOv3 conditioner (the production weights are gated
 on the Hub under the DINOv3 License and are not redistributed):
 
@@ -34,16 +43,23 @@ flow and decoder, the 512 and 1024 shape and texture SLAT flows, and the shape (
 
 ```python
 import torch
-from diffusers_3d import AutoPipelineForImageTo3D
+from diffusers_3d import AutoPipelineForImageTo3D, Trellis2Dinov3Conditioner
 
-pipeline = AutoPipelineForImageTo3D.from_pretrained("/path/to/trellis2")  # local dir or Hub repo ID
-pipeline = pipeline.to("cuda", dtype=torch.float16)
+# The published TRELLIS.2 repository leaves out the gated DINOv3 conditioner; accept its license on the Hub and pass it in.
+conditioner = Trellis2Dinov3Conditioner.from_dinov3_pretrained("facebook/dinov3-vitl16-pretrain-lvd1689m")
+pipeline = AutoPipelineForImageTo3D.from_pretrained(
+    "suvadityamuk/TRELLIS.2-4B-diffusers-3d", conditioner=conditioner, dtype=torch.bfloat16
+)
+pipeline = pipeline.to("cuda")
+# A locally converted folder loads the same way and needs no conditioner argument:
+# pipeline = AutoPipelineForImageTo3D.from_pretrained("/path/to/trellis2", dtype=torch.bfloat16)
 ```
 
 `AutoPipelineForImageTo3D` reads the sidecar, checks every component class against the installed package, downloads
 only eligible component folders (for Hub IDs), and instantiates the concrete class with remote code disabled.
-`revision`, `cache_dir`, `token`, `local_files_only`, and `subfolder` are accepted. `trust_remote_code=True` is an
-error; reviewed families never need it.
+`revision`, `cache_dir`, `token`, `local_files_only`, and `subfolder` are accepted. Keyword arguments named after
+declared components (`conditioner=...`) supply that component as an object: its subfolder is neither downloaded nor
+required, and its exact class is still checked. `trust_remote_code=True` is an error; reviewed families never need it.
 
 The concrete class works too:
 
@@ -169,7 +185,9 @@ released tri-vector field); `diffusers_3d.backends.radiance_field.render_radianc
 it in plain PyTorch. For a textured GLB like upstream's `to_glb`, pass the mesh and the splats to
 `TrellisGlbPostprocessFacade().to_textured_mesh(...)` (CuMesh, xatlas, and gsplat) and export the result the same way.
 `TrellisTextTo3DPipeline` (`microsoft/TRELLIS-text-*`) takes prompts or `TextCondition` values instead of
-images and shares everything else. Convert official checkpoints with `diffusers-3d-convert-trellis`, which takes the
+images and shares everything else. Both are published converted (`suvadityamuk/TRELLIS-image-large-diffusers-3d`,
+`suvadityamuk/TRELLIS-text-large-diffusers-3d`) and load with `AutoPipelineForImageTo3D` / `AutoPipelineForTextTo3D`
+without any extra argument. To convert official checkpoints yourself use `diffusers-3d-convert-trellis`, which takes the
 same arguments as the TRELLIS.2 converter. Its `--conditioner-path` is the released `dinov2_vitl14_reg`, published on
 the Hub as `facebook/dinov2-with-registers-large` (or `openai/clip-vit-large-patch14` for the text pipelines):
 
