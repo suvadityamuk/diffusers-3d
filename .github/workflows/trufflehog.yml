@@ -8,6 +8,7 @@ permissions:
 
 jobs:
   trufflehog:
+    if: github.repository == 'huggingface/diffusers'
     runs-on: ubuntu-22.04
     steps:
     - name: Checkout code

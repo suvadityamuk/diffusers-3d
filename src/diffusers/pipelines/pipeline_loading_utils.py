@@ -32,7 +32,6 @@ from ..utils import (
     SAFETENSORS_WEIGHTS_NAME,
     WEIGHTS_NAME,
     _maybe_remap_transformers_class,
-    deprecate,
     get_class_from_dynamic_module,
     is_accelerate_available,
     is_peft_available,
@@ -978,26 +977,6 @@ def _resolve_custom_pipeline_and_cls(folder, config, custom_pipeline):
         custom_class_name = config["_class_name"][1]
 
     return custom_pipeline, custom_class_name
-
-
-def _maybe_raise_warning_for_inpainting(pipeline_class, pretrained_model_name_or_path: str, config: dict):
-    if pipeline_class.__name__ == "StableDiffusionInpaintPipeline" and version.parse(
-        version.parse(config["_diffusers_version"]).base_version
-    ) <= version.parse("0.5.1"):
-        from diffusers import StableDiffusionInpaintPipeline, StableDiffusionInpaintPipelineLegacy
-
-        pipeline_class = StableDiffusionInpaintPipelineLegacy
-
-        deprecation_message = (
-            "You are using a legacy checkpoint for inpainting with Stable Diffusion, therefore we are loading the"
-            f" {StableDiffusionInpaintPipelineLegacy} class instead of {StableDiffusionInpaintPipeline}. For"
-            " better inpainting results, we strongly suggest using Stable Diffusion's official inpainting"
-            " checkpoint: https://huggingface.co/stable-diffusion-v1-5/stable-diffusion-inpainting instead or adapting your"
-            f" checkpoint {pretrained_model_name_or_path} to the format of"
-            " https://huggingface.co/stable-diffusion-v1-5/stable-diffusion-inpainting. Note that we do not actively maintain"
-            " the {StableDiffusionInpaintPipelineLegacy} class and will likely remove it in version 1.0.0."
-        )
-        deprecate("StableDiffusionInpaintPipelineLegacy", "1.0.0", deprecation_message, standard_warn=False)
 
 
 def _update_init_kwargs_with_connected_pipeline(

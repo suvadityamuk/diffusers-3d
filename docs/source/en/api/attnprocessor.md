@@ -44,10 +44,6 @@ An attention processor is a class for applying different types of attention mech
 
 [[autodoc]] models.attention_processor.FusedCogVideoXAttnProcessor2_0
 
-## DreamLite
-
-[[autodoc]] models.unets.unet_dreamlite.DreamLiteAttnProcessor2_0
-
 ## Custom Diffusion
 
 [[autodoc]] models.attention_processor.CustomDiffusionAttnProcessor
@@ -55,14 +51,6 @@ An attention processor is a class for applying different types of attention mech
 [[autodoc]] models.attention_processor.CustomDiffusionAttnProcessor2_0
 
 [[autodoc]] models.attention_processor.CustomDiffusionXFormersAttnProcessor
-
-## Flux
-
-[[autodoc]] models.attention_processor.FluxAttnProcessor2_0
-
-[[autodoc]] models.attention_processor.FusedFluxAttnProcessor2_0
-
-[[autodoc]] models.attention_processor.FluxSingleAttnProcessor2_0
 
 ## Hunyuan
 
@@ -155,12 +143,3 @@ An attention processor is a class for applying different types of attention mech
 ## IPAdapterXFormersAttnProcessor
 
 [[autodoc]] models.attention_processor.IPAdapterXFormersAttnProcessor
-
-## FluxIPAdapterJointAttnProcessor2_0
-
-[[autodoc]] models.attention_processor.FluxIPAdapterJointAttnProcessor2_0
-
-
-## XLAFluxFlashAttnProcessor2_0
-
-[[autodoc]] models.attention_processor.XLAFluxFlashAttnProcessor2_0

@@ -107,12 +107,6 @@ class TransformerBlockRegistry:
 
 def _register_attention_processors_metadata():
     from ..models.attention_processor import AttnProcessor2_0
-    from ..models.transformers.transformer_cogview4 import CogView4AttnProcessor
-    from ..models.transformers.transformer_flux import FluxAttnProcessor
-    from ..models.transformers.transformer_hunyuanimage import HunyuanImageAttnProcessor
-    from ..models.transformers.transformer_qwenimage import QwenDoubleStreamAttnProcessor2_0
-    from ..models.transformers.transformer_wan import WanAttnProcessor2_0
-    from ..models.transformers.transformer_z_image import ZSingleStreamAttnProcessor
 
     # AttnProcessor2_0
     AttentionProcessorRegistry.register(
@@ -122,79 +116,9 @@ def _register_attention_processors_metadata():
         ),
     )
 
-    # CogView4AttnProcessor
-    AttentionProcessorRegistry.register(
-        model_class=CogView4AttnProcessor,
-        metadata=AttentionProcessorMetadata(
-            skip_processor_output_fn=_skip_proc_output_fn_Attention_CogView4AttnProcessor,
-        ),
-    )
-
-    # WanAttnProcessor2_0
-    AttentionProcessorRegistry.register(
-        model_class=WanAttnProcessor2_0,
-        metadata=AttentionProcessorMetadata(
-            skip_processor_output_fn=_skip_proc_output_fn_Attention_WanAttnProcessor2_0,
-        ),
-    )
-
-    # FluxAttnProcessor
-    AttentionProcessorRegistry.register(
-        model_class=FluxAttnProcessor,
-        metadata=AttentionProcessorMetadata(skip_processor_output_fn=_skip_proc_output_fn_Attention_FluxAttnProcessor),
-    )
-
-    # QwenDoubleStreamAttnProcessor2
-    AttentionProcessorRegistry.register(
-        model_class=QwenDoubleStreamAttnProcessor2_0,
-        metadata=AttentionProcessorMetadata(
-            skip_processor_output_fn=_skip_proc_output_fn_Attention_QwenDoubleStreamAttnProcessor2_0
-        ),
-    )
-
-    # HunyuanImageAttnProcessor
-    AttentionProcessorRegistry.register(
-        model_class=HunyuanImageAttnProcessor,
-        metadata=AttentionProcessorMetadata(
-            skip_processor_output_fn=_skip_proc_output_fn_Attention_HunyuanImageAttnProcessor,
-        ),
-    )
-
-    # ZSingleStreamAttnProcessor
-    AttentionProcessorRegistry.register(
-        model_class=ZSingleStreamAttnProcessor,
-        metadata=AttentionProcessorMetadata(
-            skip_processor_output_fn=_skip_proc_output_fn_Attention_ZSingleStreamAttnProcessor,
-        ),
-    )
-
 
 def _register_transformer_blocks_metadata():
     from ..models.attention import BasicTransformerBlock, JointTransformerBlock
-    from ..models.transformers.cogvideox_transformer_3d import CogVideoXBlock
-    from ..models.transformers.transformer_bria import BriaTransformerBlock
-    from ..models.transformers.transformer_cogview4 import CogView4TransformerBlock
-    from ..models.transformers.transformer_flux import FluxSingleTransformerBlock, FluxTransformerBlock
-    from ..models.transformers.transformer_hunyuan_video import (
-        HunyuanVideoSingleTransformerBlock,
-        HunyuanVideoTokenReplaceSingleTransformerBlock,
-        HunyuanVideoTokenReplaceTransformerBlock,
-        HunyuanVideoTransformerBlock,
-    )
-    from ..models.transformers.transformer_hunyuanimage import (
-        HunyuanImageSingleTransformerBlock,
-        HunyuanImageTransformerBlock,
-    )
-    from ..models.transformers.transformer_kandinsky import Kandinsky5TransformerDecoderBlock
-    from ..models.transformers.transformer_ltx import LTXVideoTransformerBlock
-    from ..models.transformers.transformer_mochi import MochiTransformerBlock
-    from ..models.transformers.transformer_motif_video import (
-        MotifVideoSingleTransformerBlock,
-        MotifVideoTransformerBlock,
-    )
-    from ..models.transformers.transformer_qwenimage import QwenImageTransformerBlock
-    from ..models.transformers.transformer_wan import WanTransformerBlock
-    from ..models.transformers.transformer_z_image import ZImageTransformerBlock
 
     # BasicTransformerBlock
     TransformerBlockRegistry.register(
@@ -204,170 +128,13 @@ def _register_transformer_blocks_metadata():
             return_encoder_hidden_states_index=None,
         ),
     )
-    TransformerBlockRegistry.register(
-        model_class=BriaTransformerBlock,
-        metadata=TransformerBlockMetadata(
-            return_hidden_states_index=0,
-            return_encoder_hidden_states_index=None,
-        ),
-    )
 
-    # CogVideoX
-    TransformerBlockRegistry.register(
-        model_class=CogVideoXBlock,
-        metadata=TransformerBlockMetadata(
-            return_hidden_states_index=0,
-            return_encoder_hidden_states_index=1,
-        ),
-    )
-
-    # CogView4
-    TransformerBlockRegistry.register(
-        model_class=CogView4TransformerBlock,
-        metadata=TransformerBlockMetadata(
-            return_hidden_states_index=0,
-            return_encoder_hidden_states_index=1,
-        ),
-    )
-
-    # Flux
-    TransformerBlockRegistry.register(
-        model_class=FluxTransformerBlock,
-        metadata=TransformerBlockMetadata(
-            return_hidden_states_index=1,
-            return_encoder_hidden_states_index=0,
-        ),
-    )
-    TransformerBlockRegistry.register(
-        model_class=FluxSingleTransformerBlock,
-        metadata=TransformerBlockMetadata(
-            return_hidden_states_index=1,
-            return_encoder_hidden_states_index=0,
-        ),
-    )
-
-    # HunyuanVideo
-    TransformerBlockRegistry.register(
-        model_class=HunyuanVideoTransformerBlock,
-        metadata=TransformerBlockMetadata(
-            return_hidden_states_index=0,
-            return_encoder_hidden_states_index=1,
-        ),
-    )
-    TransformerBlockRegistry.register(
-        model_class=HunyuanVideoSingleTransformerBlock,
-        metadata=TransformerBlockMetadata(
-            return_hidden_states_index=0,
-            return_encoder_hidden_states_index=1,
-        ),
-    )
-    TransformerBlockRegistry.register(
-        model_class=HunyuanVideoTokenReplaceTransformerBlock,
-        metadata=TransformerBlockMetadata(
-            return_hidden_states_index=0,
-            return_encoder_hidden_states_index=1,
-        ),
-    )
-    TransformerBlockRegistry.register(
-        model_class=HunyuanVideoTokenReplaceSingleTransformerBlock,
-        metadata=TransformerBlockMetadata(
-            return_hidden_states_index=0,
-            return_encoder_hidden_states_index=1,
-        ),
-    )
-
-    # LTXVideo
-    TransformerBlockRegistry.register(
-        model_class=LTXVideoTransformerBlock,
-        metadata=TransformerBlockMetadata(
-            return_hidden_states_index=0,
-            return_encoder_hidden_states_index=None,
-        ),
-    )
-
-    # Mochi
-    TransformerBlockRegistry.register(
-        model_class=MochiTransformerBlock,
-        metadata=TransformerBlockMetadata(
-            return_hidden_states_index=0,
-            return_encoder_hidden_states_index=1,
-        ),
-    )
-
-    # MotifVideo
-    TransformerBlockRegistry.register(
-        model_class=MotifVideoTransformerBlock,
-        metadata=TransformerBlockMetadata(
-            return_hidden_states_index=0,
-            return_encoder_hidden_states_index=1,
-        ),
-    )
-    TransformerBlockRegistry.register(
-        model_class=MotifVideoSingleTransformerBlock,
-        metadata=TransformerBlockMetadata(
-            return_hidden_states_index=0,
-            return_encoder_hidden_states_index=1,
-        ),
-    )
-
-    # Wan
-    TransformerBlockRegistry.register(
-        model_class=WanTransformerBlock,
-        metadata=TransformerBlockMetadata(
-            return_hidden_states_index=0,
-            return_encoder_hidden_states_index=None,
-        ),
-    )
-
-    # QwenImage
-    TransformerBlockRegistry.register(
-        model_class=QwenImageTransformerBlock,
-        metadata=TransformerBlockMetadata(
-            return_hidden_states_index=1,
-            return_encoder_hidden_states_index=0,
-        ),
-    )
-
-    # HunyuanImage2.1
-    TransformerBlockRegistry.register(
-        model_class=HunyuanImageTransformerBlock,
-        metadata=TransformerBlockMetadata(
-            return_hidden_states_index=0,
-            return_encoder_hidden_states_index=1,
-        ),
-    )
-    TransformerBlockRegistry.register(
-        model_class=HunyuanImageSingleTransformerBlock,
-        metadata=TransformerBlockMetadata(
-            return_hidden_states_index=0,
-            return_encoder_hidden_states_index=1,
-        ),
-    )
-
-    # ZImage
-    TransformerBlockRegistry.register(
-        model_class=ZImageTransformerBlock,
-        metadata=TransformerBlockMetadata(
-            return_hidden_states_index=0,
-            return_encoder_hidden_states_index=None,
-        ),
-    )
-
+    # JointTransformerBlock
     TransformerBlockRegistry.register(
         model_class=JointTransformerBlock,
         metadata=TransformerBlockMetadata(
             return_hidden_states_index=1,
             return_encoder_hidden_states_index=0,
-        ),
-    )
-
-    # Kandinsky 5.0 (Kandinsky5TransformerDecoderBlock)
-    TransformerBlockRegistry.register(
-        model_class=Kandinsky5TransformerDecoderBlock,
-        metadata=TransformerBlockMetadata(
-            return_hidden_states_index=0,
-            return_encoder_hidden_states_index=None,
-            hidden_states_argument_name="visual_embed",
         ),
     )
 
@@ -391,11 +158,4 @@ def _skip_attention___ret___hidden_states___encoder_hidden_states(self, *args, *
 
 
 _skip_proc_output_fn_Attention_AttnProcessor2_0 = _skip_attention___ret___hidden_states
-_skip_proc_output_fn_Attention_CogView4AttnProcessor = _skip_attention___ret___hidden_states___encoder_hidden_states
-_skip_proc_output_fn_Attention_WanAttnProcessor2_0 = _skip_attention___ret___hidden_states
-# not sure what this is yet.
-_skip_proc_output_fn_Attention_FluxAttnProcessor = _skip_attention___ret___hidden_states
-_skip_proc_output_fn_Attention_QwenDoubleStreamAttnProcessor2_0 = _skip_attention___ret___hidden_states
-_skip_proc_output_fn_Attention_HunyuanImageAttnProcessor = _skip_attention___ret___hidden_states
-_skip_proc_output_fn_Attention_ZSingleStreamAttnProcessor = _skip_attention___ret___hidden_states
 # fmt: on

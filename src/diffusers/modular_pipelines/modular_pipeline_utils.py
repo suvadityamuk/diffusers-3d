@@ -24,7 +24,6 @@ import torch
 from packaging.specifiers import InvalidSpecifier, SpecifierSet
 
 from ..configuration_utils import ConfigMixin, FrozenDict
-from ..loaders.single_file_utils import _is_single_file_path_or_url
 from ..utils import DIFFUSERS_LOAD_ID_FIELDS, _resolve_dtype, is_sdnq_available, is_torch_available, logging
 from ..utils.constants import DIFFUSERS_SDNQ_TRANSFORMERS
 from ..utils.import_utils import _is_package_available
@@ -308,11 +307,6 @@ class ComponentSpec:
             raise ValueError(
                 "`pretrained_model_name_or_path` info is required when using `load` method (you can directly set it in `pretrained_model_name_or_path` field of the ComponentSpec or pass it as an argument)"
             )
-        is_single_file = _is_single_file_path_or_url(pretrained_model_name_or_path)
-        if is_single_file and self.type_hint is None:
-            raise ValueError(
-                f"`type_hint` is required when loading a single file model but is missing for component: {self.name}"
-            )
 
         from diffusers import AutoModel
 
@@ -331,13 +325,9 @@ class ComponentSpec:
             self.type_hint = component.__class__
         else:
             # determine load method
-            load_method = (
-                getattr(self.type_hint, "from_single_file")
-                if is_single_file
-                else getattr(self.type_hint, "from_pretrained")
-            )
+            load_method = getattr(self.type_hint, "from_pretrained")
 
-            if not is_single_file and DIFFUSERS_SDNQ_TRANSFORMERS and is_sdnq_available():
+            if DIFFUSERS_SDNQ_TRANSFORMERS and is_sdnq_available():
                 # Opt-in via DIFFUSERS_SDNQ_TRANSFORMERS: import sdnq once so it registers with transformers.
                 from ..quantizers.sdnq.sdnq_quantizer import _ensure_sdnq_registered
 

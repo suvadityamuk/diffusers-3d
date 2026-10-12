@@ -1,0 +1,5 @@
+# Package/import: flex_gemm
+# License: MIT
+# Build from source against the selected PyTorch, Triton, compiler, and CUDA/ROCm stack.
+# No externally hosted wheel is approved by this record.
+flex_gemm @ git+https://github.com/JeffreyXiang/FlexGEMM.git@6dd94a859c26ee8246888502eada3dd8ad85532e

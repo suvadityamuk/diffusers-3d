@@ -54,7 +54,3 @@ outputs[:1]
 ## AudioPipelineOutput
 
 [[autodoc]] pipelines.AudioPipelineOutput
-
-## ImageTextPipelineOutput
-
-[[autodoc]] ImageTextPipelineOutput

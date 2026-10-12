@@ -1,0 +1,7 @@
+# Package/import: nvdiffrec_render
+# License: NVIDIA Source Code License-NC
+# Source: git+https://github.com/JeffreyXiang/nvdiffrec.git@a3e73909a01887c8a135235ff860dd23a045cc1b
+#
+# This pinned upstream tree has no Python build metadata, so it cannot be a direct pip
+# requirement. Keep nvdiffrec_render unavailable unless an audited package preserves
+# PEP 610 direct-URL provenance for this exact repository and commit.
