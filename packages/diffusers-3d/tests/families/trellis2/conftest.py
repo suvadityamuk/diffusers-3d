@@ -2,9 +2,9 @@ from __future__ import annotations
 
 import pytest
 import torch
+from transformers import DINOv3ViTConfig, DINOv3ViTModel
 
 from diffusers_3d import (
-    Trellis2Dinov3Conditioner,
     Trellis2FlowEulerScheduler,
     Trellis2ImageTo3DPipeline,
     Trellis2PBRSparseDecoder,
@@ -15,11 +15,26 @@ from diffusers_3d import (
 )
 
 
+def tiny_image_encoder() -> DINOv3ViTModel:
+    # 4-pixel patches and 2 registers: 7 tokens on an 8-pixel side. Eval mode turns off DINOv3's RoPE augmentation.
+    return DINOv3ViTModel(
+        DINOv3ViTConfig(
+            image_size=8,
+            patch_size=4,
+            hidden_size=12,
+            intermediate_size=24,
+            num_hidden_layers=1,
+            num_attention_heads=3,
+            num_register_tokens=2,
+        )
+    ).eval()
+
+
 @pytest.fixture
 def tiny_trellis2_components():
     def make(*, include_slat: bool = False):
         torch.manual_seed(0)
-        conditioner = Trellis2Dinov3Conditioner(**Trellis2Dinov3Conditioner.tiny_config())
+        image_encoder = tiny_image_encoder()
         torch.manual_seed(1)
         sparse_structure_flow_model = Trellis2SparseStructureFlowModel(
             **Trellis2SparseStructureFlowModel.tiny_config()
@@ -32,7 +47,7 @@ def tiny_trellis2_components():
         sparse_structure_scheduler = Trellis2FlowEulerScheduler()
         if not include_slat:
             return (
-                conditioner,
+                image_encoder,
                 sparse_structure_flow_model,
                 sparse_structure_decoder,
                 sparse_structure_scheduler,
@@ -49,7 +64,7 @@ def tiny_trellis2_components():
         torch.manual_seed(6)
         pbr_decoder = Trellis2PBRSparseDecoder(**Trellis2PBRSparseDecoder.tiny_config())
         return (
-            conditioner,
+            image_encoder,
             sparse_structure_flow_model,
             sparse_structure_decoder,
             sparse_structure_scheduler,
@@ -66,20 +81,21 @@ def tiny_trellis2_components():
 
 @pytest.fixture
 def tiny_trellis2_pipeline(tiny_trellis2_components):
-    conditioner, flow, decoder, scheduler = tiny_trellis2_components()
+    image_encoder, flow, decoder, scheduler = tiny_trellis2_components()
     return Trellis2ImageTo3DPipeline(
-        conditioner=conditioner,
+        image_encoder=image_encoder,
         sparse_structure_flow_model=flow,
         sparse_structure_decoder=decoder,
         sparse_structure_scheduler=scheduler,
         default_pipeline_type="512",
+        image_size=8,
     )
 
 
 @pytest.fixture
 def tiny_trellis2_full_pipeline(tiny_trellis2_components):
     (
-        conditioner,
+        image_encoder,
         flow,
         decoder,
         scheduler,
@@ -95,7 +111,7 @@ def tiny_trellis2_full_pipeline(tiny_trellis2_components):
     torch.manual_seed(8)
     texture_flow_1024 = Trellis2SLatFlowModel(**Trellis2SLatFlowModel.tiny_config(texture=True))
     return Trellis2ImageTo3DPipeline(
-        conditioner=conditioner,
+        image_encoder=image_encoder,
         sparse_structure_flow_model=flow,
         sparse_structure_decoder=decoder,
         sparse_structure_scheduler=scheduler,
@@ -112,4 +128,5 @@ def tiny_trellis2_full_pipeline(tiny_trellis2_components):
         texture_slat_mean=[0.0] * texture_flow.config.out_channels,
         texture_slat_std=[1.0] * texture_flow.config.out_channels,
         default_pipeline_type="512",
+        image_size=8,
     )

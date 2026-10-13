@@ -13,7 +13,10 @@ from dataclasses import dataclass
 from typing import Any
 
 import torch
+import torch.nn.functional as F
 from diffusers.utils.torch_utils import randn_tensor
+from transformers import DINOv3ViTModel
+from transformers.image_utils import IMAGENET_DEFAULT_MEAN, IMAGENET_DEFAULT_STD
 
 from ...backends import Trellis2PBRPostprocessFacade, ovoxel_to_mesh
 from ...data import ImageCondition, preprocess_image_condition
@@ -35,7 +38,6 @@ from ...objects import (
     SparseVoxelAsset,
 )
 from ..trellis.sparse import TrellisSparseTensor, trellis_grid_transform
-from .conditioner import Trellis2Dinov3Conditioner
 from .decoders import Trellis2PBRSparseDecoder, Trellis2ShapeDualGridDecoder, Trellis2SparseStructureDecoder
 from .models import Trellis2SLatFlowModel, Trellis2SparseStructureFlowModel
 from .scheduler import Trellis2FlowEulerScheduler
@@ -140,9 +142,9 @@ class Trellis2ImageTo3DPipeline(Object3DPipeline, Object3DLoraLoaderMixin):
     review_status = ReviewStatus.REVIEWED
     component_specs = (
         Object3DComponentSpec(
-            name="conditioner",
-            expected_class=fully_qualified_class_name(Trellis2Dinov3Conditioner),
-            subfolder="conditioner",
+            name="image_encoder",
+            expected_class=fully_qualified_class_name(DINOv3ViTModel),
+            subfolder="image_encoder",
             optional=False,
             review_status=ReviewStatus.REVIEWED,
             loading_eligible=True,
@@ -237,7 +239,7 @@ class Trellis2ImageTo3DPipeline(Object3DPipeline, Object3DLoraLoaderMixin):
         ),
     )
     model_cpu_offload_seq = (
-        "conditioner->sparse_structure_flow_model->sparse_structure_decoder->"
+        "image_encoder->sparse_structure_flow_model->sparse_structure_decoder->"
         "shape_slat_flow_model->shape_slat_flow_model_1024->shape_slat_decoder->"
         "texture_slat_flow_model->texture_slat_flow_model_1024->pbr_decoder"
     )
@@ -261,7 +263,7 @@ class Trellis2ImageTo3DPipeline(Object3DPipeline, Object3DLoraLoaderMixin):
 
     def __init__(
         self,
-        conditioner: Trellis2Dinov3Conditioner,
+        image_encoder: DINOv3ViTModel,
         sparse_structure_flow_model: Trellis2SparseStructureFlowModel,
         sparse_structure_decoder: Trellis2SparseStructureDecoder,
         sparse_structure_scheduler: Trellis2FlowEulerScheduler,
@@ -278,15 +280,18 @@ class Trellis2ImageTo3DPipeline(Object3DPipeline, Object3DLoraLoaderMixin):
         texture_slat_mean: Sequence[float] | None = None,
         texture_slat_std: Sequence[float] | None = None,
         default_pipeline_type: str = "1024_cascade",
+        image_size: int = 512,
         sparse_structure_sampler_defaults: Mapping[str, Any] | None = None,
         shape_slat_sampler_defaults: Mapping[str, Any] | None = None,
         texture_slat_sampler_defaults: Mapping[str, Any] | None = None,
         capability_limitations: Mapping[str, Any] | None = None,
     ) -> None:
         super().__init__()
-        cond_channels = conditioner.model.config.hidden_size
+        if image_size % image_encoder.config.patch_size:
+            raise ValueError("image_size must be divisible by the DINOv3 patch size")
+        cond_channels = image_encoder.config.hidden_size
         if sparse_structure_flow_model.config.cond_channels != cond_channels:
-            raise ValueError("sparse-structure conditioner and flow context dimensions must match")
+            raise ValueError("sparse-structure image encoder and flow context dimensions must match")
         if sparse_structure_flow_model.config.in_channels != sparse_structure_decoder.config.latent_channels:
             raise ValueError("sparse-structure flow and decoder latent channels must match")
 
@@ -307,7 +312,7 @@ class Trellis2ImageTo3DPipeline(Object3DPipeline, Object3DLoraLoaderMixin):
             if model is None:
                 continue
             if model.config.cond_channels != cond_channels:
-                raise ValueError(f"shape SLAT {stage} conditioner and flow context dimensions must match")
+                raise ValueError(f"shape SLAT {stage} image encoder and flow context dimensions must match")
             if model.config.out_channels != shape_slat_decoder.config.latent_channels:
                 raise ValueError(f"shape SLAT {stage} output channels must match the shape decoder")
             shape_channels = model.config.out_channels
@@ -318,7 +323,7 @@ class Trellis2ImageTo3DPipeline(Object3DPipeline, Object3DLoraLoaderMixin):
             if shape_flows[stage] is None:
                 raise ValueError(f"texture SLAT {stage} flow model requires the shape SLAT {stage} flow model")
             if model.config.cond_channels != cond_channels:
-                raise ValueError(f"texture SLAT {stage} conditioner and flow context dimensions must match")
+                raise ValueError(f"texture SLAT {stage} image encoder and flow context dimensions must match")
             if model.config.out_channels != pbr_decoder.config.latent_channels:
                 raise ValueError(f"texture SLAT {stage} output channels must match the PBR decoder")
             if model.config.in_channels != model.config.out_channels + shape_flows[stage].config.out_channels:
@@ -353,7 +358,7 @@ class Trellis2ImageTo3DPipeline(Object3DPipeline, Object3DLoraLoaderMixin):
         texture_defaults = _sampler_parameters(_TEXTURE_SAMPLER_DEFAULTS, texture_slat_sampler_defaults)
         limitations = {**_CAPABILITY_LIMITATIONS, **({} if capability_limitations is None else capability_limitations)}
         self.register_modules(
-            conditioner=conditioner,
+            image_encoder=image_encoder,
             sparse_structure_flow_model=sparse_structure_flow_model,
             sparse_structure_decoder=sparse_structure_decoder,
             sparse_structure_scheduler=sparse_structure_scheduler,
@@ -372,6 +377,7 @@ class Trellis2ImageTo3DPipeline(Object3DPipeline, Object3DLoraLoaderMixin):
             texture_slat_mean=texture_mean,
             texture_slat_std=texture_std,
             default_pipeline_type=default_pipeline_type,
+            image_size=image_size,
             sparse_structure_sampler_defaults=sparse_defaults,
             shape_slat_sampler_defaults=shape_defaults,
             texture_slat_sampler_defaults=texture_defaults,
@@ -395,7 +401,7 @@ class Trellis2ImageTo3DPipeline(Object3DPipeline, Object3DLoraLoaderMixin):
         return getattr(self, f"shape_slat_flow_model{suffix}"), getattr(self, f"texture_slat_flow_model{suffix}")
 
     def _stage_image_size(self, stage: str) -> int:
-        return self.conditioner.image_size * _STAGE_IMAGE_SCALE[stage]
+        return self.config.image_size * _STAGE_IMAGE_SCALE[stage]
 
     def preprocess(
         self,
@@ -418,7 +424,7 @@ class Trellis2ImageTo3DPipeline(Object3DPipeline, Object3DLoraLoaderMixin):
                 raise TypeError("image sequences must contain exact ImageCondition values")
         else:
             raise TypeError("image must be an ImageCondition, sequence of ImageCondition values, or tensor")
-        image_size = self.conditioner.image_size if image_size is None else image_size
+        image_size = self.config.image_size if image_size is None else image_size
         processed = [
             preprocess_image_condition(
                 condition,
@@ -428,8 +434,21 @@ class Trellis2ImageTo3DPipeline(Object3DPipeline, Object3DLoraLoaderMixin):
             ).image
             for condition in conditions
         ]
-        parameter = next(self.conditioner.parameters())
-        return torch.stack(processed).to(device=self._execution_device, dtype=parameter.dtype)
+        return torch.stack(processed).to(device=self._execution_device, dtype=self.image_encoder.dtype)
+
+    def encode_image(self, images: torch.Tensor, *, image_size: int | None = None) -> torch.Tensor:
+        """DINOv3 tokens of ``[0, 1]`` images resized to ``image_size``, with TRELLIS.2's affine-free final norm."""
+
+        image_size = self.config.image_size if image_size is None else image_size
+        images = images.to(device=self._execution_device, dtype=self.image_encoder.dtype)
+        if images.shape[-2:] != (image_size, image_size):
+            images = F.interpolate(
+                images, size=(image_size, image_size), mode="bilinear", align_corners=False, antialias=True
+            )
+        mean = torch.tensor(IMAGENET_DEFAULT_MEAN).reshape(1, 3, 1, 1).to(images)
+        std = torch.tensor(IMAGENET_DEFAULT_STD).reshape(1, 3, 1, 1).to(images)
+        output = self.image_encoder(pixel_values=(images - mean) / std, output_hidden_states=True)
+        return F.layer_norm(output.hidden_states[-1], output.hidden_states[-1].shape[-1:])
 
     def encode_conditioning(
         self,
@@ -437,14 +456,8 @@ class Trellis2ImageTo3DPipeline(Object3DPipeline, Object3DLoraLoaderMixin):
         *,
         image_size: int | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor]:
-        conditional = self.conditioner(images, image_size=image_size, value_range=(0.0, 1.0)).embeddings
-        negative = self.conditioner.unconditional_embedding(
-            images.shape[0],
-            image_size=image_size,
-            device=conditional.device,
-            dtype=conditional.dtype,
-        )
-        return conditional, negative
+        conditional = self.encode_image(images, image_size=image_size)
+        return conditional, torch.zeros_like(conditional)
 
     def prepare_sparse_structure_latents(
         self,
@@ -644,6 +657,12 @@ class Trellis2ImageTo3DPipeline(Object3DPipeline, Object3DLoraLoaderMixin):
         )
         return self._denormalize(normalized, self.config.texture_slat_mean, self.config.texture_slat_std)
 
+    @staticmethod
+    def _quantize_cascade_coordinates(coordinates: torch.Tensor, resolution: int, target: int) -> torch.Tensor:
+        """Map fine voxel coordinates on a ``resolution`` grid onto the cascade's ``target`` latent grid."""
+
+        return ((coordinates + 0.5) / resolution * target).to(dtype=coordinates.dtype)
+
     def upsample_structures(
         self,
         shape_slat: TrellisSparseTensor,
@@ -672,7 +691,7 @@ class Trellis2ImageTo3DPipeline(Object3DPipeline, Object3DLoraLoaderMixin):
             quantized = torch.cat(
                 [
                     fine_coordinates[:, :1],
-                    ((fine_coordinates[:, 1:] + 0.5) / fine_resolution * target).to(dtype=fine_coordinates.dtype),
+                    self._quantize_cascade_coordinates(fine_coordinates[:, 1:], fine_resolution, target),
                 ],
                 dim=1,
             ).unique(dim=0)

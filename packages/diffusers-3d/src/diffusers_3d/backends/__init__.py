@@ -21,6 +21,7 @@ from .flex_gemm import (
 )
 from .gsplat import GsplatBackend
 from .kaolin_flexicubes import KaolinFlexiCubesBackend
+from .mesh_rasterizer import Rasterization, interpolate, rasterize, rasterize_mesh
 from .o_voxel import (
     OVOXEL_REFERENCE_REVISION,
     OVoxelBackend,
@@ -105,6 +106,7 @@ __all__ = [
     "OVoxelCapability",
     "OVoxelRuntimeUnavailableError",
     "PBRBakingBackend",
+    "Rasterization",
     "ResearchOnlyBackendFacade",
     "SPCONV_BATCH_INDICES",
     "ScikitImageBackend",
@@ -120,6 +122,7 @@ __all__ = [
     "XAtlasBackend",
     "create_default_backend_registry",
     "discover_backend",
+    "interpolate",
     "morton_decode_3d",
     "morton_encode_3d",
     "official_tensors_from_ovoxel_asset",
@@ -127,6 +130,8 @@ __all__ = [
     "trilinear_sample",
     "ovoxel_asset_from_official",
     "ovoxel_grid_transform",
+    "rasterize",
+    "rasterize_mesh",
     "read_ovoxel_npz",
     "write_ovoxel_npz",
 ]

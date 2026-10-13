@@ -32,7 +32,7 @@ _import_structure = {
     "configuration_utils": ["ConfigMixin"],
     "guiders": [],
     "hooks": [],
-    "loaders": ["PeftAdapterMixin"],
+    "loaders": ["FromOriginalModelMixin", "PeftAdapterMixin"],
     "models": [],
     "modular_pipelines": [],
     "pipelines": [],
@@ -219,12 +219,18 @@ else:
     _import_structure["models"].extend(
         [
             "AttentionBackendName",
+            "AutoencoderKL",
             "AutoModel",
             "CacheMixin",
             "ContextParallelConfig",
+            "FluxTransformer2DModel",
             "ModelMixin",
+            "MultiAdapter",
             "ParallelConfig",
+            "T2IAdapter",
             "TensorParallelConfig",
+            "Transformer2DModel",
+            "UNet2DConditionModel",
             "attention_backend",
         ]
     )
@@ -347,7 +353,6 @@ else:
 
 if TYPE_CHECKING or DIFFUSERS_SLOW_IMPORT:
     from .configuration_utils import ConfigMixin
-    from .loaders import PeftAdapterMixin
     from .quantizers import PipelineQuantizationConfig
 
     try:
@@ -468,12 +473,18 @@ if TYPE_CHECKING or DIFFUSERS_SLOW_IMPORT:
         from .loaders import AttnProcsLayers, LoraBaseMixin
         from .models import (
             AttentionBackendName,
+            AutoencoderKL,
             AutoModel,
             CacheMixin,
             ContextParallelConfig,
+            FluxTransformer2DModel,
             ModelMixin,
+            MultiAdapter,
             ParallelConfig,
+            T2IAdapter,
             TensorParallelConfig,
+            Transformer2DModel,
+            UNet2DConditionModel,
             attention_backend,
         )
         from .modular_pipelines import (
@@ -559,6 +570,8 @@ if TYPE_CHECKING or DIFFUSERS_SLOW_IMPORT:
         )
         from .training_utils import EMAModel
         from .video_processor import VideoProcessor
+
+    from .loaders import PeftAdapterMixin
 
     try:
         if not (is_torch_available() and is_scipy_available()):

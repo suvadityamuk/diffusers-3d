@@ -25,21 +25,31 @@ _import_structure = {}
 
 if is_torch_available():
     _import_structure["_modeling_parallel"] = ["ContextParallelConfig", "ParallelConfig", "TensorParallelConfig"]
+    _import_structure["adapter"] = ["MultiAdapter", "T2IAdapter"]
     _import_structure["attention_dispatch"] = ["AttentionBackendName", "attention_backend"]
     _import_structure["auto_model"] = ["AutoModel"]
+    _import_structure["autoencoders.autoencoder_kl"] = ["AutoencoderKL"]
     _import_structure["cache_utils"] = ["CacheMixin"]
     _import_structure["embeddings"] = ["ImageProjection"]
     _import_structure["modeling_utils"] = ["ModelMixin"]
+    _import_structure["transformers.dual_transformer_2d"] = ["DualTransformer2DModel"]
+    _import_structure["transformers.transformer_2d"] = ["Transformer2DModel"]
+    _import_structure["transformers.transformer_flux"] = ["FluxTransformer2DModel"]
+    _import_structure["unets.unet_2d_condition"] = ["UNet2DConditionModel"]
 
 
 if TYPE_CHECKING or DIFFUSERS_SLOW_IMPORT:
     if is_torch_available():
         from ._modeling_parallel import ContextParallelConfig, ParallelConfig, TensorParallelConfig
+        from .adapter import MultiAdapter, T2IAdapter
         from .attention_dispatch import AttentionBackendName, attention_backend
         from .auto_model import AutoModel
+        from .autoencoders import AutoencoderKL
         from .cache_utils import CacheMixin
         from .embeddings import ImageProjection
         from .modeling_utils import ModelMixin
+        from .transformers import DualTransformer2DModel, FluxTransformer2DModel, Transformer2DModel
+        from .unets import UNet2DConditionModel
 
 else:
     import sys

@@ -4,9 +4,6 @@ from importlib import import_module
 
 _EXPORT_MODULES = {
     "TRELLIS_REFERENCE_REVISION": ".conversion",
-    "TrellisClipTextConditioner": ".text_conditioner",
-    "TrellisConditionerOutput": ".conditioner",
-    "TrellisDinov2Conditioner": ".conditioner",
     "TrellisFlowEulerScheduler": ".scheduler",
     "TrellisFlowEulerSchedulerOutput": ".scheduler",
     "TrellisGaussianDecoderOutput": ".decoders",
@@ -23,7 +20,6 @@ _EXPORT_MODULES = {
     "TrellisSparseStructureFlowModel": ".models",
     "TrellisSparseStructureFlowOutput": ".models",
     "TrellisSparseTensor": ".sparse",
-    "TrellisTextConditionerOutput": ".text_conditioner",
     "TrellisTextTo3DPipeline": ".pipeline",
     "convert_trellis_checkpoint": ".conversion",
     "trellis_grid_transform": ".sparse",

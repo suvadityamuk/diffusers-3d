@@ -1,0 +1,51 @@
+Tencent ARC Pixal3D integration notice
+
+Portions of the projection-conditioned flow transformers, the view-aligned
+pixel projection, the multi-view camera handling, image preprocessing, and the
+cascade pipeline equations in this family are modified from:
+
+  TencentARC/Pixal3D
+  https://github.com/TencentARC/Pixal3D
+  revision f7cf38429b0bd264f1995f0f8743a88b1c728b94
+
+Those portions are provided under the accompanying MIT License:
+
+  MIT License
+  Copyright (c) 2026 Tencent.
+
+The upstream NOTICE adds a Responsible Use section: users are responsible for
+complying with applicable laws, rights, and consent requirements, and the
+authors do not support non-consensual sexual content, sexualized depictions of
+real people, content involving minors, harassment, impersonation, or
+privacy-violating applications. It does not modify the license terms.
+
+The feature upsampler reproduces the behavior of valeo.ai NAF (Neighborhood
+Attention Filtering):
+
+  valeoai/NAF
+  https://github.com/valeoai/NAF
+  revision 37f2dfc180f2de53d98bd601109c0da0dd6b0f43
+  Apache License 2.0
+
+The neighborhood attention is reimplemented in plain PyTorch (no NATTEN); the
+rotary embedding uses the Diffusers ``apply_rotary_emb`` helper. NAF's own
+``src/layers/rope.py`` carries a DINOv3 License header and is not copied.
+
+The sparse-structure, shape, and PBR decoders, the flow scheduler, the DINOv3
+image encoding, and the TRELLIS.2 transformer blocks are the package's TRELLIS.2
+code; see ../trellis2/NOTICE. Pixal3D's released decoder checkpoints are
+byte-identical to the TRELLIS.2 and TRELLIS image-large releases.
+
+All ported source files carry a prominent modification notice. Independently
+written diffusers-3d package glue remains under the package Apache-2.0 license.
+
+Weights are not redistributed. Pixal3D weights (TencentARC/Pixal3D) are MIT.
+The DINOv3 image encoder (facebook/dinov3-vitl16-pretrain-lvd1689m, also
+re-hosted ungated and byte-identical as camenduru/dinov3-vitl16-pretrain-lvd1689m)
+is governed by the separate DINOv3 License. The NAF release checkpoint is
+distributed from the NAF GitHub releases without a separate license.
+MoGe-2 (field-of-view estimation) and BiRefNet / RMBG-2.0 (background removal),
+which upstream inference runs, are neither bundled nor invoked.
+
+No affiliation, sponsorship, or endorsement by Tencent, valeo.ai, Microsoft,
+or Meta is claimed.

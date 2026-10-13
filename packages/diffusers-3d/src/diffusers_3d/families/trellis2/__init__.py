@@ -4,8 +4,6 @@ from importlib import import_module
 
 _EXPORT_MODULES = {
     "TRELLIS2_REFERENCE_REVISION": ".conversion",
-    "Trellis2ConditionerOutput": ".conditioner",
-    "Trellis2Dinov3Conditioner": ".conditioner",
     "Trellis2FlowEulerScheduler": ".scheduler",
     "Trellis2FlowEulerSchedulerOutput": ".scheduler",
     "Trellis2ImageTo3DPipeline": ".pipeline",

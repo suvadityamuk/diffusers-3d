@@ -4,6 +4,7 @@ import json
 
 import pytest
 from diffusers import DiffusionPipeline
+from transformers import Dinov2WithRegistersConfig, Dinov2WithRegistersModel
 
 from diffusers_3d import (
     AutoPipelineFor3D,
@@ -16,7 +17,6 @@ from diffusers_3d import (
     Object3DRegistrationError,
     Object3DTaskError,
     ReviewStatus,
-    TrellisDinov2Conditioner,
     TrellisFlowEulerScheduler,
     TrellisImageTo3DPipeline,
     TrellisSparseStructureDecoder,
@@ -43,7 +43,11 @@ def reviewed_registry(pipeline_class):
 
 def tiny_trellis_pipeline():
     return TrellisImageTo3DPipeline(
-        conditioner=TrellisDinov2Conditioner(**TrellisDinov2Conditioner.tiny_config()),
+        image_encoder=Dinov2WithRegistersModel(
+            Dinov2WithRegistersConfig(
+                image_size=8, patch_size=4, hidden_size=12, num_hidden_layers=1, num_attention_heads=3
+            )
+        ),
         sparse_structure_flow_model=TrellisSparseStructureFlowModel(**TrellisSparseStructureFlowModel.tiny_config()),
         sparse_structure_decoder=TrellisSparseStructureDecoder(**TrellisSparseStructureDecoder.tiny_config()),
         sparse_structure_scheduler=TrellisFlowEulerScheduler(),
@@ -246,12 +250,12 @@ def test_remote_loader_downloads_precise_snapshot_then_loads_installed_component
             "allow_patterns": [
                 "variant/model_index.json",
                 "variant/object3d_model_index.json",
-                "variant/conditioner/*.json",
-                "variant/conditioner/*.safetensors",
-                "variant/conditioner/*.flashpack",
                 "variant/gaussian_decoder/*.json",
                 "variant/gaussian_decoder/*.safetensors",
                 "variant/gaussian_decoder/*.flashpack",
+                "variant/image_encoder/*.json",
+                "variant/image_encoder/*.safetensors",
+                "variant/image_encoder/*.flashpack",
                 "variant/mesh_decoder/*.json",
                 "variant/mesh_decoder/*.safetensors",
                 "variant/mesh_decoder/*.flashpack",
@@ -281,13 +285,13 @@ def test_remote_loader_downloads_precise_snapshot_then_loads_installed_component
 @pytest.mark.parametrize(
     "tampered_tuple",
     (
-        ["attacker.module", "TrellisDinov2Conditioner"],
-        ["diffusers_3d.families.trellis.conditioner", "AttackerConditioner"],
+        ["attacker.module", "Dinov2WithRegistersModel"],
+        ["transformers", "AttackerModel"],
     ),
 )
 def test_local_loader_rejects_tampered_component_module_or_class(tmp_path, tampered_tuple):
     tiny_trellis_pipeline().save_pretrained(tmp_path)
-    update_model_index(tmp_path, lambda model_index: model_index.__setitem__("conditioner", tampered_tuple))
+    update_model_index(tmp_path, lambda model_index: model_index.__setitem__("image_encoder", tampered_tuple))
 
     with pytest.raises(Object3DLoadingError, match="expected exact reviewed tuple"):
         AutoPipelineForImageTo3D.from_pretrained(tmp_path, local_files_only=True)
@@ -298,8 +302,8 @@ def test_local_loader_rejects_missing_or_malformed_required_component(tmp_path):
     malformed = tmp_path / "malformed"
     tiny_trellis_pipeline().save_pretrained(missing)
     tiny_trellis_pipeline().save_pretrained(malformed)
-    update_model_index(missing, lambda model_index: model_index.pop("conditioner"))
-    update_model_index(malformed, lambda model_index: model_index.__setitem__("conditioner", {"class": "spoofed"}))
+    update_model_index(missing, lambda model_index: model_index.pop("image_encoder"))
+    update_model_index(malformed, lambda model_index: model_index.__setitem__("image_encoder", {"class": "spoofed"}))
 
     with pytest.raises(Object3DLoadingError, match="missing required component"):
         AutoPipelineForImageTo3D.from_pretrained(missing, local_files_only=True)
@@ -325,22 +329,22 @@ def test_local_loader_accepts_a_component_the_caller_provides_instead_of_a_subfo
 
     original = tiny_trellis_pipeline()
     original.save_pretrained(tmp_path)
-    # A published pipeline may leave out a component whose weights are distributed separately (gated conditioner).
-    shutil.rmtree(tmp_path / "conditioner")
+    # A published pipeline may leave out a component whose weights are distributed separately (gated encoder).
+    shutil.rmtree(tmp_path / "image_encoder")
 
     with pytest.raises(Object3DLoadingError, match="pass the component object"):
         AutoPipelineForImageTo3D.from_pretrained(tmp_path, local_files_only=True)
     with pytest.raises(Object3DLoadingError, match="expected exact reviewed class"):
         AutoPipelineForImageTo3D.from_pretrained(
-            tmp_path, local_files_only=True, conditioner=original.sparse_structure_flow_model
+            tmp_path, local_files_only=True, image_encoder=original.sparse_structure_flow_model
         )
 
     loaded = AutoPipelineForImageTo3D.from_pretrained(
-        tmp_path, local_files_only=True, conditioner=original.conditioner
+        tmp_path, local_files_only=True, image_encoder=original.image_encoder
     )
 
     assert type(loaded) is TrellisImageTo3DPipeline
-    assert loaded.conditioner is original.conditioner
+    assert loaded.image_encoder is original.image_encoder
     assert type(loaded.sparse_structure_flow_model) is type(original.sparse_structure_flow_model)
 
 
@@ -368,7 +372,7 @@ def test_local_loader_rejects_swapped_installed_component_class(tmp_path, monkey
         classmethod(lambda cls, *args, **kwargs: loaded_pipeline),
     )
     monkeypatch.setattr(
-        "diffusers_3d.families.trellis.conditioner.TrellisDinov2Conditioner",
+        f"{Dinov2WithRegistersModel.__module__}.Dinov2WithRegistersModel",
         TrellisSparseStructureFlowModel,
     )
 
@@ -379,7 +383,7 @@ def test_local_loader_rejects_swapped_installed_component_class(tmp_path, monkey
 def test_local_loader_rejects_missing_required_component_after_load(tmp_path, monkeypatch):
     tiny_trellis_pipeline().save_pretrained(tmp_path)
     loaded_pipeline = tiny_trellis_pipeline()
-    loaded_pipeline.conditioner = None
+    loaded_pipeline.image_encoder = None
     monkeypatch.setattr(
         TrellisImageTo3DPipeline,
         "from_pretrained",

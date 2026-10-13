@@ -121,14 +121,13 @@ def pipeline_source(name: str, work: Path, hub_namespace: str | None) -> str | P
     return f"{hub_namespace}/{HUB_REPOSITORIES[name]}"
 
 
-def dinov3_conditioner(work: Path, device, dtype):
-    """The gated DINOv3 conditioner is never republished, so published TRELLIS.2 repos need it supplied."""
+def dinov3_image_encoder(work: Path, device, dtype):
+    """The gated DINOv3 image encoder is never republished, so published TRELLIS.2 repos need it supplied."""
 
-    from diffusers_3d import Trellis2Dinov3Conditioner
+    from transformers import DINOv3ViTModel
 
-    return Trellis2Dinov3Conditioner.from_dinov3_pretrained(
-        str(download(RELEASES["trellis2"]["conditioner"], work)), local_files_only=True
-    ).to(device, dtype)
+    path = download(RELEASES["trellis2"]["encoder"], work)
+    return DINOv3ViTModel.from_pretrained(path, local_files_only=True).to(device, dtype)
 
 
 # ------------------------------------------------------------------------------------------------ stages
@@ -156,7 +155,7 @@ def stage_trellis2(work: Path, out: Path, report: dict, condition, *, dtype, dev
     from diffusers_3d.backends import CuMeshBackend, TrimeshBackend
 
     record = report.setdefault("trellis2", {})
-    components = {} if hub_namespace is None else {"conditioner": dinov3_conditioner(work, device, dtype)}
+    components = {} if hub_namespace is None else {"image_encoder": dinov3_image_encoder(work, device, dtype)}
     pipeline = AutoPipelineForImageTo3D.from_pretrained(
         pipeline_source("trellis2", work, hub_namespace), dtype=dtype, **components
     ).to(device)

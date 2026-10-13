@@ -10,7 +10,10 @@ from __future__ import annotations
 from collections.abc import Sequence
 
 import torch
+import torch.nn.functional as F
 from diffusers.utils.torch_utils import randn_tensor
+from transformers import CLIPTextModel, CLIPTokenizer, Dinov2WithRegistersModel
+from transformers.image_utils import IMAGENET_DEFAULT_MEAN, IMAGENET_DEFAULT_STD
 
 from ...data import ImageCondition, TextCondition, preprocess_image_condition
 from ...execution.lora import Object3DLoraLoaderMixin
@@ -20,7 +23,6 @@ from ...execution.metadata import (
     ReviewStatus,
     fully_qualified_class_name,
 )
-from ...execution.models import Object3DModel
 from ...execution.pipelines import Object3DPipeline
 from ...objects import (
     GaussianSplatAsset,
@@ -32,7 +34,6 @@ from ...objects import (
     RadianceFieldAsset,
     SparseVoxelAsset,
 )
-from .conditioner import TrellisDinov2Conditioner
 from .decoders import (
     TrellisSLatGaussianDecoder,
     TrellisSLatMeshDecoder,
@@ -42,14 +43,13 @@ from .decoders import (
 from .models import TrellisSLatFlowModel, TrellisSparseStructureFlowModel
 from .scheduler import TrellisFlowEulerScheduler
 from .sparse import TrellisSparseTensor
-from .text_conditioner import TrellisClipTextConditioner
 
 
-def _conditioner_spec(conditioner_type: type[Object3DModel]) -> Object3DComponentSpec:
+def _component_spec(name: str, component_type: type) -> Object3DComponentSpec:
     return Object3DComponentSpec(
-        name="conditioner",
-        expected_class=fully_qualified_class_name(conditioner_type),
-        subfolder="conditioner",
+        name=name,
+        expected_class=fully_qualified_class_name(component_type),
+        subfolder=name,
         optional=False,
         review_status=ReviewStatus.REVIEWED,
         loading_eligible=True,
@@ -59,7 +59,7 @@ def _conditioner_spec(conditioner_type: type[Object3DModel]) -> Object3DComponen
 class _TrellisTwoStagePipeline(Object3DPipeline, Object3DLoraLoaderMixin):
     """Shared TRELLIS stages: sparse structure -> SLAT -> Gaussian splats, FlexiCubes meshes, and/or radiance fields.
 
-    Subclasses supply the conditioner (DINOv2 image tokens or CLIP text tokens) and ``__call__``. ``formats``
+    Subclasses supply the encoder (DINOv2 image tokens or CLIP text tokens) and ``__call__``. ``formats``
     covers ``"sparse_structure"``, ``"slat"``, ``"gaussian"``, ``"mesh"``, and ``"radiance_field"``; every network
     runs in plain PyTorch.
     """
@@ -142,8 +142,8 @@ class _TrellisTwoStagePipeline(Object3DPipeline, Object3DLoraLoaderMixin):
             loading_eligible=True,
         ),
     )
-    model_cpu_offload_seq = (
-        "conditioner->sparse_structure_flow_model->sparse_structure_decoder->slat_flow_model"
+    _model_cpu_offload_seq = (
+        "sparse_structure_flow_model->sparse_structure_decoder->slat_flow_model"
         "->gaussian_decoder->mesh_decoder->radiance_field_decoder"
     )
     _optional_components = [
@@ -157,7 +157,7 @@ class _TrellisTwoStagePipeline(Object3DPipeline, Object3DLoraLoaderMixin):
 
     def __init__(
         self,
-        conditioner: Object3DModel,
+        cond_channels: int,
         sparse_structure_flow_model: TrellisSparseStructureFlowModel,
         sparse_structure_decoder: TrellisSparseStructureDecoder,
         sparse_structure_scheduler: TrellisFlowEulerScheduler,
@@ -170,15 +170,15 @@ class _TrellisTwoStagePipeline(Object3DPipeline, Object3DLoraLoaderMixin):
         slat_std: Sequence[float] | None = None,
     ) -> None:
         super().__init__()
-        if sparse_structure_flow_model.config.cond_channels != conditioner.model.config.hidden_size:
-            raise ValueError("sparse-structure conditioner and flow context dimensions must match")
+        if sparse_structure_flow_model.config.cond_channels != cond_channels:
+            raise ValueError("sparse-structure encoder and flow context dimensions must match")
         if sparse_structure_flow_model.config.in_channels != sparse_structure_decoder.config.latent_channels:
             raise ValueError("sparse-structure flow and decoder latent channels must match")
         if slat_flow_model is not None:
             if slat_scheduler is None:
                 raise ValueError("slat_scheduler is required when slat_flow_model is provided")
-            if slat_flow_model.config.cond_channels != conditioner.model.config.hidden_size:
-                raise ValueError("SLAT conditioner and flow context dimensions must match")
+            if slat_flow_model.config.cond_channels != cond_channels:
+                raise ValueError("SLAT encoder and flow context dimensions must match")
             if slat_mean is None or slat_std is None:
                 raise ValueError("SLAT normalization is required when slat_flow_model is provided")
             if (
@@ -202,7 +202,6 @@ class _TrellisTwoStagePipeline(Object3DPipeline, Object3DLoraLoaderMixin):
                 raise ValueError(f"SLAT flow output channels must match the {name} decoder")
 
         self.register_modules(
-            conditioner=conditioner,
             sparse_structure_flow_model=sparse_structure_flow_model,
             sparse_structure_decoder=sparse_structure_decoder,
             sparse_structure_scheduler=sparse_structure_scheduler,
@@ -503,11 +502,15 @@ class TrellisImageTo3DPipeline(_TrellisTwoStagePipeline):
     """TRELLIS image-to-3D: DINOv2 image tokens condition the sparse-structure and SLAT flows."""
 
     task_ids = ("image-to-3d",)
-    component_specs = (_conditioner_spec(TrellisDinov2Conditioner), *_TrellisTwoStagePipeline._shared_component_specs)
+    component_specs = (
+        _component_spec("image_encoder", Dinov2WithRegistersModel),
+        *_TrellisTwoStagePipeline._shared_component_specs,
+    )
+    model_cpu_offload_seq = "image_encoder->" + _TrellisTwoStagePipeline._model_cpu_offload_seq
 
     def __init__(
         self,
-        conditioner: TrellisDinov2Conditioner,
+        image_encoder: Dinov2WithRegistersModel,
         sparse_structure_flow_model: TrellisSparseStructureFlowModel,
         sparse_structure_decoder: TrellisSparseStructureDecoder,
         sparse_structure_scheduler: TrellisFlowEulerScheduler,
@@ -519,10 +522,8 @@ class TrellisImageTo3DPipeline(_TrellisTwoStagePipeline):
         slat_mean: Sequence[float] | None = None,
         slat_std: Sequence[float] | None = None,
     ) -> None:
-        if type(conditioner) is not TrellisDinov2Conditioner:
-            raise TypeError("TrellisImageTo3DPipeline requires a TrellisDinov2Conditioner")
         super().__init__(
-            conditioner,
+            image_encoder.config.hidden_size,
             sparse_structure_flow_model,
             sparse_structure_decoder,
             sparse_structure_scheduler,
@@ -534,6 +535,7 @@ class TrellisImageTo3DPipeline(_TrellisTwoStagePipeline):
             slat_mean,
             slat_std,
         )
+        self.register_modules(image_encoder=image_encoder)
 
     def preprocess(
         self,
@@ -560,27 +562,29 @@ class TrellisImageTo3DPipeline(_TrellisTwoStagePipeline):
         processed = [
             preprocess_image_condition(
                 condition,
-                image_size=self.conditioner.image_size,
+                image_size=self.image_encoder.config.image_size,
                 foreground_scale=1.2,
             ).image
             for condition in conditions
         ]
-        parameter = next(self.conditioner.parameters())
-        return torch.stack(processed).to(device=self._execution_device, dtype=parameter.dtype)
+        return torch.stack(processed).to(device=self._execution_device, dtype=self.image_encoder.dtype)
 
     def encode_conditioning(
         self,
         images: torch.Tensor,
     ) -> tuple[torch.Tensor, torch.Tensor]:
-        """Encode released normalized image tokens and an all-zero unconditional branch."""
+        """Encode ``[0, 1]`` images to layer-normed DINOv2 tokens and the released all-zero unconditional branch."""
 
-        conditional = self.conditioner(images, value_range=(0.0, 1.0)).embeddings
-        unconditional = self.conditioner.unconditional_embedding(
-            images.shape[0],
-            device=conditional.device,
-            dtype=conditional.dtype,
-        )
-        return conditional, unconditional
+        size = self.image_encoder.config.image_size
+        images = images.to(device=self.image_encoder.device, dtype=self.image_encoder.dtype)
+        if images.shape[-2:] != (size, size):
+            images = F.interpolate(images, size=(size, size), mode="bilinear", align_corners=False, antialias=True)
+        mean = torch.tensor(IMAGENET_DEFAULT_MEAN).reshape(1, 3, 1, 1).to(images)
+        std = torch.tensor(IMAGENET_DEFAULT_STD).reshape(1, 3, 1, 1).to(images)
+        # TRELLIS takes the class, register, and patch tokens before DINOv2's learned output norm.
+        hidden_states = self.image_encoder(pixel_values=(images - mean) / std, output_hidden_states=True).hidden_states
+        conditional = F.layer_norm(hidden_states[-1], hidden_states[-1].shape[-1:])
+        return conditional, torch.zeros_like(conditional)
 
     @torch.no_grad()
     def __call__(
@@ -629,13 +633,16 @@ class TrellisTextTo3DPipeline(_TrellisTwoStagePipeline):
 
     task_ids = ("text-to-3d",)
     component_specs = (
-        _conditioner_spec(TrellisClipTextConditioner),
+        _component_spec("text_encoder", CLIPTextModel),
+        _component_spec("tokenizer", CLIPTokenizer),
         *_TrellisTwoStagePipeline._shared_component_specs,
     )
+    model_cpu_offload_seq = "text_encoder->" + _TrellisTwoStagePipeline._model_cpu_offload_seq
 
     def __init__(
         self,
-        conditioner: TrellisClipTextConditioner,
+        text_encoder: CLIPTextModel,
+        tokenizer: CLIPTokenizer,
         sparse_structure_flow_model: TrellisSparseStructureFlowModel,
         sparse_structure_decoder: TrellisSparseStructureDecoder,
         sparse_structure_scheduler: TrellisFlowEulerScheduler,
@@ -647,10 +654,8 @@ class TrellisTextTo3DPipeline(_TrellisTwoStagePipeline):
         slat_mean: Sequence[float] | None = None,
         slat_std: Sequence[float] | None = None,
     ) -> None:
-        if type(conditioner) is not TrellisClipTextConditioner:
-            raise TypeError("TrellisTextTo3DPipeline requires a TrellisClipTextConditioner")
         super().__init__(
-            conditioner,
+            text_encoder.config.hidden_size,
             sparse_structure_flow_model,
             sparse_structure_decoder,
             sparse_structure_scheduler,
@@ -662,6 +667,7 @@ class TrellisTextTo3DPipeline(_TrellisTwoStagePipeline):
             slat_mean,
             slat_std,
         )
+        self.register_modules(text_encoder=text_encoder, tokenizer=tokenizer)
 
     @staticmethod
     def preprocess(prompt: str | TextCondition | Sequence[str | TextCondition]) -> tuple[list[str], list[str]]:
@@ -685,16 +691,26 @@ class TrellisTextTo3DPipeline(_TrellisTwoStagePipeline):
             negatives.append("" if item.negative_text is None else item.negative_text)
         return positives, negatives
 
+    def encode_prompt(self, prompts: Sequence[str]) -> torch.Tensor:
+        """CLIP ``last_hidden_state`` of prompts padded and truncated to the encoder's context, as released."""
+
+        input_ids = self.tokenizer(
+            list(prompts),
+            max_length=self.text_encoder.config.max_position_embeddings,
+            padding="max_length",
+            truncation=True,
+            return_tensors="pt",
+        ).input_ids
+        return self.text_encoder(input_ids=input_ids.to(self.text_encoder.device)).last_hidden_state
+
     def encode_conditioning(
         self, prompts: Sequence[str], negative_prompts: Sequence[str]
     ) -> tuple[torch.Tensor, torch.Tensor]:
-        conditional = self.conditioner(list(prompts)).embeddings
+        conditional = self.encode_prompt(prompts)
         if all(negative == "" for negative in negative_prompts):
-            unconditional = self.conditioner.unconditional_embedding(
-                len(prompts), device=conditional.device, dtype=conditional.dtype
-            )
+            unconditional = self.encode_prompt([""]).expand(len(prompts), -1, -1)
         else:
-            unconditional = self.conditioner(list(negative_prompts)).embeddings
+            unconditional = self.encode_prompt(negative_prompts)
         return conditional, unconditional
 
     @torch.no_grad()

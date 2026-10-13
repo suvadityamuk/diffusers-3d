@@ -9,18 +9,38 @@ from pathlib import Path, PurePosixPath
 FAMILIES = {
     "trellis": "LICENSE-MIT",
     "trellis2": "LICENSE-MIT",
+    "triposg": "LICENSE-MIT",
+    "sam3d_objects": "LICENSE-SAM",
+    "step1x3d": "LICENSE-APACHE-2.0",
+    "pixal3d": "LICENSE-MIT",
+    "hunyuan3d": "LICENSE-TENCENT-HUNYUAN-3D-2.1",
 }
-LICENSE_EXPRESSION = "Apache-2.0 AND MIT"
+LICENSE_EXPRESSION = "Apache-2.0 AND MIT AND LicenseRef-SAM-License AND LicenseRef-Tencent-Hunyuan-3D-2.1-Community"
 LICENSE_FILES = {
     "LICENSE-APACHE-2.0",
     "src/diffusers_3d/families/trellis/LICENSE-MIT",
     "src/diffusers_3d/families/trellis/NOTICE",
     "src/diffusers_3d/families/trellis2/LICENSE-MIT",
     "src/diffusers_3d/families/trellis2/NOTICE",
+    "src/diffusers_3d/families/triposg/LICENSE-MIT",
+    "src/diffusers_3d/families/triposg/NOTICE",
+    "src/diffusers_3d/families/sam3d_objects/LICENSE-SAM",
+    "src/diffusers_3d/families/sam3d_objects/NOTICE",
+    "src/diffusers_3d/families/step1x3d/LICENSE-APACHE-2.0",
+    "src/diffusers_3d/families/step1x3d/NOTICE",
+    "src/diffusers_3d/families/pixal3d/LICENSE-MIT",
+    "src/diffusers_3d/families/pixal3d/NOTICE",
+    "src/diffusers_3d/families/hunyuan3d/LICENSE-TENCENT-HUNYUAN-3D-2.1",
+    "src/diffusers_3d/families/hunyuan3d/NOTICE",
 }
 ENTRY_POINTS = {
+    "diffusers-3d-convert-sam3d": "diffusers_3d.families.sam3d_objects.conversion:main",
+    "diffusers-3d-convert-pixal3d": "diffusers_3d.families.pixal3d.conversion:main",
+    "diffusers-3d-convert-hunyuan3d": "diffusers_3d.families.hunyuan3d.conversion:main",
     "diffusers-3d-convert-trellis": "diffusers_3d.families.trellis.conversion:main",
     "diffusers-3d-convert-trellis2": "diffusers_3d.families.trellis2.conversion:main",
+    "diffusers-3d-convert-triposg": "diffusers_3d.families.triposg.conversion:main",
+    "diffusers-3d-convert-step1x3d": "diffusers_3d.families.step1x3d.conversion:main",
     "diffusers-3d-report": "diffusers_3d.compatibility:main",
 }
 

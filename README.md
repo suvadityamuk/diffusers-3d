@@ -45,8 +45,8 @@ constructed, carries a 4x4 `transform` (object to world), a `grid_transform` whe
 GLB, NPZ, or PLY, and which fields you are willing to lose in the process.
 
 **3D models look like any other Diffusers model.** A converted checkpoint is a directory with `model_index.json`
-and one subfolder per component, each holding a `config.json` and a `diffusion_pytorch_model.safetensors`. The flow
-models, decoders, and conditioners subclass `ModelMixin`; pipelines subclass `DiffusionPipeline`; schedulers
+and one subfolder per component, each holding a `config.json` and its weights. The flow models and decoders subclass
+`ModelMixin`; image and text encoders are stock Transformers models; pipelines subclass `DiffusionPipeline`; schedulers
 subclass `SchedulerMixin`. So `from_pretrained`, `save_pretrained`, `.to()`, and CPU offload work without any
 3D-specific plumbing, and a pipeline saves back into the same layout it was loaded from.
 
@@ -76,8 +76,13 @@ restricted dependencies require an explicit license acknowledgement argument.
 |---|---|---|---|---|
 | [TRELLIS](packages/diffusers-3d/src/diffusers_3d/families/trellis/README.md) | `TrellisImageTo3DPipeline`, `TrellisTextTo3DPipeline` | image → 3D, text → 3D | sparse structure, SLAT, Gaussian splats, FlexiCubes mesh, tri-vector radiance field | rendering the splats (gsplat); simplifying the mesh for the textured GLB (CuMesh) |
 | [TRELLIS.2](packages/diffusers-3d/src/diffusers_3d/families/trellis2/README.md) | `Trellis2ImageTo3DPipeline` | image → 3D | sparse structure, shape/texture SLAT, O-Voxel (dual grid + PBR) | PBR-textured mesh export (CuMesh) |
+| [TripoSG](packages/diffusers-3d/src/diffusers_3d/families/triposg/README.md) | `TripoSGImageTo3DPipeline` | image → 3D | shape latents, untextured mesh | none |
+| [Step1X-3D](packages/diffusers-3d/src/diffusers_3d/families/step1x3d/README.md) | `Step1X3DImageTo3DPipeline` | image → 3D (geometry stage) | shape latents, untextured mesh | none |
+| [Hunyuan3D-2.1](packages/diffusers-3d/src/diffusers_3d/families/hunyuan3d/README.md) | `Hunyuan3DImageTo3DPipeline` | image → 3D (shape stage) | shape latents, untextured mesh | none |
+| [SAM 3D Objects](packages/diffusers-3d/src/diffusers_3d/families/sam3d_objects/README.md) | `Sam3DObjectsPipeline` | masked image → 3D | sparse structure, Gaussian splats, FlexiCubes mesh, placed in the input camera's frame | rendering the splats (gsplat) |
+| [Pixal3D](packages/diffusers-3d/src/diffusers_3d/families/pixal3d/README.md) | `Pixal3DImageTo3DPipeline` | image + field of view → 3D | sparse structure, shape/texture SLAT, O-Voxel (dual grid + PBR) | PBR-textured mesh export (CuMesh) |
 
-Every network in both pipelines runs in plain PyTorch on CPU or GPU. The sparse convolutions, pooling, subdivision,
+Every network in these pipelines runs in plain PyTorch on CPU or GPU. The sparse convolutions, pooling, subdivision,
 and windowed attention that upstream implements with `spconv`, FlexGEMM, and `xformers` live in
 [`sparse_ops.py`](packages/diffusers-3d/src/diffusers_3d/families/trellis/sparse_ops.py) and are checked against the
 pinned upstream code numerically. A textured GLB of a TRELLIS mesh (`TrellisGlbPostprocessFacade`) bakes gsplat renders of
@@ -105,23 +110,25 @@ load them directly:
 
 | Repository | Pipeline | Notes |
 |---|---|---|
-| [`suvadityamuk/TRELLIS-image-large-diffusers-3d`](https://huggingface.co/suvadityamuk/TRELLIS-image-large-diffusers-3d) | `TrellisImageTo3DPipeline` | complete, including the DINOv2 conditioner |
-| [`suvadityamuk/TRELLIS-text-large-diffusers-3d`](https://huggingface.co/suvadityamuk/TRELLIS-text-large-diffusers-3d) | `TrellisTextTo3DPipeline` | complete, including the CLIP conditioner |
-| [`suvadityamuk/TRELLIS.2-4B-diffusers-3d`](https://huggingface.co/suvadityamuk/TRELLIS.2-4B-diffusers-3d) | `Trellis2ImageTo3DPipeline` | everything except the DINOv3 conditioner, which is gated under Meta's license and is passed in at load time |
+| [`suvadityamuk/TRELLIS-image-large-diffusers-3d`](https://huggingface.co/suvadityamuk/TRELLIS-image-large-diffusers-3d) | `TrellisImageTo3DPipeline` | complete, including the DINOv2 image encoder |
+| [`suvadityamuk/TRELLIS-text-large-diffusers-3d`](https://huggingface.co/suvadityamuk/TRELLIS-text-large-diffusers-3d) | `TrellisTextTo3DPipeline` | complete, including the CLIP text encoder and tokenizer |
+| [`suvadityamuk/TRELLIS.2-4B-diffusers-3d`](https://huggingface.co/suvadityamuk/TRELLIS.2-4B-diffusers-3d) | `Trellis2ImageTo3DPipeline` | everything except the DINOv3 image encoder, which is gated under Meta's license and is passed in at load time |
 
 ```python
 import torch
-from diffusers_3d import AutoPipelineForImageTo3D, Trellis2Dinov3Conditioner
+from transformers import DINOv3ViTModel
 
-conditioner = Trellis2Dinov3Conditioner.from_dinov3_pretrained("facebook/dinov3-vitl16-pretrain-lvd1689m")
+from diffusers_3d import AutoPipelineForImageTo3D
+
+image_encoder = DINOv3ViTModel.from_pretrained("facebook/dinov3-vitl16-pretrain-lvd1689m")
 pipeline = AutoPipelineForImageTo3D.from_pretrained(
-    "suvadityamuk/TRELLIS.2-4B-diffusers-3d", conditioner=conditioner, dtype=torch.bfloat16
+    "suvadityamuk/TRELLIS.2-4B-diffusers-3d", image_encoder=image_encoder, dtype=torch.bfloat16
 ).to("cuda")
 ```
 
 The auto-loader reads the `object3d_model_index.json` sidecar first, checks every declared component class against
 the installed package, downloads only those subfolders, and never enables remote code. A component passed as a
-keyword argument (`conditioner=...`) is used instead of a subfolder, which is how the gated encoder stays out of the
+keyword argument (`image_encoder=...`) is used instead of a subfolder, which is how the gated encoder stays out of the
 public repository. `scripts/publish_hub_checkpoints.py` is the script that produced these repositories.
 
 ### Converting a checkpoint yourself
@@ -135,23 +142,23 @@ fetch `facebook/dinov3-vitl16-pretrain-lvd1689m` from the Hub, which is gated be
 `diffusers-3d-convert-trellis2` does the one-time translation (this is what produced the Hub repositories above):
 
 1. reads `pipeline.json` and checks it describes the released `Trellis2ImageTo3DPipeline` with the expected
-   components and a DINOv3 conditioner;
+   components and a DINOv3 image encoder;
 2. for each supported model, instantiates the matching `diffusers_3d` class from the upstream config, loads the
    upstream safetensors into it with `strict=True` (so any key mismatch fails the conversion), and writes it out as
    a Diffusers subfolder with `config.json` + `diffusion_pytorch_model.safetensors`;
-3. copies the DINOv3 weights you downloaded (`--conditioner-path`) into a `conditioner/` subfolder as a
-   `Trellis2Dinov3Conditioner`, so the pipeline is self-contained afterwards;
+3. loads the DINOv3 image encoder (`--image-encoder-path`, a downloaded folder or the Hub id) with Transformers and
+   saves it into an `image_encoder/` subfolder, so the pipeline is self-contained afterwards;
 4. moves the sampler defaults and SLAT normalization statistics from `pipeline.json` into the pipeline config;
 5. writes `model_index.json` plus the `object3d_model_index.json` sidecar that the auto-loader uses to verify
    component classes.
 
-All eight released networks are converted: the conditioner, the sparse-structure flow and decoder, the 512 and 1024
-shape and texture SLAT flows, and the shape and PBR decoders. A `trellis2_conversion.json` report in the output
-directory lists what was converted and the upstream commit the conversion targets.
+All eight released networks are converted: the sparse-structure flow and decoder, the 512 and 1024 shape and texture
+SLAT flows, and the shape and PBR decoders, saved next to the DINOv3 image encoder. A `trellis2_conversion.json`
+report in the output directory lists what was converted and the upstream commit the conversion targets.
 
 ```bash
 diffusers-3d-convert-trellis2 /path/to/TRELLIS.2 /path/to/trellis2 \
-    --conditioner-path /path/to/dinov3-vitl16-pretrain-lvd1689m
+    --image-encoder-path /path/to/dinov3-vitl16-pretrain-lvd1689m
 ```
 
 Everything after this point, including `save_pretrained`, stays in the Diffusers layout.
@@ -163,7 +170,7 @@ import torch
 from diffusers_3d import AutoPipelineForImageTo3D, ImageCondition
 
 pipeline = AutoPipelineForImageTo3D.from_pretrained(
-    "suvadityamuk/TRELLIS.2-4B-diffusers-3d", conditioner=conditioner, dtype=torch.bfloat16
+    "suvadityamuk/TRELLIS.2-4B-diffusers-3d", image_encoder=image_encoder, dtype=torch.bfloat16
 ).to("cuda")  # or a locally converted folder
 
 rgba = ...  # (4, H, W) float tensor in [0, 1]; alpha drives foreground cropping
@@ -222,7 +229,10 @@ New model families are the main way to contribute. Start with the
 
 ## License
 
-The Diffusers core is Apache-2.0. The `diffusers-3d` package uses an `Apache-2.0 AND MIT` aggregate: package-owned
-glue is Apache-2.0, while TRELLIS- and TRELLIS.2-derived family code retains its MIT terms. Model weights,
-DINOv3 conditioner weights, and research backends such as nvdiffrast carry their own licenses and are not
-redistributed.
+The Diffusers core is Apache-2.0. The `diffusers-3d` package uses an
+`Apache-2.0 AND MIT AND LicenseRef-SAM-License AND LicenseRef-Tencent-Hunyuan-3D-2.1-Community` aggregate.
+Package-owned glue and Step1X-3D-derived code are Apache-2.0. TRELLIS-, TRELLIS.2-, TripoSG-, and Pixal3D-derived code
+keeps its MIT terms. SAM 3D Objects-derived code is under Meta's SAM License. Hunyuan3D-2.1-derived code is under the
+Tencent Hunyuan 3D 2.1 Community License, which does not apply in the European Union, the United Kingdom, or South
+Korea. Model weights, DINOv3 image encoder weights, and research backends such as nvdiffrast carry their own licenses and
+are not redistributed. Pipelines whose code or weights carry restrictive terms warn when constructed.

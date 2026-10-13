@@ -18,10 +18,17 @@ share the same two flow stages and decoders.
   and thresholds occupancy logits at zero. It returns package-owned
   `SparseVoxelAsset` objects with TRELLIS `[x, y, z]` coordinates, a native
   right-handed Z-up transform, and cell centers in `[-0.5, 0.5]`.
-- `TrellisDinov2Conditioner` uses Transformers DINOv2 blocks with ImageNet
-  normalization, class/register/patch token order, upstream `x_prenorm`
-  semantics, an unparameterized final layer norm, and all-zero unconditional
-  tokens.
+- `image_encoder` is the stock Transformers `Dinov2WithRegistersModel`
+  (`facebook/dinov2-with-registers-large`, the released `dinov2_vitl14_reg`).
+  The pipeline applies ImageNet normalization and conditions on its
+  class/register/patch tokens before the learned output norm (upstream
+  `x_prenorm`), with an unparameterized layer norm and all-zero
+  unconditional tokens.
+- `TrellisTextTo3DPipeline` takes the stock Transformers `CLIPTextModel`
+  `text_encoder` and `CLIPTokenizer` `tokenizer` of
+  `openai/clip-vit-large-patch14`. Prompts are padded and truncated to the
+  encoder's 77 positions and `last_hidden_state` conditions both flows; the
+  unconditional branch encodes the empty prompt.
 - `TrellisFlowEulerScheduler` implements the released `t=1` noise to `t=0`
   data direction, `sigma_min=1e-5`, rational `rescale_t`, `t*1000` model
   timesteps, guidance intervals, and `(1+w)*cond-w*uncond`.
@@ -38,14 +45,11 @@ share the same two flow stages and decoders.
 The converter consumes local upstream component `.json`/`.safetensors` pairs
 and `pipeline.json`, then writes ordinary Diffusers component folders and
 object-3D metadata. It converts the sparse-structure components, the SLAT
-flow model, and the Gaussian and mesh decoders. For image pipelines
-`--conditioner-path` takes either a saved `TrellisDinov2Conditioner` folder or
-the Transformers `dinov2_with_registers` checkpoint of the released
-`dinov2_vitl14_reg` (`facebook/dinov2-with-registers-large`); the register
-tokens fold into the conditioner and the token outputs match exactly. For text
-pipelines it takes the released `openai/clip-vit-large-patch14` folder, whose
-text tower and tokenizer become a `TrellisClipTextConditioner`. Conversion
-from the original Torch Hub state layout is not claimed.
+flow model, and the Gaussian and mesh decoders. `--encoder-path` is a Hub id
+or folder of the Transformers checkpoint of the released encoder:
+`facebook/dinov2-with-registers-large` for image pipelines, or
+`openai/clip-vit-large-patch14` (text tower and tokenizer) for text pipelines.
+Conversion from the original Torch Hub state layout is not claimed.
 
 ## SLAT flow, Gaussian decoder, and mesh decoder
 
@@ -137,13 +141,13 @@ See `LICENSE-MIT` and `NOTICE` for the source and license terms.
 
 The converted releases are published as
 `suvadityamuk/TRELLIS-image-large-diffusers-3d` and
-`suvadityamuk/TRELLIS-text-large-diffusers-3d`, conditioners included, and
+`suvadityamuk/TRELLIS-text-large-diffusers-3d`, encoders included, and
 load with the auto-loaders directly. To convert a local release yourself:
 
 ```bash
 diffusers-3d-convert-trellis source/ output/ \
-  --conditioner-path /local/path/to/trellis-dinov2-conditioner
+  --encoder-path facebook/dinov2-with-registers-large
 ```
 
-The converter writes the conditioner, sparse-structure flow and decoder, SLAT
+The converter writes the encoder, sparse-structure flow and decoder, SLAT
 flow, and the Gaussian, mesh, and radiance-field decoders.

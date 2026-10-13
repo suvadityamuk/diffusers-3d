@@ -4,9 +4,9 @@
 
 Publishes three model repos under ``<owner>``:
 
-* ``TRELLIS-image-large-diffusers-3d`` (MIT TRELLIS weights plus the Apache-2.0 DINOv2 conditioner),
-* ``TRELLIS-text-large-diffusers-3d`` (MIT TRELLIS weights plus the MIT CLIP text conditioner),
-* ``TRELLIS.2-4B-diffusers-3d`` (MIT TRELLIS.2 weights only: the DINOv3 conditioner is gated under Meta's own
+* ``TRELLIS-image-large-diffusers-3d`` (MIT TRELLIS weights plus the Apache-2.0 DINOv2 image encoder),
+* ``TRELLIS-text-large-diffusers-3d`` (MIT TRELLIS weights plus the MIT CLIP text encoder and tokenizer),
+* ``TRELLIS.2-4B-diffusers-3d`` (MIT TRELLIS.2 weights only: the DINOv3 image encoder is gated under Meta's own
   license and is not redistributed; users pass it to ``from_pretrained``).
 
 Each repo gets a model card with provenance and loading instructions. Needs ``HF_TOKEN`` with write access to the
@@ -91,7 +91,7 @@ it as the released code does. `formats` selects any of `sparse_structure`, `slat
 
 | Folder | Class | Released file |
 |---|---|---|
-| `conditioner` | `TrellisDinov2Conditioner` | `facebook/dinov2-with-registers-large` (DINOv2 ViT-L/14 with registers) |
+| `image_encoder` | `transformers.Dinov2WithRegistersModel` | `facebook/dinov2-with-registers-large` (DINOv2 ViT-L/14 with registers) |
 | `sparse_structure_flow_model` | `TrellisSparseStructureFlowModel` | `ss_flow_img_dit_L_16l8_fp16` |
 | `sparse_structure_decoder` | `TrellisSparseStructureDecoder` | `ss_dec_conv3d_16l8_fp16` |
 | `slat_flow_model` | `TrellisSLatFlowModel` | `slat_flow_img_dit_L_64l8p2_fp16` |
@@ -112,7 +112,7 @@ test suite.
 
 ## License and attribution
 
-TRELLIS weights and architecture: MIT License, Copyright (c) Microsoft Corporation. The DINOv2 conditioner weights
+TRELLIS weights and architecture: MIT License, Copyright (c) Microsoft Corporation. The DINOv2 image encoder weights
 are Apache-2.0, Copyright (c) Meta Platforms, Inc. This repository redistributes both under those terms; it is not
 affiliated with or endorsed by Microsoft or Meta.
 """
@@ -147,7 +147,8 @@ sampler (guidance 7.5 over the 0.5–0.95 interval).
 
 | Folder | Class | Released file |
 |---|---|---|
-| `conditioner` | `TrellisClipTextConditioner` | `openai/clip-vit-large-patch14` text tower and tokenizer |
+| `text_encoder` | `transformers.CLIPTextModel` | `openai/clip-vit-large-patch14` text tower |
+| `tokenizer` | `transformers.CLIPTokenizer` | `openai/clip-vit-large-patch14` tokenizer |
 | `sparse_structure_flow_model` | `TrellisSparseStructureFlowModel` | `ss_flow_txt_dit_L_16l8_fp16` |
 | `sparse_structure_decoder` | `TrellisSparseStructureDecoder` | `ss_dec_conv3d_16l8_fp16` (from TRELLIS-image-large) |
 | `slat_flow_model` | `TrellisSLatFlowModel` | `slat_flow_txt_dit_L_64l8p2_fp16` |
@@ -179,21 +180,23 @@ def card_trellis2(namespace: str, version: str) -> str:
 [microsoft/TRELLIS.2-4B](https://huggingface.co/microsoft/TRELLIS.2-4B) converted into a
 [diffusers-3d](https://github.com/suvadityamuk/diffusers) pipeline.
 
-**The DINOv3 image conditioner is not included.** Its weights are gated under Meta's DINOv3 License, so this
-repository ships every TRELLIS.2 component except `conditioner/`; you accept the license on
+**The DINOv3 image encoder is not included.** Its weights are gated under Meta's DINOv3 License, so this
+repository ships every TRELLIS.2 component except `image_encoder/`; you accept the license on
 [facebook/dinov3-vitl16-pretrain-lvd1689m](https://huggingface.co/facebook/dinov3-vitl16-pretrain-lvd1689m) and
-pass the conditioner in when loading.
+pass the image encoder in when loading.
 
 {_install_note()}
 ## Usage
 
 ```python
 import torch
-from diffusers_3d import AutoPipelineForImageTo3D, ImageCondition, Trellis2Dinov3Conditioner
+from transformers import DINOv3ViTModel
 
-conditioner = Trellis2Dinov3Conditioner.from_dinov3_pretrained("facebook/dinov3-vitl16-pretrain-lvd1689m")
+from diffusers_3d import AutoPipelineForImageTo3D, ImageCondition
+
+image_encoder = DINOv3ViTModel.from_pretrained("facebook/dinov3-vitl16-pretrain-lvd1689m")
 pipeline = AutoPipelineForImageTo3D.from_pretrained(
-    "{namespace}/TRELLIS.2-4B-diffusers-3d", conditioner=conditioner, dtype=torch.bfloat16
+    "{namespace}/TRELLIS.2-4B-diffusers-3d", image_encoder=image_encoder, dtype=torch.bfloat16
 ).to("cuda")
 output = pipeline(ImageCondition(image=rgba), pipeline_type="512")
 ovoxel = output.objects[0]  # OVoxelAsset: dual-grid surface with PBR channels
@@ -208,7 +211,7 @@ non-commercial license; see the package docs.
 
 | Folder | Class | Released file |
 |---|---|---|
-| `conditioner` | `Trellis2Dinov3Conditioner` | not included (gated `facebook/dinov3-vitl16-pretrain-lvd1689m`) |
+| `image_encoder` | `transformers.DINOv3ViTModel` | not included (gated `facebook/dinov3-vitl16-pretrain-lvd1689m`) |
 | `sparse_structure_flow_model` | `Trellis2SparseStructureFlowModel` | `ss_flow_img_dit_1_3B_64_bf16` |
 | `sparse_structure_decoder` | `Trellis2SparseStructureDecoder` | `ss_dec_conv3d_16l8_fp16` (from TRELLIS-image-large) |
 | `shape_slat_flow_model` | `Trellis2SLatFlowModel` | `slat_flow_img2shape_dit_1_3B_512_bf16` |
@@ -256,8 +259,8 @@ def main() -> int:
         print(f"== {name}: converting {RELEASES[name]['source']}", flush=True)
         folder = convert_release(name, args.work)
         (folder / "README.md").write_text(CARDS[name](args.namespace, diffusers_3d.__version__))
-        # The TRELLIS.2 converter needs the gated DINOv3 conditioner to run, but its weights must not be republished.
-        ignore = ["conditioner/*"] if name == "trellis2" else []
+        # The TRELLIS.2 converter needs the gated DINOv3 image encoder to run, but its weights must not be republished.
+        ignore = ["image_encoder/*", "conditioner/*"] if name == "trellis2" else []
         if args.dry_run:
             print(f"   dry run: would upload {folder} to {repo_id} (ignoring {ignore})")
             continue
@@ -267,6 +270,8 @@ def main() -> int:
             repo_type="model",
             folder_path=str(folder),
             ignore_patterns=ignore + ["*.pyc"],
+            # Repos published before the stock Transformers encoders still hold a `conditioner/` folder.
+            delete_patterns=["conditioner/*"],
             commit_message=f"Convert {RELEASES[name]['source']} with diffusers-3d {diffusers_3d.__version__}",
         )
         print(f"   published https://huggingface.co/{repo_id}", flush=True)

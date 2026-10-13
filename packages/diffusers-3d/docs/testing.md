@@ -67,14 +67,21 @@ Reference parity defaults to these pinned source trees:
 
 - `/tmp/TRELLIS` at `442aa1e1afb9014e80681d3bf604e8d728a86ee7`
 - `/tmp/TRELLIS.2` at `75fbf0183001ed9876c8dbb35de6b68552ee08bd`
+- `/tmp/TripoSG` at `fc5c40990181e2a756c4e0b1c2f4d6b5202faf8c`
+- `/tmp/sam-3d-objects` at `f91db411c50efee93d8db7aeb323885650f6f722`
+- `/tmp/Step1X-3D` at `cb5ac944709c6c913109070c7b90c3447f57f3d4`
+- `/tmp/Pixal3D` at `f7cf38429b0bd264f1995f0f8743a88b1c728b94`, with `/tmp/NAF` at `37f2dfc180f2de53d98bd601109c0da0dd6b0f43`
+- `/tmp/Hunyuan3D-2.1` at `82920d643c0dc2f7bfd7255f45f62d386edfe60c`
 
-The roots can be overridden with `DIFFUSERS_3D_TRELLIS_REFERENCE_ROOT` and
-`DIFFUSERS_3D_TRELLIS2_REFERENCE_ROOT`. Each value must name the repository root. Before any upstream module is
+The roots can be overridden with `DIFFUSERS_3D_<FAMILY>_REFERENCE_ROOT` (`TRELLIS`, `TRELLIS2`, `TRIPOSG`, `SAM3D`,
+`STEP1X3D`, `PIXAL3D`, `NAF`, `HUNYUAN3D`). Each value must name the repository root. Before any upstream module is
 imported, tests use Git to require the exact commit, expected `origin` URL, a clean tracked/untracked worktree, and the
 expected source paths in that commit.
 
-Generic local runs skip a missing, mismatched, dirty, or dependency-incomplete
-reference. The dedicated CI lane installs `einops`, fetches both exact commits, and runs:
+Generic local runs skip a missing, mismatched, dirty, or dependency-incomplete reference. The dedicated CI lane
+installs the modules the upstream references import (`einops`, OpenCV, `optree`, PyYAML, `scikit-image`, `timm`,
+`tqdm`, `trimesh`, and `natten==0.21.0`, whose CPU Flex backend runs Pixal3D's NAF reference), fetches every exact
+commit, and runs:
 
 ```bash
 DIFFUSERS_3D_REQUIRE_REFERENCE=1 \
@@ -82,7 +89,9 @@ DIFFUSERS_3D_REQUIRE_REFERENCE=1 \
 ```
 
 Required mode turns every reference or dependency skip condition into a test failure. CI also parses JUnit output to
-require all 12 cases and zero skips. Scheduler, guidance, objective, target, and timestep equations still run
+require all 37 cases and zero skips. Scheduler, guidance, objective, target, and timestep equations still run
+require all 37 cases and zero skips. Scheduler, guidance, objective, target, and timestep equations still run
+require all 37 cases and zero skips. Scheduler, guidance, objective, target, and timestep equations still run
 deterministically in the ordinary CPU lane without those trees.
 
 ## Static and release checks

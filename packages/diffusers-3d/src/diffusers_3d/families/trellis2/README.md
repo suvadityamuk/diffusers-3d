@@ -20,9 +20,10 @@ A runnable end-to-end example lives in
 - `Trellis2SparseStructureDecoder` intentionally subclasses the TRELLIS dense
   decoder because TRELLIS.2 imports that architecture unchanged. Output
   metadata records the exact `trellis-image-large` checkpoint semantics.
-- `Trellis2Dinov3Conditioner` uses public Transformers DINOv3 classes, ImageNet
-  normalization, the released token path, and manual unparameterized final
-  layer normalization. Tiny tests build from configuration without downloads.
+- The `image_encoder` is a stock Transformers `DINOv3ViTModel`. The pipeline
+  applies ImageNet normalization, takes the last hidden state before the
+  model's own final norm, and applies the released unparameterized layer
+  normalization. Tiny tests build from configuration without downloads.
 - `Trellis2FlowEulerScheduler` implements the TRELLIS.2
   `w*conditional + (1-w)*negative` CFG equation, x0 guidance rescale and
   interval, rational `rescale_t`, `t*1000` model input, and Euler updates.
@@ -34,7 +35,7 @@ A runnable end-to-end example lives in
   occupancy by 2, while `1024` keeps the decoder's native grid.
 - Typed RGBA alpha and separate masks are quantized to uint8 before the pinned
   `>0.8 * 255` foreground crop. The cropped RGBA image is premultiplied on
-  black before Pillow LANCZOS resizes RGB to the conditioner size, matching
+  black before Pillow LANCZOS resizes RGB to the pipeline `image_size`, matching
   the released ordering. Unmasked RGB is treated as an already
   background-removed full frame; the pipeline never invokes a background
   remover silently.
@@ -125,17 +126,17 @@ once CuMesh is installed.
 
 The converted 4B release is published as
 `suvadityamuk/TRELLIS.2-4B-diffusers-3d`. It contains every component except
-the DINOv3 conditioner, whose weights are gated under Meta's license: build it
-with `Trellis2Dinov3Conditioner.from_dinov3_pretrained(...)` and pass it as
-`conditioner=` to `from_pretrained`, which then neither downloads nor requires
-the `conditioner/` subfolder.
+the DINOv3 image encoder, whose weights are gated under Meta's license: load it
+with `DINOv3ViTModel.from_pretrained("facebook/dinov3-vitl16-pretrain-lvd1689m")`
+and pass it as `image_encoder=` to `from_pretrained`, which then neither
+downloads nor requires the `image_encoder/` subfolder.
 
 `diffusers-3d-convert-trellis2` consumes an official `pipeline.json`, local
-component JSON/safetensors pairs, and a local compatible DINOv3 conditioner
-folder. It converts every released component (conditioner, sparse-structure
-flow and decoder, the 512 and 1024 shape and texture SLAT flows, and the shape
-and PBR decoders); a release that ships only the sparse-structure stage is
-also accepted. `scripts/publish_hub_checkpoints.py` is the conversion behind
+component JSON/safetensors pairs, and a DINOv3 folder or Hub id
+(`--image-encoder-path`). It converts every released component (DINOv3 image
+encoder, sparse-structure flow and decoder, the 512 and 1024 shape and texture
+SLAT flows, and the shape and PBR decoders); a release that ships only the
+sparse-structure stage is also accepted. `scripts/publish_hub_checkpoints.py` is the conversion behind
 the published repository.
 
 ## Explicit limitations

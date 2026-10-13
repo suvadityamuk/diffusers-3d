@@ -1,8 +1,6 @@
 from __future__ import annotations
 
 from diffusers_3d import (
-    TrellisClipTextConditioner,
-    TrellisDinov2Conditioner,
     TrellisImageTo3DPipeline,
     TrellisSLatFlowModel,
     TrellisSLatGaussianDecoder,
@@ -30,14 +28,12 @@ def test_registries_contain_exact_trellis_classes():
         registration for registration in _PIPELINE_REGISTRY if _is_trellis_type(registration.pipeline_class)
     )
     assert {registration.model_class for registration in model_registrations} == {
-        TrellisDinov2Conditioner,
         TrellisSparseStructureDecoder,
         TrellisSparseStructureFlowModel,
         TrellisSLatFlowModel,
         TrellisSLatGaussianDecoder,
         TrellisSLatMeshDecoder,
         TrellisSLatRadianceFieldDecoder,
-        TrellisClipTextConditioner,
     }
     assert {registration.pipeline_class for registration in pipeline_registrations} == {
         TrellisImageTo3DPipeline,

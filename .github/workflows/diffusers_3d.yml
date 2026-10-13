@@ -100,7 +100,11 @@ jobs:
           python -m pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
           python -m pip install -e .
           python -m pip install -e "packages/diffusers-3d[reference-test,test]" --no-deps
-          python -m pip install accelerate einops pytest safetensors "transformers>=5.5.0"
+          # Upstream reference modules import these at module level.
+          python -m pip install accelerate einops opencv-python-headless optree pytest pyyaml safetensors scikit-image \
+            timm tqdm "transformers>=5.5.0" trimesh
+          # NATTEN ships only an sdist; without CUDA it builds its pure-Python Flex backend.
+          python -m pip install --no-build-isolation natten==0.21.0
       - name: Fetch exact trusted reference revisions
         shell: bash
         run: |
@@ -124,9 +128,39 @@ jobs:
             https://github.com/microsoft/TRELLIS.2.git \
             75fbf0183001ed9876c8dbb35de6b68552ee08bd \
             "$RUNNER_TEMP/TRELLIS.2"
+          clone_exact \
+            https://github.com/VAST-AI-Research/TripoSG.git \
+            fc5c40990181e2a756c4e0b1c2f4d6b5202faf8c \
+            "$RUNNER_TEMP/TripoSG"
+          clone_exact \
+            https://github.com/facebookresearch/sam-3d-objects.git \
+            f91db411c50efee93d8db7aeb323885650f6f722 \
+            "$RUNNER_TEMP/sam-3d-objects"
+          clone_exact \
+            https://github.com/stepfun-ai/Step1X-3D.git \
+            cb5ac944709c6c913109070c7b90c3447f57f3d4 \
+            "$RUNNER_TEMP/Step1X-3D"
+          clone_exact \
+            https://github.com/TencentARC/Pixal3D.git \
+            f7cf38429b0bd264f1995f0f8743a88b1c728b94 \
+            "$RUNNER_TEMP/Pixal3D"
+          clone_exact \
+            https://github.com/valeoai/NAF.git \
+            37f2dfc180f2de53d98bd601109c0da0dd6b0f43 \
+            "$RUNNER_TEMP/NAF"
+          clone_exact \
+            https://github.com/Tencent-Hunyuan/Hunyuan3D-2.1.git \
+            82920d643c0dc2f7bfd7255f45f62d386edfe60c \
+            "$RUNNER_TEMP/Hunyuan3D-2.1"
           {
             echo "DIFFUSERS_3D_TRELLIS_REFERENCE_ROOT=$RUNNER_TEMP/TRELLIS"
             echo "DIFFUSERS_3D_TRELLIS2_REFERENCE_ROOT=$RUNNER_TEMP/TRELLIS.2"
+            echo "DIFFUSERS_3D_TRIPOSG_REFERENCE_ROOT=$RUNNER_TEMP/TripoSG"
+            echo "DIFFUSERS_3D_SAM3D_REFERENCE_ROOT=$RUNNER_TEMP/sam-3d-objects"
+            echo "DIFFUSERS_3D_STEP1X3D_REFERENCE_ROOT=$RUNNER_TEMP/Step1X-3D"
+            echo "DIFFUSERS_3D_PIXAL3D_REFERENCE_ROOT=$RUNNER_TEMP/Pixal3D"
+            echo "DIFFUSERS_3D_NAF_REFERENCE_ROOT=$RUNNER_TEMP/NAF"
+            echo "DIFFUSERS_3D_HUNYUAN3D_REFERENCE_ROOT=$RUNNER_TEMP/Hunyuan3D-2.1"
           } >> "$GITHUB_ENV"
       - name: Run required pinned-reference parity without skips
         env:
@@ -145,7 +179,7 @@ jobs:
           skipped = sum(int(suite.attrib.get("skipped", 0)) for suite in suites)
           failures = sum(int(suite.attrib.get("failures", 0)) for suite in suites)
           errors = sum(int(suite.attrib.get("errors", 0)) for suite in suites)
-          assert tests == 12, f"expected 12 reference-parity cases, collected {tests}"
+          assert tests == 37, f"expected 37 reference-parity cases, collected {tests}"
           assert (skipped, failures, errors) == (0, 0, 0), (
               f"reference parity was not clean: skipped={skipped}, "
               f"failures={failures}, errors={errors}"
@@ -196,8 +230,13 @@ jobs:
           wheel="$(python -c 'from pathlib import Path; print(next(Path("packages/diffusers-3d/wheelhouse").glob("*.whl")))')"
           python -m pip install --no-deps --force-reinstall "$wheel"
           python -m pip check
+          diffusers-3d-convert-hunyuan3d --help > /dev/null
           diffusers-3d-convert-trellis --help > /dev/null
           diffusers-3d-convert-trellis2 --help > /dev/null
+          diffusers-3d-convert-triposg --help > /dev/null
+          diffusers-3d-convert-sam3d --help > /dev/null
+          diffusers-3d-convert-step1x3d --help > /dev/null
+          diffusers-3d-convert-pixal3d --help > /dev/null
           diffusers-3d-report --help > /dev/null
           cd /tmp
           python -I -c "import diffusers_3d; print(diffusers_3d.__version__)"
@@ -230,4 +269,5 @@ jobs:
             packages/diffusers-3d/tests/execution \
             packages/diffusers-3d/tests/data/test_image_processing.py \
             packages/diffusers-3d/tests/families/trellis/test_conditioner.py \
-            packages/diffusers-3d/tests/families/trellis2/test_conditioner.py
+            packages/diffusers-3d/tests/families/trellis2/test_image_encoder.py \
+            packages/diffusers-3d/tests/families/step1x3d/test_conditioner.py

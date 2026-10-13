@@ -10,6 +10,7 @@ from enum import Enum
 from pathlib import Path, PurePosixPath
 from typing import Any
 
+from diffusers.pipelines.pipeline_loading_utils import LOADABLE_CLASSES
 from huggingface_hub import hf_hub_download
 
 from ..objects import Object3DKind
@@ -448,7 +449,7 @@ class Object3DModelIndex:
     ) -> Mapping[str, object]:
         """Validate exact Diffusers component tuples without importing repository code.
 
-        ``provided_components`` names components the caller supplies as objects (for example a conditioner whose
+        ``provided_components`` names components the caller supplies as objects (for example an image encoder whose
         weights are gated and cannot ship with the pipeline); their subfolder need not exist, but the model index
         must still declare the exact reviewed class.
         """
@@ -508,6 +509,10 @@ class Object3DModelIndex:
                     "pass the component object to from_pretrained() if it is distributed separately"
                 )
             expected_library, _, expected_name = component.expected_class.rpartition(".")
+            # Diffusers records stock Diffusers/Transformers classes by top-level library, not module path.
+            top_level_library = expected_library.partition(".")[0]
+            if top_level_library in LOADABLE_CLASSES:
+                expected_library = top_level_library
             if [library, class_name] != [expected_library, expected_name]:
                 raise Object3DLoadingError(
                     f"Diffusers component {component.name!r} declares {(library, class_name)!r}; "

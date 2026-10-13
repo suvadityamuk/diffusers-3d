@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import json
 
+import pytest
 import torch
 from diffusers import ConfigMixin, DiffusionPipeline, ModelMixin, ModularPipeline
+from safetensors.torch import load_file, save_file
 
 import diffusers_3d
 from diffusers_3d import (
@@ -12,6 +14,7 @@ from diffusers_3d import (
     OBJECT3D_SCHEMA_VERSION,
     ModularObject3DPipeline,
     Object3DKind,
+    Object3DLoadingError,
     Object3DModel,
     Object3DModelIndex,
     Object3DPipeline,
@@ -52,6 +55,16 @@ def test_tiny_exact_model_config_and_weights_round_trip(tmp_path, tiny_model_cla
     assert loaded.config.hidden_size == 3
     torch.testing.assert_close(loaded(inputs), expected)
     assert loaded.object3d_metadata() == model.object3d_metadata()
+
+
+def test_loading_a_checkpoint_without_every_weight_raises(tmp_path, tiny_model_class):
+    model = tiny_model_class(hidden_size=3)
+    model.save_pretrained(tmp_path)
+    weights = tmp_path / "diffusion_pytorch_model.safetensors"
+    save_file({"projection.weight": load_file(weights)["projection.weight"]}, weights)
+
+    with pytest.raises(Object3DLoadingError, match=r"projection\.bias"):
+        tiny_model_class.from_pretrained(tmp_path)
 
 
 def test_componentless_pipeline_preserves_diffusers_save_and_writes_sidecar(

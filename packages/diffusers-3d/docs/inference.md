@@ -19,23 +19,23 @@ Converted checkpoints are published on the Hub, so the usual path is to load one
 
 | Repository | Pipeline | Contents |
 |---|---|---|
-| `suvadityamuk/TRELLIS-image-large-diffusers-3d` | `TrellisImageTo3DPipeline` | every component, DINOv2 conditioner included |
-| `suvadityamuk/TRELLIS-text-large-diffusers-3d` | `TrellisTextTo3DPipeline` | every component, CLIP conditioner included |
-| `suvadityamuk/TRELLIS.2-4B-diffusers-3d` | `Trellis2ImageTo3DPipeline` | every component except the gated DINOv3 conditioner |
+| `suvadityamuk/TRELLIS-image-large-diffusers-3d` | `TrellisImageTo3DPipeline` | every component, DINOv2 image encoder included |
+| `suvadityamuk/TRELLIS-text-large-diffusers-3d` | `TrellisTextTo3DPipeline` | every component, CLIP text encoder and tokenizer included |
+| `suvadityamuk/TRELLIS.2-4B-diffusers-3d` | `Trellis2ImageTo3DPipeline` | every component except the gated DINOv3 image encoder |
 
 `scripts/publish_hub_checkpoints.py` produced them with the converters below, so converting yourself gives the same
 result. Official TRELLIS.2 releases are not in the Diffusers layout; the packaged CLI translates one, pointing at the
-release's `pipeline.json` directory and at a locally downloaded DINOv3 conditioner (the production weights are gated
-on the Hub under the DINOv3 License and are not redistributed):
+release's `pipeline.json` directory and at the DINOv3 image encoder, a downloaded folder or its Hub id (the
+production weights are gated on the Hub under the DINOv3 License and are not redistributed):
 
 ```bash
 diffusers-3d-convert-trellis2 /path/to/TRELLIS.2-release /path/to/trellis2 \
-    --conditioner-path /path/to/dinov3-vitl16-pretrain-lvd1689m
+    --image-encoder-path /path/to/dinov3-vitl16-pretrain-lvd1689m
 ```
 
 The output is a standard Diffusers pipeline directory (`model_index.json` plus one subfolder per component) with an
 extra `object3d_model_index.json` sidecar. The sidecar records the exact class of each component and which ones are
-eligible for automatic loading. Every released component is converted: the DINOv3 conditioner, the sparse-structure
+eligible for automatic loading. Every released component is converted: the DINOv3 image encoder, the sparse-structure
 flow and decoder, the 512 and 1024 shape and texture SLAT flows, and the shape (dual-grid) and PBR decoders. A
 `trellis2_conversion.json` report in the output directory lists what was written.
 
@@ -43,22 +43,24 @@ flow and decoder, the 512 and 1024 shape and texture SLAT flows, and the shape (
 
 ```python
 import torch
-from diffusers_3d import AutoPipelineForImageTo3D, Trellis2Dinov3Conditioner
+from transformers import DINOv3ViTModel
 
-# The published TRELLIS.2 repository leaves out the gated DINOv3 conditioner; accept its license on the Hub and pass it in.
-conditioner = Trellis2Dinov3Conditioner.from_dinov3_pretrained("facebook/dinov3-vitl16-pretrain-lvd1689m")
+from diffusers_3d import AutoPipelineForImageTo3D
+
+# The published TRELLIS.2 repository leaves out the gated DINOv3 image encoder; accept its license on the Hub and pass it in.
+image_encoder = DINOv3ViTModel.from_pretrained("facebook/dinov3-vitl16-pretrain-lvd1689m")
 pipeline = AutoPipelineForImageTo3D.from_pretrained(
-    "suvadityamuk/TRELLIS.2-4B-diffusers-3d", conditioner=conditioner, dtype=torch.bfloat16
+    "suvadityamuk/TRELLIS.2-4B-diffusers-3d", image_encoder=image_encoder, dtype=torch.bfloat16
 )
 pipeline = pipeline.to("cuda")
-# A locally converted folder loads the same way and needs no conditioner argument:
+# A locally converted folder loads the same way and needs no image_encoder argument:
 # pipeline = AutoPipelineForImageTo3D.from_pretrained("/path/to/trellis2", dtype=torch.bfloat16)
 ```
 
 `AutoPipelineForImageTo3D` reads the sidecar, checks every component class against the installed package, downloads
 only eligible component folders (for Hub IDs), and instantiates the concrete class with remote code disabled.
 `revision`, `cache_dir`, `token`, `local_files_only`, and `subfolder` are accepted. Keyword arguments named after
-declared components (`conditioner=...`) supply that component as an object: its subfolder is neither downloaded nor
+declared components (`image_encoder=...`) supply that component as an object: its subfolder is neither downloaded nor
 required, and its exact class is still checked. `trust_remote_code=True` is an error; reviewed families never need it.
 
 The concrete class works too:
@@ -88,8 +90,8 @@ condition = ImageCondition(image=pixels.permute(2, 0, 1) / 255.0)
 ```
 
 If alpha (or `mask`) is present, the pipeline applies the released TRELLIS.2 preprocessing exactly: quantize to
-uint8, crop to `alpha > 0.8 * 255`, recenter, premultiply on black, LANCZOS-resize to the conditioner size. Plain RGB is
-treated as an already background-removed frame. The pipeline never runs a background remover on your behalf.
+uint8, crop to `alpha > 0.8 * 255`, recenter, premultiply on black, LANCZOS-resize to the pipeline `image_size`. Plain
+RGB is treated as an already background-removed frame. The pipeline never runs a background remover on your behalf.
 
 A bare tensor is also accepted and is wrapped in an `ImageCondition` for you. Pass a list to batch several images.
 
@@ -210,22 +212,21 @@ it in plain PyTorch. For a textured GLB like upstream's `to_glb`, pass the mesh 
 `TrellisTextTo3DPipeline` (`microsoft/TRELLIS-text-*`) takes prompts or `TextCondition` values instead of
 images and shares everything else. Both are published converted (`suvadityamuk/TRELLIS-image-large-diffusers-3d`,
 `suvadityamuk/TRELLIS-text-large-diffusers-3d`) and load with `AutoPipelineForImageTo3D` / `AutoPipelineForTextTo3D`
-without any extra argument. To convert official checkpoints yourself use `diffusers-3d-convert-trellis`, which takes the
-same arguments as the TRELLIS.2 converter. Its `--conditioner-path` is the released `dinov2_vitl14_reg`, published on
-the Hub as `facebook/dinov2-with-registers-large` (or `openai/clip-vit-large-patch14` for the text pipelines):
+without any extra argument. Their encoders are stock Transformers components: `image_encoder` is a
+`Dinov2WithRegistersModel` and the text pipeline has a `CLIPTextModel` `text_encoder` and a `CLIPTokenizer` `tokenizer`.
+To convert official checkpoints yourself use `diffusers-3d-convert-trellis`. Its `--encoder-path` is a Hub id or folder of
+the released encoder: `facebook/dinov2-with-registers-large` (the released `dinov2_vitl14_reg`), or
+`openai/clip-vit-large-patch14` for the text pipelines:
 
 ```bash
 hf download microsoft/TRELLIS-image-large --local-dir /path/to/TRELLIS-image-large
-hf download facebook/dinov2-with-registers-large --local-dir /path/to/dinov2-with-registers-large
-diffusers-3d-convert-trellis \
-    --source-directory /path/to/TRELLIS-image-large \
-    --output-directory /path/to/trellis-diffusers \
-    --conditioner-path /path/to/dinov2-with-registers-large
+diffusers-3d-convert-trellis /path/to/TRELLIS-image-large /path/to/trellis-diffusers \
+    --encoder-path facebook/dinov2-with-registers-large
 ```
 
 ## What is and is not covered
 
-Every network in both families (conditioners, sparse-structure flows and decoders, SLAT flows, the Gaussian, mesh, and
+Every network in both families (image and text encoders, sparse-structure flows and decoders, SLAT flows, the Gaussian, mesh, and
 radiance-field decoders, and the shape and PBR decoders) runs in plain PyTorch on any device. Sparse convolutions, pooling, subdivision, and
 windowed attention are implemented in `families/trellis/sparse_ops.py` and checked numerically against the pinned
 upstream code with tiny weights, with the upstream CUDA kernels (`spconv`, FlexGEMM, `xformers`) replaced by dense

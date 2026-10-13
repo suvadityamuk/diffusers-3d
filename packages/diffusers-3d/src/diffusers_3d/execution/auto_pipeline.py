@@ -145,9 +145,9 @@ class AutoPipelineFor3D:
     ) -> Object3DPipeline | ModularObject3DPipeline:
         """Load only exact reviewed installed classes from a validated local snapshot.
 
-        Keyword arguments named after declared components (``conditioner=...``) supply those components as objects,
+        Keyword arguments named after declared components (``image_encoder=...``) supply those components as objects,
         the way ``DiffusionPipeline.from_pretrained`` accepts them; their subfolders are neither downloaded nor
-        required. Use this for components whose weights are distributed separately, such as gated conditioners.
+        required. Use this for components whose weights are distributed separately, such as gated image encoders.
         """
 
         if trust_remote_code:

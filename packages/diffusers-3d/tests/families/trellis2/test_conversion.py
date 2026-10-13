@@ -4,7 +4,7 @@ import json
 
 import pytest
 import torch
-from safetensors.torch import save_file
+from safetensors.torch import load_file, save_file
 
 from diffusers_3d import (
     AutoPipelineForImageTo3D,
@@ -13,7 +13,7 @@ from diffusers_3d import (
     Trellis2ImageTo3DPipeline,
     Trellis2SLatFlowModel,
 )
-from diffusers_3d.families.trellis2.conversion import convert_trellis2_checkpoint
+from diffusers_3d.families.trellis2.conversion import _load_image_encoder, convert_trellis2_checkpoint
 
 pytestmark = pytest.mark.integration
 
@@ -52,7 +52,7 @@ def _pipeline_config():
                 "name": "DinoV3FeatureExtractor",
                 "args": {
                     "model_name": "facebook/dinov3-vitl16-pretrain-lvd1689m",
-                    "image_size": 512,
+                    "image_size": 8,
                 },
             },
             "models": {
@@ -79,7 +79,7 @@ def test_synthetic_full_conversion_auto_loads_and_runs_every_stage(tmp_path, tin
     source = tmp_path / "source"
     source.mkdir()
     (
-        conditioner,
+        image_encoder,
         flow,
         decoder,
         _,
@@ -106,19 +106,15 @@ def test_synthetic_full_conversion_auto_loads_and_runs_every_stage(tmp_path, tin
     ):
         _write_component(source, stem, upstream_name, model)
     (source / "pipeline.json").write_text(json.dumps(_pipeline_config()), encoding="utf-8")
-    conditioner.save_pretrained(tmp_path / "conditioner")
+    image_encoder.save_pretrained(tmp_path / "dinov3")
 
-    output = convert_trellis2_checkpoint(
-        source,
-        tmp_path / "converted",
-        conditioner_path=tmp_path / "conditioner",
-    )
+    output = convert_trellis2_checkpoint(source, tmp_path / "converted", image_encoder_path=str(tmp_path / "dinov3"))
     report = json.loads((output / "trellis2_conversion.json").read_text(encoding="utf-8"))
     model_index = json.loads((output / "model_index.json").read_text(encoding="utf-8"))
     sidecar = json.loads((output / "object3d_model_index.json").read_text(encoding="utf-8"))
     assert sidecar["schema_version"] == 2
     expected_components = {
-        "conditioner",
+        "image_encoder",
         "pbr_decoder",
         "shape_slat_decoder",
         "shape_slat_flow_model",
@@ -133,9 +129,10 @@ def test_synthetic_full_conversion_auto_loads_and_runs_every_stage(tmp_path, tin
     }
     assert {component["name"] for component in sidecar["components"]} == expected_components
     for component in sidecar["components"]:
-        assert model_index[component["name"]] == component["expected_class"].rsplit(".", 1)
+        if component["name"] != "image_encoder":
+            assert model_index[component["name"]] == component["expected_class"].rsplit(".", 1)
     assert set(report["components"]) == expected_components - {
-        "conditioner",
+        "image_encoder",
         "shape_slat_scheduler",
         "sparse_structure_scheduler",
         "texture_slat_scheduler",
@@ -144,8 +141,14 @@ def test_synthetic_full_conversion_auto_loads_and_runs_every_stage(tmp_path, tin
     assert report["samplers"]["sparse_structure_sampler"]["guidance_rescale"] == 0.7
     assert not report["production_gpu_quality_verified"]
 
+    assert model_index["image_encoder"] == ["transformers", "DINOv3ViTModel"]
+    assert model_index["image_size"] == 8
+
     loaded = AutoPipelineForImageTo3D.from_pretrained(output, local_files_only=True)
     assert type(loaded) is Trellis2ImageTo3DPipeline
+    assert not loaded.image_encoder.training
+    for key, value in image_encoder.state_dict().items():
+        assert torch.equal(loaded.image_encoder.state_dict()[key], value)
     assert loaded.config.default_pipeline_type == "1024_cascade"
     assert loaded.config.shape_slat_mean == [0.0] * 4
     assert loaded.config.sparse_structure_sampler_defaults["guidance_rescale"] == 0.7
@@ -173,7 +176,7 @@ def test_synthetic_full_conversion_auto_loads_and_runs_every_stage(tmp_path, tin
 def test_synthetic_sparse_structure_only_conversion_is_allowed(tmp_path, tiny_trellis2_components):
     source = tmp_path / "source"
     source.mkdir()
-    conditioner, flow, decoder, _ = tiny_trellis2_components()
+    image_encoder, flow, decoder, _ = tiny_trellis2_components()
     _write_component(source, "ss_flow", "SparseStructureFlowModel", flow)
     _write_component(source, "ss_decoder", "SparseStructureDecoder", decoder)
     config = _pipeline_config()
@@ -183,14 +186,9 @@ def test_synthetic_sparse_structure_only_conversion_is_allowed(tmp_path, tiny_tr
     }
     config["args"]["default_pipeline_type"] = "512"
     (source / "pipeline.json").write_text(json.dumps(config), encoding="utf-8")
-    # A raw Transformers DINOv3 folder (what ``hf download facebook/dinov3-...`` produces) is accepted directly.
-    conditioner.model.save_pretrained(tmp_path / "dinov3")
+    image_encoder.save_pretrained(tmp_path / "dinov3")
 
-    output = convert_trellis2_checkpoint(
-        source,
-        tmp_path / "converted",
-        conditioner_path=tmp_path / "dinov3",
-    )
+    output = convert_trellis2_checkpoint(source, tmp_path / "converted", image_encoder_path=tmp_path / "dinov3")
     report = json.loads((output / "trellis2_conversion.json").read_text(encoding="utf-8"))
     model_index = json.loads((output / "model_index.json").read_text(encoding="utf-8"))
     assert set(report["components"]) == {"sparse_structure_decoder", "sparse_structure_flow_model"}
@@ -211,16 +209,16 @@ def test_converter_rejects_component_drift(tmp_path, tiny_trellis2_components):
     config["args"]["models"]["unknown_model"] = "nope"
     (source / "pipeline.json").write_text(json.dumps(config), encoding="utf-8")
     with pytest.raises(ValueError, match="unknown=.*unknown_model"):
-        convert_trellis2_checkpoint(source, tmp_path / "converted", conditioner_path=tmp_path / "conditioner")
+        convert_trellis2_checkpoint(source, tmp_path / "converted", image_encoder_path=tmp_path / "dinov3")
 
     config = _pipeline_config()
     del config["args"]["models"]["sparse_structure_decoder"]
     (source / "pipeline.json").write_text(json.dumps(config), encoding="utf-8")
     with pytest.raises(ValueError, match="missing=.*sparse_structure_decoder"):
-        convert_trellis2_checkpoint(source, tmp_path / "converted", conditioner_path=tmp_path / "conditioner")
+        convert_trellis2_checkpoint(source, tmp_path / "converted", image_encoder_path=tmp_path / "dinov3")
 
     # A weight file whose layout does not match its descriptor is rejected instead of partially loaded.
-    conditioner, flow, decoder, _ = tiny_trellis2_components()
+    image_encoder, flow, decoder, _ = tiny_trellis2_components()
     config = _pipeline_config()
     config["args"]["models"] = {"sparse_structure_flow_model": "ss_flow", "sparse_structure_decoder": "ss_decoder"}
     (source / "pipeline.json").write_text(json.dumps(config), encoding="utf-8")
@@ -228,9 +226,16 @@ def test_converter_rejects_component_drift(tmp_path, tiny_trellis2_components):
     _write_component(source, "ss_decoder", "SparseStructureDecoder", decoder)
     (source / "ss_decoder.json").write_text(json.dumps({"name": "SLatFlowModel", "args": dict(decoder.config)}))
     with pytest.raises(ValueError, match="unsupported TRELLIS.2 model 'SLatFlowModel'"):
-        convert_trellis2_checkpoint(source, tmp_path / "converted", conditioner_path=tmp_path / "conditioner")
+        convert_trellis2_checkpoint(source, tmp_path / "converted", image_encoder_path=tmp_path / "dinov3")
     _write_component(source, "ss_decoder", "SparseStructureDecoder", decoder)
     state = {key: value for key, value in flow.state_dict().items() if "blocks.1" not in key}
     save_file({key: value.detach().contiguous() for key, value in state.items()}, source / "ss_flow.safetensors")
     with pytest.raises(RuntimeError, match="Missing key"):
-        convert_trellis2_checkpoint(source, tmp_path / "converted", conditioner_path=tmp_path / "conditioner")
+        convert_trellis2_checkpoint(source, tmp_path / "converted", image_encoder_path=tmp_path / "dinov3")
+
+    image_encoder.save_pretrained(tmp_path / "dinov3")
+    weights = load_file(tmp_path / "dinov3" / "model.safetensors")
+    weights.pop("norm.weight")
+    save_file(weights, tmp_path / "dinov3" / "model.safetensors", metadata={"format": "pt"})
+    with pytest.raises(ValueError, match="DINOv3 weights do not match"):
+        _load_image_encoder(tmp_path / "dinov3")

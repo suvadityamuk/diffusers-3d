@@ -9,7 +9,6 @@ def trellis_execution_registrations(
 ) -> tuple[tuple[Any, ...], tuple[Any, ...]]:
     """Register the image and text pipelines and every reviewed component (sparse structure, SLAT, three decoders)."""
 
-    from .conditioner import TrellisDinov2Conditioner
     from .decoders import (
         TrellisSLatGaussianDecoder,
         TrellisSLatMeshDecoder,
@@ -18,7 +17,6 @@ def trellis_execution_registrations(
     )
     from .models import TrellisSLatFlowModel, TrellisSparseStructureFlowModel
     from .pipeline import TrellisImageTo3DPipeline, TrellisTextTo3DPipeline
-    from .text_conditioner import TrellisClipTextConditioner
 
     models = (
         TrellisSparseStructureFlowModel,
@@ -27,8 +25,6 @@ def trellis_execution_registrations(
         TrellisSLatGaussianDecoder,
         TrellisSLatMeshDecoder,
         TrellisSLatRadianceFieldDecoder,
-        TrellisDinov2Conditioner,
-        TrellisClipTextConditioner,
     )
     return (
         tuple(model_registration_type(model_type, model_type.object3d_metadata()) for model_type in models),

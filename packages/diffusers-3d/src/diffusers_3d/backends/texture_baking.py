@@ -86,6 +86,35 @@ def _radical_inverse_base2(index: int) -> float:
     return result
 
 
+def pixel_barycentrics(
+    triangles: torch.Tensor, lower: torch.Tensor, upper: torch.Tensor
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+    """Barycentric weights of every pixel centre in the ``[lower, upper)`` box of each ``(F, 3, 2)`` pixel triangle.
+
+    Coordinates are ``(column, row)`` with pixel centres at ``+ 0.5``. Returns the triangle, column, and row of
+    every pair, triangle-major, and its ``(T, 3)`` weights (which may be negative); degenerate triangles are skipped.
+    """
+
+    extent = (upper - lower).clamp(min=0)
+    counts = extent[:, 0] * extent[:, 1]
+    face = torch.repeat_interleave(torch.arange(triangles.shape[0], device=triangles.device), counts)
+    offsets = torch.arange(face.shape[0], device=triangles.device) - torch.repeat_interleave(
+        torch.cumsum(counts, dim=0) - counts, counts
+    )
+    width = extent[face, 0]
+    column = lower[face, 0] + offsets % width
+    row = lower[face, 1] + offsets // width
+    a, b, c = triangles[face].unbind(dim=1)
+    v0, v1, v2 = b - a, c - a, torch.stack([column, row], dim=1).to(triangles.dtype) + 0.5 - a
+    denominator = v0[:, 0] * v1[:, 1] - v1[:, 0] * v0[:, 1]
+    valid = denominator.abs() > 1e-12
+    denominator = torch.where(valid, denominator, torch.ones_like(denominator))
+    w1 = (v2[:, 0] * v1[:, 1] - v1[:, 0] * v2[:, 1]) / denominator
+    w2 = (v0[:, 0] * v2[:, 1] - v2[:, 0] * v0[:, 1]) / denominator
+    weights = torch.stack([1.0 - w1 - w2, w1, w2], dim=1)
+    return face[valid], column[valid], row[valid], weights[valid]
+
+
 def rasterize_uv_atlas(mesh: MeshAsset, texture_size: int, *, chunk_faces: int = 65536) -> TexelSurface:
     """Find the surface point under every texel centre covered by a face of the UV atlas.
 
@@ -105,43 +134,21 @@ def rasterize_uv_atlas(mesh: MeshAsset, texture_size: int, *, chunk_faces: int =
     )
     texel_index, positions, normals = [], [], []
     for start in range(0, mesh.faces.shape[0], chunk_faces):
-        faces = mesh.faces[start : start + chunk_faces]
-        tri_uv = uv_pixels[faces]  # (f, 3, 2)
+        tri_uv = uv_pixels[mesh.faces[start : start + chunk_faces]]  # (f, 3, 2)
         lower = tri_uv.amin(dim=1).floor().clamp(min=0).to(torch.int64)
         upper = (tri_uv.amax(dim=1).ceil().to(torch.int64)).clamp(max=texture_size)
-        extent = (upper - lower).clamp(min=0)  # (f, 2) columns, rows
-        counts = extent[:, 0] * extent[:, 1]
-        if int(counts.sum()) == 0:
-            continue
-        face_of_pair = torch.repeat_interleave(torch.arange(faces.shape[0], device=device), counts)
-        offsets = torch.arange(int(counts.sum()), device=device) - torch.repeat_interleave(
-            torch.cumsum(counts, dim=0) - counts, counts
-        )
-        width = extent[face_of_pair, 0]
-        column = lower[face_of_pair, 0] + offsets % width
-        row = lower[face_of_pair, 1] + offsets // width
-        point = torch.stack([column, row], dim=1).to(tri_uv.dtype) + 0.5
-        a, b, c = tri_uv[face_of_pair, 0], tri_uv[face_of_pair, 1], tri_uv[face_of_pair, 2]
-        v0, v1, v2 = b - a, c - a, point - a
-        denominator = v0[:, 0] * v1[:, 1] - v1[:, 0] * v0[:, 1]
-        valid = denominator.abs() > 1e-12
-        denominator = torch.where(valid, denominator, torch.ones_like(denominator))
-        w1 = (v2[:, 0] * v1[:, 1] - v1[:, 0] * v2[:, 1]) / denominator
-        w2 = (v0[:, 0] * v2[:, 1] - v2[:, 0] * v0[:, 1]) / denominator
-        w0 = 1.0 - w1 - w2
+        face_of_pair, column, row, weights = pixel_barycentrics(tri_uv, lower, upper)
         # Slightly negative weights keep texels whose centre sits just outside a face edge (conservative fill).
-        epsilon = -1e-3
-        inside = valid & (w0 >= epsilon) & (w1 >= epsilon) & (w2 >= epsilon)
-        inside &= (column >= 0) & (column < texture_size) & (row >= 0) & (row < texture_size)
+        inside = (weights >= -1e-3).all(dim=1)
         if not bool(inside.any()):
             continue
-        face_of_pair, w0, w1, w2 = face_of_pair[inside], w0[inside], w1[inside], w2[inside]
-        weights = torch.stack([w0, w1, w2], dim=1).clamp(min=0)
+        face_of_pair, column, row = face_of_pair[inside], column[inside], row[inside]
+        weights = weights[inside].clamp(min=0)
         weights = weights / weights.sum(dim=1, keepdim=True)
         corners = triangles_xyz[start + face_of_pair]  # (t, 3, 3)
         positions.append((weights.unsqueeze(-1) * corners).sum(dim=1))
         normals.append(face_normals[start + face_of_pair])
-        texel_index.append(row[inside] * texture_size + column[inside])
+        texel_index.append(row * texture_size + column)
     if not texel_index:
         raise ValueError("the UV atlas covers no texel; increase texture_size or check the uvs")
     texel_index = torch.cat(texel_index)
@@ -261,4 +268,11 @@ def fill_texture(
     return texture[0].permute(1, 2, 0).clamp(0, 1).contiguous()
 
 
-__all__ = ["TexelSurface", "bake_texture", "fill_texture", "rasterize_uv_atlas", "sphere_hammersley_cameras"]
+__all__ = [
+    "TexelSurface",
+    "bake_texture",
+    "fill_texture",
+    "pixel_barycentrics",
+    "rasterize_uv_atlas",
+    "sphere_hammersley_cameras",
+]

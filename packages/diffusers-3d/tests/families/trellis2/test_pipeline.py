@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import shutil
+
 import pytest
 import torch
 import torch.nn.functional as F
@@ -9,6 +11,7 @@ from diffusers_3d import (
     CoordinateSystem,
     ImageCondition,
     MeshAsset,
+    Object3DLoadingError,
     Object3DPipelineOutput,
     OVoxelAsset,
     SparseVoxelAsset,
@@ -126,6 +129,21 @@ def test_pipeline_save_load_auto_and_serialized_capability_limitations(
         "official_full_checkpoint_parity": False,
         "production_gpu_quality_verified": False,
     }
+    images = torch.rand(2, 3, 8, 8)
+    with torch.no_grad():
+        expected = tiny_trellis2_pipeline.encode_image(images)
+        assert torch.equal(loaded.encode_image(images), expected)
+
+    # A published pipeline leaves out the gated DINOv3 weights; they are passed in at load time.
+    shutil.rmtree(tmp_path / "sparse" / "image_encoder")
+    with pytest.raises(Object3DLoadingError, match="image_encoder"):
+        AutoPipelineForImageTo3D.from_pretrained(tmp_path / "sparse", local_files_only=True)
+    supplied = AutoPipelineForImageTo3D.from_pretrained(
+        tmp_path / "sparse", local_files_only=True, image_encoder=loaded.image_encoder
+    )
+    assert supplied.image_encoder is loaded.image_encoder
+    with torch.no_grad():
+        assert torch.equal(supplied.encode_image(images), expected)
 
     tiny_trellis2_full_pipeline.save_pretrained(tmp_path / "full")
     full = AutoPipelineForImageTo3D.from_pretrained(tmp_path / "full", local_files_only=True)

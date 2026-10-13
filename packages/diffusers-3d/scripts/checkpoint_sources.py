@@ -6,23 +6,24 @@ Shared by ``gpu_smoke.py`` and ``publish_hub_checkpoints.py``. Conversions are c
 from __future__ import annotations
 
 import json
+import shutil
 from pathlib import Path
 
 RELEASES = {
     "trellis-image": {
         "source": "microsoft/TRELLIS-image-large",
-        "conditioner": "facebook/dinov2-with-registers-large",
-        "conditioner_patterns": None,
+        "encoder": "facebook/dinov2-with-registers-large",
+        "encoder_patterns": None,
     },
     "trellis-text": {
         "source": "microsoft/TRELLIS-text-large",
-        "conditioner": "openai/clip-vit-large-patch14",
-        "conditioner_patterns": ["*.json", "*.txt", "model.safetensors"],
+        "encoder": "openai/clip-vit-large-patch14",
+        "encoder_patterns": ["*.json", "*.txt", "model.safetensors"],
     },
     "trellis2": {
         "source": "microsoft/TRELLIS.2-4B",
-        "conditioner": "facebook/dinov3-vitl16-pretrain-lvd1689m",
-        "conditioner_patterns": None,
+        "encoder": "facebook/dinov3-vitl16-pretrain-lvd1689m",
+        "encoder_patterns": None,
     },
 }
 
@@ -56,19 +57,20 @@ def convert_release(name: str, work: Path) -> Path:
 
     release = RELEASES[name]
     target = work / "converted" / name
-    if (target / "model_index.json").is_file():
+    if (target / "model_index.json").is_file() and not (target / "conditioner").exists():
         return target
+    shutil.rmtree(target, ignore_errors=True)
     source = download(release["source"], work)
     materialize_shared_components(source)
-    conditioner = download(release["conditioner"], work, release["conditioner_patterns"])
+    encoder = download(release["encoder"], work, release["encoder_patterns"])
     if name == "trellis2":
         from diffusers_3d.families.trellis2.conversion import convert_trellis2_checkpoint
 
-        convert_trellis2_checkpoint(source, target, conditioner_path=conditioner)
+        convert_trellis2_checkpoint(source, target, image_encoder_path=encoder)
     else:
         from diffusers_3d.families.trellis.conversion import convert_trellis_checkpoint
 
-        convert_trellis_checkpoint(source, target, conditioner_path=conditioner)
+        convert_trellis_checkpoint(source, target, encoder_path=encoder)
     return target
 
 

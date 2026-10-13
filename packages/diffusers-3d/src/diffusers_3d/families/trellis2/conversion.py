@@ -12,8 +12,8 @@ from typing import Any
 import torch
 from diffusers import __version__ as diffusers_version
 from safetensors.torch import load_file
+from transformers import DINOv3ViTModel
 
-from .conditioner import Trellis2Dinov3Conditioner
 from .decoders import Trellis2PBRSparseDecoder, Trellis2ShapeDualGridDecoder, Trellis2SparseStructureDecoder
 from .models import Trellis2SLatFlowModel, Trellis2SparseStructureFlowModel
 from .pipeline import Trellis2ImageTo3DPipeline
@@ -126,12 +126,13 @@ def _save_component(
     return model_type, model_config
 
 
-def _load_conditioner(path: Path) -> Trellis2Dinov3Conditioner:
-    """Accept a saved ``Trellis2Dinov3Conditioner`` folder or a raw Transformers DINOv3 checkpoint folder."""
-
-    if _load_json(path / "config.json").get("model_type") == "dinov3_vit":
-        return Trellis2Dinov3Conditioner.from_dinov3_pretrained(str(path), local_files_only=True)
-    return Trellis2Dinov3Conditioner.from_pretrained(path, local_files_only=True)
+def _load_image_encoder(pretrained_model_name_or_path: str | Path) -> DINOv3ViTModel:
+    image_encoder, loading_info = DINOv3ViTModel.from_pretrained(
+        pretrained_model_name_or_path, output_loading_info=True
+    )
+    if any(loading_info[name] for name in ("missing_keys", "unexpected_keys", "mismatched_keys")):
+        raise ValueError(f"the DINOv3 weights do not match its config: {loading_info}")
+    return image_encoder.eval()
 
 
 def _validate_sampler(value: object, *, name: str) -> tuple[float, dict[str, Any]]:
@@ -194,7 +195,7 @@ def convert_trellis2_checkpoint(
     source_directory: str | Path,
     output_directory: str | Path,
     *,
-    conditioner_path: str | Path,
+    image_encoder_path: str | Path,
     safe_serialization: bool = True,
 ) -> Path:
     """Convert a released TRELLIS.2 ``pipeline.json`` plus component pairs into a Diffusers pipeline folder.
@@ -203,7 +204,8 @@ def convert_trellis2_checkpoint(
     SLAT flow models and decoders are optional (a pipeline without them only produces sparse structures).
     Component references are resolved relative to ``source_directory`` and then as-is, so cross-repository
     references such as the TRELLIS image-large sparse-structure decoder work once that file pair is present.
-    ``conditioner_path`` may be a saved conditioner or a downloaded ``facebook/dinov3-*`` checkpoint folder.
+    ``image_encoder_path`` is a Transformers DINOv3 folder or Hub id, such as
+    ``facebook/dinov3-vitl16-pretrain-lvd1689m``.
     """
 
     source = Path(source_directory)
@@ -251,9 +253,8 @@ def convert_trellis2_checkpoint(
             "config": model_config,
         }
 
-    conditioner = _load_conditioner(Path(conditioner_path))
-    conditioner.save_pretrained(destination / "conditioner", safe_serialization=safe_serialization)
-    component_index["conditioner"] = [Trellis2Dinov3Conditioner.__module__, Trellis2Dinov3Conditioner.__name__]
+    _load_image_encoder(image_encoder_path).save_pretrained(destination / "image_encoder")
+    component_index["image_encoder"] = ["transformers", "DINOv3ViTModel"]
 
     sampler_values = {}
     for source_name, output_name, required_component in (
@@ -299,6 +300,7 @@ def convert_trellis2_checkpoint(
         "texture_slat_mean": texture_mean,
         "texture_slat_std": texture_std,
         "default_pipeline_type": default_pipeline_type,
+        "image_size": int(image_model["args"].get("image_size", 512)),
         "sparse_structure_sampler_defaults": sampler_values["sparse_structure_sampler"],
         "shape_slat_sampler_defaults": sampler_values["shape_slat_sampler"],
         "texture_slat_sampler_defaults": sampler_values["tex_slat_sampler"],
@@ -336,13 +338,13 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("source_directory", type=Path)
     parser.add_argument("output_directory", type=Path)
-    parser.add_argument("--conditioner-path", type=Path, required=True)
+    parser.add_argument("--image-encoder-path", required=True, help="Transformers DINOv3 folder or Hub id")
     parser.add_argument("--no-safe-serialization", action="store_true")
     args = parser.parse_args(argv)
     convert_trellis2_checkpoint(
         args.source_directory,
         args.output_directory,
-        conditioner_path=args.conditioner_path,
+        image_encoder_path=args.image_encoder_path,
         safe_serialization=not args.no_safe_serialization,
     )
     return 0

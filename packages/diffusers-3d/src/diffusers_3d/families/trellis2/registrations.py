@@ -9,7 +9,6 @@ def trellis2_execution_registrations(
 ) -> tuple[tuple[Any, ...], tuple[Any, ...]]:
     """Register the schema-v2 pipeline and every reviewed component (sparse structure, SLAT, O-Voxel decoders)."""
 
-    from .conditioner import Trellis2Dinov3Conditioner
     from .decoders import Trellis2PBRSparseDecoder, Trellis2ShapeDualGridDecoder, Trellis2SparseStructureDecoder
     from .models import Trellis2SLatFlowModel, Trellis2SparseStructureFlowModel
     from .pipeline import Trellis2ImageTo3DPipeline
@@ -20,7 +19,6 @@ def trellis2_execution_registrations(
         Trellis2SLatFlowModel,
         Trellis2ShapeDualGridDecoder,
         Trellis2PBRSparseDecoder,
-        Trellis2Dinov3Conditioner,
     )
     return (
         tuple(model_registration_type(model_type, model_type.object3d_metadata()) for model_type in models),

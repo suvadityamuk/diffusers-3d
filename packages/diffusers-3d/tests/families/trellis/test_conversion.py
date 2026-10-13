@@ -5,18 +5,17 @@ import json
 import pytest
 import torch
 from safetensors.torch import save_file
-from transformers import Dinov2WithRegistersConfig, Dinov2WithRegistersModel
+from transformers import Dinov2Config, Dinov2Model
 
 from diffusers_3d import (
     AutoPipelineForImageTo3D,
-    TrellisDinov2Conditioner,
     TrellisImageTo3DPipeline,
     TrellisSLatFlowModel,
     TrellisSLatGaussianDecoder,
     TrellisSLatMeshDecoder,
     TrellisSLatRadianceFieldDecoder,
 )
-from diffusers_3d.families.trellis.conversion import convert_trellis_checkpoint
+from diffusers_3d.families.trellis.conversion import _load_encoders, convert_trellis_checkpoint
 
 pytestmark = pytest.mark.integration
 
@@ -67,7 +66,7 @@ def _pipeline_config(*, normalization_channels: int = 4):
 def test_synthetic_conversion_converts_slat_components_and_auto_loads(tmp_path, tiny_trellis_components):
     source = tmp_path / "source"
     source.mkdir()
-    conditioner, flow, decoder, _, slat_flow, _, gaussian_decoder, mesh_decoder, rf_decoder = tiny_trellis_components(
+    dinov2, flow, decoder, _, slat_flow, _, gaussian_decoder, mesh_decoder, rf_decoder = tiny_trellis_components(
         include_slat=True
     )
     _write_component(source, "ss_flow", "SparseStructureFlowModel", flow)
@@ -77,41 +76,21 @@ def test_synthetic_conversion_converts_slat_components_and_auto_loads(tmp_path, 
     _write_component(source, "slat_mesh", "SLatMeshDecoder", mesh_decoder)
     _write_component(source, "slat_rf", "SLatRadianceFieldDecoder", rf_decoder)
     (source / "pipeline.json").write_text(json.dumps(_pipeline_config()), encoding="utf-8")
-    # The released ``dinov2_vitl14_reg`` lives on the Hub as a Transformers ``Dinov2WithRegistersModel``; the
-    # converter accepts that folder directly and folds its register tokens into the conditioner.
-    dinov2 = Dinov2WithRegistersModel(
-        Dinov2WithRegistersConfig(
-            hidden_size=12,
-            num_hidden_layers=1,
-            num_attention_heads=3,
-            mlp_ratio=2,
-            image_size=8,
-            patch_size=4,
-            num_register_tokens=conditioner.num_register_tokens,
-        )
-    ).eval()
+    # The released ``dinov2_vitl14_reg`` lives on the Hub as a Transformers ``Dinov2WithRegistersModel``.
     dinov2.save_pretrained(tmp_path / "dinov2")
 
     output = convert_trellis_checkpoint(
         source,
         tmp_path / "converted",
-        conditioner_path=tmp_path / "dinov2",
+        encoder_path=tmp_path / "dinov2",
     )
     report = json.loads((output / "trellis_conversion.json").read_text(encoding="utf-8"))
     model_index = json.loads((output / "model_index.json").read_text(encoding="utf-8"))
     sidecar = json.loads((output / "object3d_model_index.json").read_text(encoding="utf-8"))
     assert sidecar["schema_version"] == 2
-    converted_conditioner = TrellisDinov2Conditioner.from_pretrained(output / "conditioner")
-    torch.testing.assert_close(converted_conditioner.register_tokens, dinov2.embeddings.register_tokens)
-    images = torch.rand(1, 3, 8, 8)
-    with torch.no_grad():
-        ours = converted_conditioner(images, value_range=None).embeddings
-        normalized = (images - converted_conditioner.image_mean) / converted_conditioner.image_std
-        # TRELLIS applies an unparameterized final norm instead of DINOv2's learned one: compare pre-norm tokens.
-        reference = dinov2.encoder(dinov2.embeddings(normalized)).last_hidden_state
-    torch.testing.assert_close(ours, torch.nn.functional.layer_norm(reference, (12,)))
+    assert model_index["image_encoder"] == ["transformers", "Dinov2WithRegistersModel"]
     assert {component["name"] for component in sidecar["components"]} == {
-        "conditioner",
+        "image_encoder",
         "gaussian_decoder",
         "mesh_decoder",
         "radiance_field_decoder",
@@ -123,7 +102,7 @@ def test_synthetic_conversion_converts_slat_components_and_auto_loads(tmp_path, 
     }
     for component in sidecar["components"]:
         value = model_index.get(component["name"], [None, None])
-        if value != [None, None]:
+        if value != [None, None] and component["name"] != "image_encoder":
             assert value == component["expected_class"].rsplit(".", 1)
     assert set(report["components"]) == {
         "sparse_structure_decoder",
@@ -145,22 +124,31 @@ def test_synthetic_conversion_converts_slat_components_and_auto_loads(tmp_path, 
     assert type(loaded.mesh_decoder) is TrellisSLatMeshDecoder
     assert type(loaded.radiance_field_decoder) is TrellisSLatRadianceFieldDecoder
     assert loaded.config.slat_mean == [0.0] * slat_flow.config.out_channels
+    for name, parameter in dinov2.state_dict().items():
+        assert torch.equal(loaded.image_encoder.state_dict()[name], parameter), name
+
+
+def test_converter_rejects_an_encoder_without_register_tokens(tmp_path):
+    config = Dinov2Config(image_size=8, patch_size=4, hidden_size=12, num_hidden_layers=1, num_attention_heads=3)
+    Dinov2Model(config).save_pretrained(tmp_path / "dinov2")
+    with pytest.raises(ValueError, match="does not match Dinov2WithRegistersModel"):
+        _load_encoders(str(tmp_path / "dinov2"), TrellisImageTo3DPipeline)
 
 
 def test_converter_requires_every_referenced_component_pair(tmp_path, tiny_trellis_components):
     source = tmp_path / "source"
     source.mkdir()
-    conditioner, flow, decoder, _ = tiny_trellis_components()
+    image_encoder, flow, decoder, _ = tiny_trellis_components()
     _write_component(source, "ss_flow", "SparseStructureFlowModel", flow)
     _write_component(source, "ss_decoder", "SparseStructureDecoder", decoder)
     (source / "pipeline.json").write_text(json.dumps(_pipeline_config()), encoding="utf-8")
-    conditioner.save_pretrained(tmp_path / "conditioner")
+    image_encoder.save_pretrained(tmp_path / "dinov2")
 
     with pytest.raises(FileNotFoundError, match="slat_flow"):
         convert_trellis_checkpoint(
             source,
             tmp_path / "converted",
-            conditioner_path=tmp_path / "conditioner",
+            encoder_path=tmp_path / "dinov2",
         )
 
 
@@ -174,5 +162,5 @@ def test_converter_strictly_rejects_pipeline_component_drift(tmp_path):
         convert_trellis_checkpoint(
             source,
             tmp_path / "converted",
-            conditioner_path=tmp_path / "conditioner",
+            encoder_path=tmp_path / "dinov2",
         )

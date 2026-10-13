@@ -8,13 +8,23 @@ version = "0.1.0.dev0"
 description = "Object-native 3D generation built on Diffusers"
 readme = "README.md"
 requires-python = ">=3.10"
-license = "Apache-2.0 AND MIT"
+license = "Apache-2.0 AND MIT AND LicenseRef-SAM-License AND LicenseRef-Tencent-Hunyuan-3D-2.1-Community"
 license-files = [
     "LICENSE-APACHE-2.0",
     "src/diffusers_3d/families/trellis/LICENSE-MIT",
     "src/diffusers_3d/families/trellis/NOTICE",
     "src/diffusers_3d/families/trellis2/LICENSE-MIT",
     "src/diffusers_3d/families/trellis2/NOTICE",
+    "src/diffusers_3d/families/triposg/LICENSE-MIT",
+    "src/diffusers_3d/families/triposg/NOTICE",
+    "src/diffusers_3d/families/sam3d_objects/LICENSE-SAM",
+    "src/diffusers_3d/families/sam3d_objects/NOTICE",
+    "src/diffusers_3d/families/step1x3d/LICENSE-APACHE-2.0",
+    "src/diffusers_3d/families/step1x3d/NOTICE",
+    "src/diffusers_3d/families/pixal3d/LICENSE-MIT",
+    "src/diffusers_3d/families/pixal3d/NOTICE",
+    "src/diffusers_3d/families/hunyuan3d/LICENSE-TENCENT-HUNYUAN-3D-2.1",
+    "src/diffusers_3d/families/hunyuan3d/NOTICE",
 ]
 authors = [{ name = "The Diffusers 3D contributors" }]
 classifiers = [
@@ -39,8 +49,13 @@ dependencies = [
 ]
 
 [project.scripts]
+diffusers-3d-convert-hunyuan3d = "diffusers_3d.families.hunyuan3d.conversion:main"
+diffusers-3d-convert-pixal3d = "diffusers_3d.families.pixal3d.conversion:main"
+diffusers-3d-convert-sam3d = "diffusers_3d.families.sam3d_objects.conversion:main"
+diffusers-3d-convert-step1x3d = "diffusers_3d.families.step1x3d.conversion:main"
 diffusers-3d-convert-trellis = "diffusers_3d.families.trellis.conversion:main"
 diffusers-3d-convert-trellis2 = "diffusers_3d.families.trellis2.conversion:main"
+diffusers-3d-convert-triposg = "diffusers_3d.families.triposg.conversion:main"
 diffusers-3d-report = "diffusers_3d.compatibility:main"
 
 [project.optional-dependencies]
@@ -53,6 +68,10 @@ gaussian = ["gsplat"]
 lora = ["peft>=0.17.0"]
 reference-test = [
     "einops",
+    "optree",
+    "scikit-image",
+    "timm",
+    "natten==0.21.0",
 ]
 test = [
     "build",
@@ -70,12 +89,27 @@ where = ["src"]
 [tool.setuptools.package-data]
 diffusers_3d = [
     "py.typed",
+    "families/hunyuan3d/*.md",
+    "families/hunyuan3d/LICENSE*",
+    "families/hunyuan3d/NOTICE",
+    "families/pixal3d/*.md",
+    "families/pixal3d/LICENSE*",
+    "families/pixal3d/NOTICE",
+    "families/sam3d_objects/*.md",
+    "families/sam3d_objects/LICENSE*",
+    "families/sam3d_objects/NOTICE",
+    "families/step1x3d/*.md",
+    "families/step1x3d/LICENSE*",
+    "families/step1x3d/NOTICE",
     "families/trellis/*.md",
     "families/trellis/LICENSE*",
     "families/trellis/NOTICE",
     "families/trellis2/*.md",
     "families/trellis2/LICENSE*",
     "families/trellis2/NOTICE",
+    "families/triposg/*.md",
+    "families/triposg/LICENSE*",
+    "families/triposg/NOTICE",
 ]
 
 [tool.pytest.ini_options]

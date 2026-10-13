@@ -12,8 +12,8 @@ from typing import Any
 import torch
 from diffusers import __version__ as diffusers_version
 from safetensors.torch import load_file
+from transformers import CLIPTextModel, CLIPTokenizer, Dinov2WithRegistersModel
 
-from .conditioner import TrellisDinov2Conditioner
 from .decoders import (
     TrellisSLatGaussianDecoder,
     TrellisSLatMeshDecoder,
@@ -23,7 +23,6 @@ from .decoders import (
 from .models import TrellisSLatFlowModel, TrellisSparseStructureFlowModel
 from .pipeline import TrellisImageTo3DPipeline, TrellisTextTo3DPipeline
 from .scheduler import TrellisFlowEulerScheduler
-from .text_conditioner import TrellisClipTextConditioner
 
 TRELLIS_REFERENCE_REVISION = "442aa1e1afb9014e80681d3bf604e8d728a86ee7"
 
@@ -53,7 +52,7 @@ _COMPONENT_TYPES = {
 }
 _UPSTREAM_COMPONENTS = set(_COMPONENT_TYPES)
 _SHARED_PIPELINE_ARGUMENTS = {"models", "slat_normalization", "slat_sampler", "sparse_structure_sampler"}
-# Upstream pipeline name -> (package pipeline, conditioner argument, released conditioner id)
+# Upstream pipeline name -> (package pipeline, upstream encoder argument, released encoder id)
 _PIPELINES = {
     "TrellisImageTo3DPipeline": (TrellisImageTo3DPipeline, "image_cond_model", "dinov2_vitl14_reg"),
     "TrellisTextTo3DPipeline": (TrellisTextTo3DPipeline, "text_cond_model", "openai/clip-vit-large-patch14"),
@@ -180,35 +179,34 @@ def _validate_normalization(value: object) -> tuple[list[float], list[float]]:
     return mean, std
 
 
-def _load_conditioner(path: Path, pipeline_type: type[Any]) -> TrellisDinov2Conditioner | TrellisClipTextConditioner:
-    """Accept a saved package conditioner folder or the matching raw Transformers checkpoint.
+def _load_encoder(model_type: type[Any], path: str) -> Any:
+    model, loading_info = model_type.from_pretrained(path, output_loading_info=True)
+    # Unexpected keys are fine: a full CLIP checkpoint also holds the vision tower.
+    if loading_info["missing_keys"] or loading_info["mismatched_keys"]:
+        raise ValueError(f"{path} does not match {model_type.__name__}: {loading_info}")
+    return model.eval()
 
-    Image pipelines take a ``TrellisDinov2Conditioner`` folder or a ``dinov2_with_registers`` checkpoint; text
-    pipelines take a ``TrellisClipTextConditioner`` folder or a CLIP checkpoint such as
-    ``openai/clip-vit-large-patch14`` (which also provides the tokenizer).
-    """
 
-    model_type = _load_json(path / "config.json").get("model_type")
+def _load_encoders(path: str, pipeline_type: type[Any]) -> dict[str, Any]:
+    """Image pipelines take a DINOv2-with-registers checkpoint; text pipelines take a CLIP one with its tokenizer."""
+
     if pipeline_type is TrellisTextTo3DPipeline:
-        if model_type in {"clip", "clip_text_model"}:
-            return TrellisClipTextConditioner.from_clip_pretrained(str(path), local_files_only=True)
-        return TrellisClipTextConditioner.from_pretrained(path, local_files_only=True)
-    if model_type == "dinov2_with_registers":
-        return TrellisDinov2Conditioner.from_dinov2_with_registers_pretrained(str(path), local_files_only=True)
-    return TrellisDinov2Conditioner.from_pretrained(path, local_files_only=True)
+        return {"text_encoder": _load_encoder(CLIPTextModel, path), "tokenizer": CLIPTokenizer.from_pretrained(path)}
+    return {"image_encoder": _load_encoder(Dinov2WithRegistersModel, path)}
 
 
 def convert_trellis_checkpoint(
     source_directory: str | Path,
     output_directory: str | Path,
     *,
-    conditioner_path: str | Path,
+    encoder_path: str | Path,
     safe_serialization: bool = True,
 ) -> Path:
     """Convert a local upstream image or text pipeline without importing TRELLIS at runtime.
 
-    ``pipeline.json`` selects the target: ``TrellisImageTo3DPipeline`` (DINOv2 conditioner) or
-    ``TrellisTextTo3DPipeline`` (CLIP conditioner). Every released component is converted: the sparse-structure
+    ``pipeline.json`` selects the target: ``TrellisImageTo3DPipeline`` (DINOv2 image encoder) or
+    ``TrellisTextTo3DPipeline`` (CLIP text encoder and tokenizer). ``encoder_path`` is a Hub id or folder of the
+    matching Transformers checkpoint. Every released component is converted: the sparse-structure
     flow and decoder, the SLAT flow model, and the Gaussian, mesh, and radiance-field decoders.
     """
 
@@ -219,20 +217,20 @@ def convert_trellis_checkpoint(
         raise ValueError("pipeline.json must contain exactly 'name' and 'args'")
     if pipeline_config["name"] not in _PIPELINES:
         raise ValueError(f"pipeline.json must describe one of {sorted(_PIPELINES)}")
-    pipeline_type, conditioner_argument, released_conditioner = _PIPELINES[pipeline_config["name"]]
+    pipeline_type, encoder_argument, released_encoder = _PIPELINES[pipeline_config["name"]]
     args = pipeline_config["args"]
     if not isinstance(args, Mapping):
         raise ValueError("pipeline args must be a mapping")
     # The released microsoft/TRELLIS-text-large pipeline.json omits ``text_cond_model``; upstream hard-codes CLIP.
-    optional_conditioner = pipeline_type is TrellisTextTo3DPipeline
-    if set(args) - {conditioner_argument} != _SHARED_PIPELINE_ARGUMENTS or (
-        conditioner_argument not in args and not optional_conditioner
+    optional_encoder = pipeline_type is TrellisTextTo3DPipeline
+    if set(args) - {encoder_argument} != _SHARED_PIPELINE_ARGUMENTS or (
+        encoder_argument not in args and not optional_encoder
     ):
         raise ValueError(
-            f"pipeline args must contain exactly {sorted(_SHARED_PIPELINE_ARGUMENTS | {conditioner_argument})}"
+            f"pipeline args must contain exactly {sorted(_SHARED_PIPELINE_ARGUMENTS | {encoder_argument})}"
         )
-    if args.get(conditioner_argument, released_conditioner) != released_conditioner:
-        raise ValueError(f"only the released {released_conditioner!r} conditioner is supported")
+    if args.get(encoder_argument, released_encoder) != released_encoder:
+        raise ValueError(f"only the released {released_encoder!r} encoder is supported")
     models = args.get("models")
     if not isinstance(models, Mapping):
         raise ValueError("pipeline args.models must be a mapping")
@@ -270,9 +268,9 @@ def convert_trellis_checkpoint(
             "config": model_config,
         }
 
-    conditioner = _load_conditioner(Path(conditioner_path), pipeline_type)
-    conditioner.save_pretrained(destination / "conditioner", safe_serialization=safe_serialization)
-    component_index["conditioner"] = [type(conditioner).__module__, type(conditioner).__name__]
+    for name, component in _load_encoders(str(encoder_path), pipeline_type).items():
+        component.save_pretrained(destination / name)
+        component_index[name] = ["transformers", type(component).__name__]
 
     sigma_min, sparse_sampler_params = _validate_sampler(
         args["sparse_structure_sampler"],
@@ -352,13 +350,13 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("source_directory", type=Path)
     parser.add_argument("output_directory", type=Path)
-    parser.add_argument("--conditioner-path", type=Path, required=True)
+    parser.add_argument("--encoder-path", required=True)
     parser.add_argument("--no-safe-serialization", action="store_true")
     args = parser.parse_args(argv)
     convert_trellis_checkpoint(
         args.source_directory,
         args.output_directory,
-        conditioner_path=args.conditioner_path,
+        encoder_path=args.encoder_path,
         safe_serialization=not args.no_safe_serialization,
     )
     return 0

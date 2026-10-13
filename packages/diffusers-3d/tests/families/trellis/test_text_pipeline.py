@@ -13,8 +13,6 @@ from diffusers_3d import (
     Object3DPipelineOutput,
     SparseVoxelAsset,
     TextCondition,
-    TrellisClipTextConditioner,
-    TrellisImageTo3DPipeline,
     TrellisTextTo3DPipeline,
 )
 from diffusers_3d.families.trellis.conversion import convert_trellis_checkpoint
@@ -54,17 +52,37 @@ def test_text_pipeline_is_deterministic_and_conditions_both_stages(tiny_trellis_
     assert not torch.allclose(first.objects[1].features, other.objects[1].features)
 
 
+def test_encode_prompt_matches_released_encode_text_semantics(tiny_trellis_text_pipeline):
+    """Upstream: ``tokenizer(text, max_length=77, padding="max_length", truncation=True)`` -> ``last_hidden_state``."""
+
+    pipeline = tiny_trellis_text_pipeline
+    prompts = ["a red chair", "chair " * 20]
+    ids = pipeline.tokenizer(
+        prompts, max_length=8, padding="max_length", truncation=True, return_tensors="pt"
+    ).input_ids
+    # Padded with the end-of-text token, truncated to the context length with the end-of-text token last.
+    assert ids[0, 0] == ids[1, 0] == pipeline.tokenizer.bos_token_id
+    assert ids[0, -1] == pipeline.tokenizer.pad_token_id
+    assert ids[1, -1] == pipeline.tokenizer.eos_token_id
+    with torch.no_grad():
+        embeddings = pipeline.encode_prompt(prompts)
+        reference = pipeline.text_encoder(input_ids=ids).last_hidden_state
+    assert embeddings.shape == (2, 8, 12)
+    torch.testing.assert_close(embeddings, reference, atol=0.0, rtol=0.0)
+
+
 def test_text_pipeline_negative_prompt_replaces_the_released_empty_unconditional(tiny_trellis_text_pipeline):
     pipeline = tiny_trellis_text_pipeline
     prompts, negatives = pipeline.preprocess(["a red chair", TextCondition(text="a chair", negative_text="red")])
     assert prompts == ["a red chair", "a chair"]
     assert negatives == ["", "red"]
     conditional, unconditional = pipeline.encode_conditioning(prompts, negatives)
-    assert conditional.shape == unconditional.shape == (2, pipeline.conditioner.max_length, 12)
-    torch.testing.assert_close(unconditional[1], pipeline.conditioner(["red"]).embeddings[0])
+    assert conditional.shape == unconditional.shape == (2, 8, 12)
+    torch.testing.assert_close(unconditional[1], pipeline.encode_prompt(["red"])[0])
 
-    _, released = pipeline.encode_conditioning(["a red chair"], [""])
-    torch.testing.assert_close(released, pipeline.conditioner.unconditional_embedding(1))
+    _, released = pipeline.encode_conditioning(["a red chair", "a chair"], ["", ""])
+    torch.testing.assert_close(released, pipeline.encode_prompt([""]).expand(2, -1, -1))
+    assert not torch.allclose(released[0], conditional[0])
     with pytest.raises(TypeError, match="strings or exact TextCondition"):
         pipeline.preprocess([1])
     with pytest.raises(ValueError, match="must not be empty"):
@@ -76,27 +94,18 @@ def test_text_pipeline_save_load_auto_loader_and_task_gating(tmp_path, tiny_trel
     pipeline.save_pretrained(tmp_path)
     model_index = json.loads((tmp_path / "model_index.json").read_text())
     assert model_index["_class_name"] == "TrellisTextTo3DPipeline"
-    assert model_index["conditioner"][1] == "TrellisClipTextConditioner"
+    assert model_index["text_encoder"] == ["transformers", "CLIPTextModel"]
+    assert model_index["tokenizer"] == ["transformers", "CLIPTokenizer"]
 
     loaded = TrellisTextTo3DPipeline.from_pretrained(tmp_path, local_files_only=True)
     automatic = AutoPipelineForTextTo3D.from_pretrained(tmp_path, local_files_only=True)
     assert type(loaded) is type(automatic) is TrellisTextTo3DPipeline
-    assert type(automatic.conditioner) is TrellisClipTextConditioner
-    assert automatic.conditioner.tokenizer is not None
     with torch.no_grad():
         torch.testing.assert_close(
-            automatic.conditioner(["a red chair"]).embeddings, pipeline.conditioner(["a red chair"]).embeddings
+            automatic.encode_prompt(["a red chair"]), pipeline.encode_prompt(["a red chair"]), atol=0.0, rtol=0.0
         )
     with pytest.raises(Exception, match="text-to-3d|image-to-3d"):
         AutoPipelineForImageTo3D.from_pretrained(tmp_path, local_files_only=True)
-
-
-def test_text_pipeline_requires_the_clip_conditioner(tiny_trellis_components, tiny_text_conditioner):
-    conditioner, flow, decoder, scheduler = tiny_trellis_components()
-    with pytest.raises(TypeError, match="TrellisClipTextConditioner"):
-        TrellisTextTo3DPipeline(conditioner, flow, decoder, scheduler)
-    with pytest.raises(TypeError, match="TrellisDinov2Conditioner"):
-        TrellisImageTo3DPipeline(tiny_text_conditioner, flow, decoder, scheduler)
 
 
 def _write_component(root, stem, upstream_name, model):
@@ -107,7 +116,7 @@ def _write_component(root, stem, upstream_name, model):
 
 
 def test_synthetic_text_conversion_from_a_clip_folder_auto_loads(
-    tmp_path, tiny_trellis_components, tiny_text_conditioner
+    tmp_path, tiny_trellis_components, tiny_trellis_text_pipeline
 ):
     source = tmp_path / "source"
     (source / "ckpts").mkdir(parents=True)
@@ -148,27 +157,33 @@ def test_synthetic_text_conversion_from_a_clip_folder_auto_loads(
             }
         )
     )
-    # The released conditioner is the Hub CLIP checkpoint: weights plus tokenizer files in one folder.
-    tiny_text_conditioner.model.save_pretrained(tmp_path / "clip")
-    tiny_text_conditioner.tokenizer.save_pretrained(tmp_path / "clip")
+    # The released encoder is the Hub CLIP checkpoint: weights plus tokenizer files in one folder.
+    tiny_trellis_text_pipeline.text_encoder.save_pretrained(tmp_path / "clip")
+    tiny_trellis_text_pipeline.tokenizer.save_pretrained(tmp_path / "clip")
 
-    output = convert_trellis_checkpoint(source, tmp_path / "converted", conditioner_path=tmp_path / "clip")
+    output = convert_trellis_checkpoint(source, tmp_path / "converted", encoder_path=tmp_path / "clip")
     model_index = json.loads((output / "model_index.json").read_text())
     report = json.loads((output / "trellis_conversion.json").read_text())
     # The released text pipeline.json omits text_cond_model entirely (upstream hard-codes CLIP): still accepted.
     released = json.loads((source / "pipeline.json").read_text())
     del released["args"]["text_cond_model"]
     (source / "pipeline.json").write_text(json.dumps(released))
-    convert_trellis_checkpoint(source, tmp_path / "converted_released", conditioner_path=tmp_path / "clip")
+    convert_trellis_checkpoint(source, tmp_path / "converted_released", encoder_path=tmp_path / "clip")
     assert model_index["_class_name"] == "TrellisTextTo3DPipeline"
-    assert model_index["conditioner"][1] == "TrellisClipTextConditioner"
+    assert model_index["text_encoder"] == ["transformers", "CLIPTextModel"]
+    assert model_index["tokenizer"] == ["transformers", "CLIPTokenizer"]
     assert report["skipped_components"] == {}
     assert report["samplers"]["sparse_structure"]["cfg_strength"] == 7.5
 
     loaded = AutoPipelineForTextTo3D.from_pretrained(output, local_files_only=True)
     assert type(loaded) is TrellisTextTo3DPipeline
-    # max_length follows the CLIP checkpoint's max_position_embeddings; the tiny one is 8 rather than 77.
-    assert loaded.conditioner.max_length == 8
+    with torch.no_grad():
+        torch.testing.assert_close(
+            loaded.encode_prompt(["a red chair"]),
+            tiny_trellis_text_pipeline.encode_prompt(["a red chair"]),
+            atol=0.0,
+            rtol=0.0,
+        )
     output_objects = loaded(
         "a red chair",
         formats=("gaussian",),
@@ -182,4 +197,4 @@ def test_synthetic_text_conversion_from_a_clip_folder_auto_loads(
         bad = json.loads((source / "pipeline.json").read_text())
         bad["args"]["text_cond_model"] = "other"
         (source / "pipeline.json").write_text(json.dumps(bad))
-        convert_trellis_checkpoint(source, tmp_path / "bad", conditioner_path=tmp_path / "clip")
+        convert_trellis_checkpoint(source, tmp_path / "bad", encoder_path=tmp_path / "clip")

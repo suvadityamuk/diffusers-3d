@@ -7,24 +7,27 @@ pipelines, and optional geometry backends for running generative 3D models.
 ## Status
 
 The package is pre-alpha. Loading metadata uses schema version `2`. Model integrations and optional compiled
-backends remain capability-gated. The reviewed model families are TRELLIS and TRELLIS.2, including TRELLIS.2's optional O-Voxel
-paths.
+backends remain capability-gated. The reviewed model families are TRELLIS, TRELLIS.2 (including its optional O-Voxel
+paths), TripoSG, SAM 3D Objects, Step1X-3D (geometry), Pixal3D, and Hunyuan3D-2.1 (shape).
 
 ## First-release readiness
 
 The code release gate requires all of the following before publication:
 
-- [x] Production execution registries contain only reviewed TRELLIS and TRELLIS.2 classes and are immutable.
-- [x] Tiny TRELLIS and TRELLIS.2 model, pipeline, auto-loading, and save/load round trips pass.
+- [x] Production execution registries contain only reviewed family classes and are immutable.
+- [x] Tiny model, pipeline, auto-loading, and save/load round trips pass for every family.
 - [x] Built wheel and sdist pass `tools/verify_wheel.py` and `tools/verify_sdist.py`.
 
 This checklist covers code readiness only. Selecting a final version and publishing a release are separate maintainer
 actions; the package remains at its development version until then.
 
-The distribution uses an `Apache-2.0 AND MIT` aggregate license expression. Package-owned glue is Apache-2.0, while
-the TRELLIS and TRELLIS.2-derived family code retains MIT terms. Wheel and sdist metadata ship the local Apache
-license and both applicable MIT licenses and notices. Those terms apply to their respective files; the aggregate
-expression does not relicense any family code or model artifact.
+The distribution uses an `Apache-2.0 AND MIT AND LicenseRef-SAM-License AND LicenseRef-Tencent-Hunyuan-3D-2.1-Community`
+aggregate license expression. Package-owned glue and the Step1X-3D-derived code are Apache-2.0; the TRELLIS-,
+TRELLIS.2-, TripoSG-, and Pixal3D-derived code retains MIT terms; the SAM 3D Objects-derived code is under Meta's SAM
+License (not an open-source license); and the Hunyuan3D-2.1-derived code is under the Tencent Hunyuan 3D 2.1 Community
+License, which does not apply in the European Union, the United Kingdom, or South Korea. Wheel and sdist metadata ship
+every applicable license and notice. Those terms apply to their respective files; the aggregate expression does not
+relicense any family code or model artifact. Pipelines whose weights carry restrictive terms warn when loaded.
 
 ## Current TRELLIS.2 limitations
 

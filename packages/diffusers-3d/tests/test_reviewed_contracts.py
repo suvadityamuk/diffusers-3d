@@ -1,18 +1,46 @@
 from __future__ import annotations
 
 import inspect
+import warnings
 from dataclasses import dataclass
 from typing import Any, Callable
 
 import pytest
 import torch
+from diffusers import FlowMatchEulerDiscreteScheduler
 from torch.utils.checkpoint import checkpoint as apply_checkpoint
+from transformers import (
+    BitImageProcessorPil,
+    CLIPTextConfig,
+    CLIPTextModel,
+    Dinov2Config,
+    Dinov2Model,
+    Dinov2WithRegistersConfig,
+    Dinov2WithRegistersModel,
+    DINOv3ViTConfig,
+    DINOv3ViTModel,
+)
 
 from diffusers_3d import (
+    Hunyuan3DDiTModel,
+    Hunyuan3DFlowMatchEulerDiscreteScheduler,
+    Hunyuan3DImageTo3DPipeline,
+    Hunyuan3DShapeVAE,
+    ImageCondition,
     MeshAsset,
     Object3DModelRegistration,
     Object3DPipelineRegistration,
-    Trellis2Dinov3Conditioner,
+    Pixal3DImageTo3DPipeline,
+    Pixal3DNAFUpsampler,
+    Pixal3DSLatFlowModel,
+    Pixal3DSparseStructureFlowModel,
+    Sam3DConditionEmbedder,
+    Sam3DObjectsPipeline,
+    Sam3DSparseStructureFlowModel,
+    Step1X3DFlowMatchEulerScheduler,
+    Step1X3DImageTo3DPipeline,
+    Step1X3DShapeDecoder,
+    Step1X3DTransformer1DModel,
     Trellis2FlowEulerScheduler,
     Trellis2ImageTo3DPipeline,
     Trellis2PBRSparseDecoder,
@@ -20,8 +48,6 @@ from diffusers_3d import (
     Trellis2SLatFlowModel,
     Trellis2SparseStructureDecoder,
     Trellis2SparseStructureFlowModel,
-    TrellisClipTextConditioner,
-    TrellisDinov2Conditioner,
     TrellisFlowEulerScheduler,
     TrellisImageTo3DPipeline,
     TrellisSLatFlowModel,
@@ -32,6 +58,9 @@ from diffusers_3d import (
     TrellisSparseStructureFlowModel,
     TrellisSparseTensor,
     TrellisTextTo3DPipeline,
+    TripoSGImageTo3DPipeline,
+    TripoSGTransformerModel,
+    TripoSGVAEDecoder,
 )
 from diffusers_3d.families.registrations import production_execution_registrations
 
@@ -80,13 +109,6 @@ def _invoke_conditioner(model: torch.nn.Module, batch_size: int, return_dict: bo
     return _output_tensor(model(images, return_dict=return_dict), return_dict=return_dict)
 
 
-def _invoke_text_conditioner(model: TrellisClipTextConditioner, batch_size: int, return_dict: bool) -> torch.Tensor:
-    # Pre-tokenized ids: the tiny model carries no tokenizer, and the pipeline passes ids the same way.
-    vocab_size = model.model.config.vocab_size
-    input_ids = torch.arange(batch_size * model.max_length).reshape(batch_size, model.max_length) % vocab_size
-    return _output_tensor(model(input_ids, return_dict=return_dict), return_dict=return_dict)
-
-
 def _invoke_trellis_flow(model: torch.nn.Module, batch_size: int, return_dict: bool) -> torch.Tensor:
     device, dtype = _parameter_properties(model)
     resolution = model.config.resolution
@@ -109,6 +131,20 @@ def _invoke_trellis_flow(model: torch.nn.Module, batch_size: int, return_dict: b
         model(hidden_states, timesteps, context, return_dict=return_dict),
         return_dict=return_dict,
     )
+
+
+def _invoke_pixal3d_flow(model: torch.nn.Module, batch_size: int, return_dict: bool) -> torch.Tensor:
+    device, dtype = _parameter_properties(model)
+    resolution, channels = model.config.resolution, model.config.in_channels
+    hidden_states = torch.linspace(-1.0, 1.0, batch_size * channels * resolution**3, device=device, dtype=dtype)
+    hidden_states = hidden_states.reshape(batch_size, channels, resolution, resolution, resolution)
+    timesteps = torch.linspace(200.0, 800.0, batch_size, device=device, dtype=dtype)
+    tokens = torch.linspace(-0.5, 0.5, batch_size * 5 * model.config.cond_channels, device=device, dtype=dtype)
+    projected = torch.linspace(
+        0.5, -0.5, batch_size * resolution**3 * model.config.proj_in_channels, device=device, dtype=dtype
+    )
+    context = (tokens.reshape(batch_size, 5, -1), projected.reshape(batch_size, resolution**3, -1))
+    return _output_tensor(model(hidden_states, timesteps, context, return_dict=return_dict), return_dict=return_dict)
 
 
 def _invoke_sparse_decoder(model: TrellisSparseStructureDecoder, batch_size: int, return_dict: bool) -> torch.Tensor:
@@ -170,6 +206,33 @@ def _invoke_texture_slat_flow(model: torch.nn.Module, batch_size: int, return_di
         return_dict=return_dict,
     )
     return _regroup(_output_tensor(output, return_dict=return_dict).features, batch_size)
+
+
+def _invoke_pixal3d_texture_slat_flow(model: torch.nn.Module, batch_size: int, return_dict: bool) -> torch.Tensor:
+    device, dtype = _parameter_properties(model)
+    hidden_states = _sparse_latents(model, batch_size, model.config.in_channels // 2)
+    projected = _sparse_latents(model, batch_size, model.config.proj_in_channels)
+    timesteps = torch.linspace(200.0, 800.0, batch_size, device=device, dtype=dtype)
+    tokens = torch.linspace(-0.5, 0.5, batch_size * 5 * model.config.cond_channels, device=device, dtype=dtype)
+    output = model(
+        hidden_states,
+        timesteps,
+        (tokens.reshape(batch_size, 5, -1), projected.replace(projected.features.flip(0))),
+        concat_cond=hidden_states.replace(hidden_states.features.flip(0)),
+        return_dict=return_dict,
+    )
+    return _regroup(_output_tensor(output, return_dict=return_dict).features, batch_size)
+
+
+def _invoke_feature_upsampler(model: torch.nn.Module, batch_size: int, return_dict: bool) -> torch.Tensor:
+    device, dtype = _parameter_properties(model)
+    image = torch.linspace(0.0, 1.0, batch_size * 3 * 16 * 16, device=device, dtype=dtype).reshape(
+        batch_size, 3, 16, 16
+    )
+    features = torch.linspace(-1.0, 1.0, batch_size * 6 * 4 * 4, device=device, dtype=dtype).reshape(
+        batch_size, 6, 4, 4
+    )
+    return _output_tensor(model(image, features, (8, 8), return_dict=return_dict), return_dict=return_dict)
 
 
 def _assets(output: Any, *, return_dict: bool):
@@ -241,6 +304,88 @@ def _invoke_pbr_decoder(model: torch.nn.Module, batch_size: int, return_dict: bo
     )
 
 
+def _invoke_triposg_transformer(model: torch.nn.Module, batch_size: int, return_dict: bool) -> torch.Tensor:
+    device, dtype = _parameter_properties(model)
+    latents = torch.linspace(-1.0, 1.0, batch_size * 5 * model.config.in_channels, device=device, dtype=dtype)
+    context = torch.linspace(-0.5, 0.5, batch_size * 3 * model.config.cross_attention_dim, device=device, dtype=dtype)
+    timesteps = torch.linspace(200.0, 800.0, batch_size, device=device, dtype=dtype)
+    output = model(
+        latents.reshape(batch_size, 5, -1), timesteps, context.reshape(batch_size, 3, -1), return_dict=return_dict
+    )
+    return _output_tensor(output, return_dict=return_dict)
+
+
+def _invoke_step1x3d_transformer(model: torch.nn.Module, batch_size: int, return_dict: bool) -> torch.Tensor:
+    device, dtype = _parameter_properties(model)
+    config = model.config
+    latents = torch.linspace(-1.0, 1.0, batch_size * 5 * config.in_channels, device=device, dtype=dtype)
+    context = torch.linspace(1.0, -1.0, batch_size * 3 * config.cross_attention_dim, device=device, dtype=dtype)
+    output = model(
+        latents.reshape(batch_size, 5, -1),
+        torch.full((batch_size,), 500.0, device=device, dtype=dtype),
+        context.reshape(batch_size, 3, -1),
+        return_dict=return_dict,
+    )
+    return _output_tensor(output, return_dict=return_dict)
+
+
+def _invoke_triposg_vae(model: torch.nn.Module, batch_size: int, return_dict: bool) -> torch.Tensor:
+    device, dtype = _parameter_properties(model)
+    latents = torch.linspace(-1.0, 1.0, batch_size * 6 * model.config.latent_channels, device=device, dtype=dtype)
+    queries = torch.linspace(-1.0, 1.0, batch_size * 7 * 3, device=device, dtype=dtype).reshape(batch_size, 7, 3)
+    output = model(latents.reshape(batch_size, 6, -1), queries, num_chunks=4, return_dict=return_dict)
+    return _output_tensor(output, return_dict=return_dict)
+
+
+def _invoke_sam3d_flow(model: Sam3DSparseStructureFlowModel, batch_size: int, return_dict: bool) -> torch.Tensor:
+    device, dtype = _parameter_properties(model)
+    latents = {
+        name: torch.linspace(-1.0, 1.0, torch.Size(shape).numel(), device=device, dtype=dtype).reshape(shape)
+        for name, shape in model.latent_shapes(batch_size).items()
+    }
+    timesteps = torch.linspace(200.0, 800.0, batch_size, device=device, dtype=dtype)
+    context = torch.linspace(-0.5, 0.5, batch_size * 7 * model.config.cond_channels, device=device, dtype=dtype)
+    output = model(latents, timesteps, context.reshape(batch_size, 7, -1), return_dict=return_dict)
+    sample = output.sample if return_dict else output[0]
+    return torch.cat([value.flatten(1) for value in sample.values()], dim=1)
+
+
+def _invoke_sam3d_conditioner(model: Sam3DConditionEmbedder, batch_size: int, return_dict: bool) -> torch.Tensor:
+    device, dtype = _parameter_properties(model)
+    shape = (batch_size, 2, 5, model.config.image_embed_dim)
+    tokens = torch.linspace(-1.0, 1.0, torch.Size(shape).numel(), device=device, dtype=dtype).reshape(shape)
+    pointmaps = torch.linspace(-0.5, 0.5, batch_size * 2 * 3 * 8 * 8, device=device, dtype=dtype)
+    output = model(tokens, tokens.flip(-1), pointmaps.reshape(batch_size, 2, 3, 8, 8), return_dict=return_dict)
+    return _output_tensor(output, return_dict=return_dict)
+
+
+def _invoke_step1x3d_shape_decoder(model: torch.nn.Module, batch_size: int, return_dict: bool) -> torch.Tensor:
+    device, dtype = _parameter_properties(model)
+    config = model.config
+    latents = torch.linspace(-1.0, 1.0, batch_size * config.num_latents * config.latent_channels, dtype=dtype)
+    points = torch.linspace(-1.0, 1.0, batch_size * 6 * 3, dtype=dtype).reshape(batch_size, 6, 3)
+    output = model(
+        latents.reshape(batch_size, config.num_latents, -1).to(device),
+        points.to(device),
+        return_dict=return_dict,
+    )
+    return _output_tensor(output, return_dict=return_dict)
+
+
+def _invoke_hunyuan3d_transformer(model: torch.nn.Module, batch_size: int, return_dict: bool) -> torch.Tensor:
+    device, dtype = _parameter_properties(model)
+    latents = torch.linspace(-1.0, 1.0, batch_size * 6 * 8, device=device, dtype=dtype).reshape(batch_size, 6, 8)
+    timesteps = torch.linspace(0.2, 0.8, batch_size, device=device, dtype=dtype)
+    context = torch.linspace(-0.5, 0.5, batch_size * 5 * 24, device=device, dtype=dtype).reshape(batch_size, 5, 24)
+    return _output_tensor(model(latents, timesteps, context, return_dict=return_dict), return_dict=return_dict)
+
+
+def _invoke_hunyuan3d_vae(model: torch.nn.Module, batch_size: int, return_dict: bool) -> torch.Tensor:
+    device, dtype = _parameter_properties(model)
+    latents = torch.linspace(-1.0, 1.0, batch_size * 6 * 8, device=device, dtype=dtype).reshape(batch_size, 6, 8)
+    return _output_tensor(model(latents, return_dict=return_dict), return_dict=return_dict)
+
+
 MODEL_CONTRACTS = (
     ModelContract(TrellisSparseStructureFlowModel, _invoke_trellis_flow),
     ModelContract(TrellisSparseStructureDecoder, _invoke_sparse_decoder),
@@ -248,18 +393,27 @@ MODEL_CONTRACTS = (
     ModelContract(TrellisSLatGaussianDecoder, _invoke_gaussian_decoder),
     ModelContract(TrellisSLatMeshDecoder, _invoke_mesh_decoder),
     ModelContract(TrellisSLatRadianceFieldDecoder, _invoke_radiance_field_decoder),
-    ModelContract(TrellisDinov2Conditioner, _invoke_conditioner),
-    ModelContract(TrellisClipTextConditioner, _invoke_text_conditioner),
     ModelContract(Trellis2SparseStructureFlowModel, _invoke_trellis_flow),
     ModelContract(Trellis2SparseStructureDecoder, _invoke_sparse_decoder),
     ModelContract(Trellis2SLatFlowModel, _invoke_texture_slat_flow),
     ModelContract(Trellis2ShapeDualGridDecoder, _invoke_shape_decoder),
     ModelContract(Trellis2PBRSparseDecoder, _invoke_pbr_decoder),
-    ModelContract(Trellis2Dinov3Conditioner, _invoke_conditioner),
+    ModelContract(TripoSGTransformerModel, _invoke_triposg_transformer),
+    ModelContract(TripoSGVAEDecoder, _invoke_triposg_vae),
+    ModelContract(Sam3DSparseStructureFlowModel, _invoke_sam3d_flow),
+    ModelContract(Sam3DConditionEmbedder, _invoke_sam3d_conditioner),
+    ModelContract(Step1X3DTransformer1DModel, _invoke_step1x3d_transformer),
+    ModelContract(Step1X3DShapeDecoder, _invoke_step1x3d_shape_decoder),
+    ModelContract(Pixal3DSparseStructureFlowModel, _invoke_pixal3d_flow),
+    ModelContract(Pixal3DSLatFlowModel, _invoke_pixal3d_texture_slat_flow),
+    ModelContract(Pixal3DNAFUpsampler, _invoke_feature_upsampler),
+    ModelContract(Hunyuan3DDiTModel, _invoke_hunyuan3d_transformer),
+    ModelContract(Hunyuan3DShapeVAE, _invoke_hunyuan3d_vae),
 )
-# Sparse voxel models index by coordinates (unique / nonzero), so their shapes are data-dependent and
-# they cannot be captured as a single graph.
+# Sparse voxel models index by coordinates (unique / nonzero) and mixture-of-experts models route tokens with
+# nonzero, so their shapes are data-dependent and they cannot be captured as a single graph.
 SPARSE_MODEL_TYPES = {
+    Hunyuan3DDiTModel,
     TrellisSLatFlowModel,
     TrellisSLatGaussianDecoder,
     TrellisSLatMeshDecoder,
@@ -267,6 +421,7 @@ SPARSE_MODEL_TYPES = {
     Trellis2SLatFlowModel,
     Trellis2ShapeDualGridDecoder,
     Trellis2PBRSparseDecoder,
+    Pixal3DSLatFlowModel,
 }
 
 
@@ -323,6 +478,9 @@ GRADIENT_CHECKPOINTING_CONTRACTS = tuple(
     in {
         TrellisSparseStructureFlowModel,
         Trellis2SparseStructureFlowModel,
+        TripoSGTransformerModel,
+        Sam3DSparseStructureFlowModel,
+        Pixal3DSparseStructureFlowModel,
         *SPARSE_MODEL_TYPES,
     }
 )
@@ -408,6 +566,13 @@ def test_reviewed_attention_models_support_processor_and_native_backend_hooks():
         TrellisSLatMeshDecoder,
         TrellisSLatRadianceFieldDecoder,
         Trellis2SLatFlowModel,
+        TripoSGTransformerModel,
+        TripoSGVAEDecoder,
+        Sam3DSparseStructureFlowModel,
+        Pixal3DSparseStructureFlowModel,
+        Pixal3DSLatFlowModel,
+        Hunyuan3DDiTModel,
+        Hunyuan3DShapeVAE,
     }
     found = set()
     for contract in MODEL_CONTRACTS:
@@ -445,16 +610,41 @@ def _trellis_sparse_structure_components():
 
 
 def _trellis_pipeline(request=None):
+    dinov2 = Dinov2WithRegistersConfig(
+        hidden_size=12, num_hidden_layers=1, num_attention_heads=3, patch_size=4, image_size=8, num_register_tokens=2
+    )
     return TrellisImageTo3DPipeline(
-        conditioner=TrellisDinov2Conditioner(**TrellisDinov2Conditioner.tiny_config()),
-        **_trellis_sparse_structure_components(),
+        image_encoder=Dinov2WithRegistersModel(dinov2).eval(), **_trellis_sparse_structure_components()
     )
 
 
 def _trellis_text_pipeline(request):
-    conditioner = TrellisClipTextConditioner(**TrellisClipTextConditioner.tiny_config())
-    conditioner.tokenizer = request.getfixturevalue("tiny_clip_tokenizer")
-    return TrellisTextTo3DPipeline(conditioner=conditioner, **_trellis_sparse_structure_components())
+    clip = CLIPTextConfig(
+        vocab_size=64,
+        hidden_size=12,
+        intermediate_size=24,
+        num_hidden_layers=1,
+        num_attention_heads=3,
+        max_position_embeddings=8,
+    )
+    return TrellisTextTo3DPipeline(
+        text_encoder=CLIPTextModel(clip).eval(),
+        tokenizer=request.getfixturevalue("tiny_clip_tokenizer"),
+        **_trellis_sparse_structure_components(),
+    )
+
+
+def _tiny_dinov3() -> DINOv3ViTModel:
+    config = DINOv3ViTConfig(
+        image_size=8,
+        patch_size=4,
+        hidden_size=12,
+        intermediate_size=24,
+        num_hidden_layers=1,
+        num_attention_heads=3,
+        num_register_tokens=2,
+    )
+    return DINOv3ViTModel(config).eval()
 
 
 def _trellis2_pipeline(request=None):
@@ -463,18 +653,131 @@ def _trellis2_pipeline(request=None):
         decoder.out_layer[-1].weight.zero_()
         decoder.out_layer[-1].bias.fill_(1.0)
     return Trellis2ImageTo3DPipeline(
-        conditioner=Trellis2Dinov3Conditioner(**Trellis2Dinov3Conditioner.tiny_config()),
+        image_encoder=_tiny_dinov3(),
         sparse_structure_flow_model=Trellis2SparseStructureFlowModel(**Trellis2SparseStructureFlowModel.tiny_config()),
         sparse_structure_decoder=decoder,
         sparse_structure_scheduler=Trellis2FlowEulerScheduler(),
         default_pipeline_type="512",
+        image_size=8,
     )
+
+
+def _triposg_pipeline(request=None):
+    vae = TripoSGVAEDecoder(**TripoSGVAEDecoder.tiny_config())
+    # Route the query embedding straight through so the decoded field is a smooth function of x crossing zero.
+    block = vae.blocks[-1]
+    with torch.no_grad():
+        for layer in (block.attn2.to_out[0], block.ff.net[2], vae.proj_query, vae.proj_out):
+            layer.weight.zero_()
+            layer.bias.zero_()
+        vae.proj_query.weight[0, 0], vae.proj_query.weight[1, 0] = 1.0, -1.0
+        vae.proj_query.bias[2], vae.proj_query.bias[3] = 0.5, -0.5
+        vae.proj_out.weight[0, 0] = 1.0
+    return TripoSGImageTo3DPipeline(
+        feature_extractor=BitImageProcessorPil(size={"shortest_edge": 32}, crop_size={"height": 28, "width": 28}),
+        image_encoder=Dinov2Model(
+            Dinov2Config(image_size=28, patch_size=14, hidden_size=12, num_hidden_layers=1, num_attention_heads=3)
+        ),
+        scheduler=FlowMatchEulerDiscreteScheduler(),
+        transformer=TripoSGTransformerModel(**TripoSGTransformerModel.tiny_config()),
+        vae=vae,
+    )
+
+
+def _sam3d_pipeline(request=None):
+    decoder = TrellisSparseStructureDecoder(**TrellisSparseStructureDecoder.tiny_config())
+    with torch.no_grad():
+        decoder.out_layer[-1].weight.zero_()
+        decoder.out_layer[-1].bias.fill_(1.0)
+    dinov2 = Dinov2WithRegistersConfig(
+        hidden_size=12, num_hidden_layers=1, num_attention_heads=3, patch_size=4, image_size=8, num_register_tokens=2
+    )
+    with pytest.warns(UserWarning, match="SAM License"):
+        return Sam3DObjectsPipeline(
+            image_encoder=Dinov2WithRegistersModel(dinov2),
+            sparse_structure_conditioner=Sam3DConditionEmbedder(**Sam3DConditionEmbedder.tiny_config()),
+            sparse_structure_flow_model=Sam3DSparseStructureFlowModel(**Sam3DSparseStructureFlowModel.tiny_config()),
+            sparse_structure_decoder=decoder,
+            sparse_structure_scheduler=TrellisFlowEulerScheduler(sigma_min=0.0),
+        )
+
+
+def _step1x3d_pipeline(request=None):
+    vae = Step1X3DShapeDecoder(**Step1X3DShapeDecoder.tiny_config())
+    # Pass the query embedding straight through so the occupancy field is a smooth function of x crossing zero.
+    with torch.no_grad():
+        for layer in (vae.attn.to_out[0], vae.ff.net[2], vae.query_proj, vae.proj_out):
+            layer.weight.zero_()
+            layer.bias.zero_()
+        vae.query_proj.weight[0, 0], vae.query_proj.weight[1, 0] = 1.0, -1.0
+        vae.query_proj.bias[2], vae.query_proj.bias[3] = 0.5, -0.5
+        vae.proj_out.weight[0, 0] = 1.0
+    return Step1X3DImageTo3DPipeline(
+        image_encoder=Dinov2WithRegistersModel(
+            Dinov2WithRegistersConfig(
+                hidden_size=12,
+                num_hidden_layers=1,
+                num_attention_heads=3,
+                mlp_ratio=2,
+                image_size=8,
+                patch_size=4,
+                num_register_tokens=2,
+            )
+        ),
+        transformer=Step1X3DTransformer1DModel(**Step1X3DTransformer1DModel.tiny_config()),
+        vae=vae,
+        scheduler=Step1X3DFlowMatchEulerScheduler(),
+    )
+
+
+def _pixal3d_pipeline(request=None):
+    decoder = Trellis2SparseStructureDecoder(**Trellis2SparseStructureDecoder.tiny_config())
+    with torch.no_grad():
+        decoder.out_layer[-1].weight.zero_()
+        decoder.out_layer[-1].bias.fill_(1.0)
+    return Pixal3DImageTo3DPipeline(
+        image_encoder=_tiny_dinov3(),
+        feature_upsampler=Pixal3DNAFUpsampler(**Pixal3DNAFUpsampler.tiny_config()),
+        sparse_structure_flow_model=Pixal3DSparseStructureFlowModel(**Pixal3DSparseStructureFlowModel.tiny_config()),
+        sparse_structure_decoder=decoder,
+        sparse_structure_scheduler=Trellis2FlowEulerScheduler(),
+        image_size=16,
+    )
+
+
+def _hunyuan3d_pipeline(request=None):
+    torch.manual_seed(0)
+    with warnings.catch_warnings():
+        warnings.filterwarnings("ignore", message="Hunyuan3D-2.1 weights", category=UserWarning)
+        return Hunyuan3DImageTo3DPipeline(
+            image_encoder=Dinov2Model(
+                Dinov2Config(
+                    hidden_size=24,
+                    num_hidden_layers=1,
+                    num_attention_heads=4,
+                    mlp_ratio=2,
+                    image_size=28,
+                    patch_size=14,
+                )
+            ),
+            transformer=Hunyuan3DDiTModel(**Hunyuan3DDiTModel.tiny_config()),
+            vae=Hunyuan3DShapeVAE(**Hunyuan3DShapeVAE.tiny_config()),
+            scheduler=Hunyuan3DFlowMatchEulerDiscreteScheduler(),
+            image_size=16,
+        )
 
 
 PIPELINE_FACTORIES = (
     pytest.param(_trellis_pipeline, id="TrellisImageTo3DPipeline"),
     pytest.param(_trellis_text_pipeline, id="TrellisTextTo3DPipeline"),
     pytest.param(_trellis2_pipeline, id="Trellis2ImageTo3DPipeline"),
+    # Meshes come from scikit-image marching cubes.
+    pytest.param(_triposg_pipeline, id="TripoSGImageTo3DPipeline", marks=pytest.mark.portable),
+    pytest.param(_sam3d_pipeline, id="Sam3DObjectsPipeline"),
+    pytest.param(_step1x3d_pipeline, id="Step1X3DImageTo3DPipeline", marks=pytest.mark.portable),
+    pytest.param(_pixal3d_pipeline, id="Pixal3DImageTo3DPipeline"),
+    # Surface extraction uses scikit-image.
+    pytest.param(_hunyuan3d_pipeline, id="Hunyuan3DImageTo3DPipeline", marks=pytest.mark.portable),
 )
 
 
@@ -482,13 +785,48 @@ def _invoke_pipeline(pipeline, *, return_dict: bool):
     _, dtype = _parameter_properties(pipeline)
     images = torch.linspace(0.0, 1.0, 2 * 3 * 8 * 8, dtype=dtype).reshape(2, 3, 8, 8)
     conditioning = ["a red chair", "a chair"] if isinstance(pipeline, TrellisTextTo3DPipeline) else images
+    if isinstance(pipeline, TripoSGImageTo3DPipeline):
+        rgba = torch.cat([images, torch.zeros(2, 1, 8, 8, dtype=dtype)], dim=1)
+        rgba[:, 3, 2:6, 3:6] = 1.0
+        latents = torch.linspace(-1.0, 1.0, 2 * 6 * 4, dtype=dtype).reshape(2, 6, 4)
+        return pipeline(
+            rgba,
+            latents=latents,
+            num_inference_steps=2,
+            num_tokens=6,
+            dense_octree_depth=3,
+            hierarchical_octree_depth=4,
+            return_dict=return_dict,
+        )
+    if isinstance(pipeline, Sam3DObjectsPipeline):
+        mask = torch.zeros(1, 8, 8, dtype=dtype)
+        mask[:, 2:6, 1:7] = 1.0
+        shapes = pipeline.sparse_structure_flow_model.latent_shapes(2)
+        latents = {
+            name: torch.linspace(-1.0, 1.0, torch.Size(shape).numel(), dtype=dtype).reshape(shape)
+            for name, shape in shapes.items()
+        }
+        return pipeline(
+            [ImageCondition(image=image, mask=mask) for image in images],
+            sparse_structure_latents=latents,
+            sparse_structure_num_inference_steps=2,
+            return_dict=return_dict,
+        )
+    if isinstance(pipeline, Step1X3DImageTo3DPipeline):
+        latents = torch.linspace(-1.0, 1.0, 2 * 8 * 4, dtype=dtype).reshape(2, 8, 4)
+        return pipeline(images, latents=latents, num_inference_steps=2, octree_resolution=8, return_dict=return_dict)
+    if isinstance(pipeline, Hunyuan3DImageTo3DPipeline):
+        latents = torch.linspace(-1.0, 1.0, 2 * 6 * 8, dtype=dtype).reshape(2, 6, 8)
+        return pipeline(images, latents=latents, num_inference_steps=2, octree_resolution=8, return_dict=return_dict)
     if isinstance(pipeline, Trellis2ImageTo3DPipeline):
         latents = torch.linspace(-1.0, 1.0, 2 * 2 * 2 * 2 * 2, dtype=dtype).reshape(2, 2, 2, 2, 2)
+        camera = {"camera_angle_x": 0.5} if isinstance(pipeline, Pixal3DImageTo3DPipeline) else {}
         return pipeline(
             images,
             sparse_structure_latents=latents,
             sparse_structure_sampler_params={"steps": 2},
             return_dict=return_dict,
+            **camera,
         )
     latents = torch.linspace(-1.0, 1.0, 2 * 2 * 4 * 4 * 4, dtype=dtype).reshape(2, 2, 4, 4, 4)
     return pipeline(
@@ -528,6 +866,13 @@ def test_pipeline_contracts_cover_every_reviewed_registration():
         Object3DModelRegistration,
         Object3DPipelineRegistration,
     )
-    assert {TrellisImageTo3DPipeline, TrellisTextTo3DPipeline, Trellis2ImageTo3DPipeline} == {
-        registration.pipeline_class for registration in pipeline_registrations
-    }
+    assert {
+        TrellisImageTo3DPipeline,
+        TrellisTextTo3DPipeline,
+        Trellis2ImageTo3DPipeline,
+        TripoSGImageTo3DPipeline,
+        Sam3DObjectsPipeline,
+        Step1X3DImageTo3DPipeline,
+        Pixal3DImageTo3DPipeline,
+        Hunyuan3DImageTo3DPipeline,
+    } == {registration.pipeline_class for registration in pipeline_registrations}

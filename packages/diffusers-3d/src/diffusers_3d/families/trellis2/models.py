@@ -523,6 +523,15 @@ class Trellis2SparseStructureFlowModel(_Trellis2FlowInitialization, Object3DMode
             "dtype": "float32",
         }
 
+    def _block_context(self, encoder_hidden_states: Any, batch_size: int, dtype: torch.dtype) -> Any:
+        """Validate the cross-attention context and cast it for the blocks; subclasses may pass richer contexts."""
+
+        if encoder_hidden_states.ndim != 3 or encoder_hidden_states.shape[0] != batch_size:
+            raise ValueError("encoder_hidden_states must be rank three and match the latent batch")
+        if encoder_hidden_states.shape[2] != self.cond_channels:
+            raise ValueError(f"encoder_hidden_states last dimension must be {self.cond_channels}")
+        return encoder_hidden_states.to(dtype=dtype)
+
     def forward(
         self,
         hidden_states: torch.Tensor,
@@ -535,10 +544,6 @@ class Trellis2SparseStructureFlowModel(_Trellis2FlowInitialization, Object3DMode
         if tuple(hidden_states.shape) != expected:
             raise ValueError(f"hidden_states must have shape {expected}")
         batch_size = hidden_states.shape[0]
-        if encoder_hidden_states.ndim != 3 or encoder_hidden_states.shape[0] != batch_size:
-            raise ValueError("encoder_hidden_states must be rank three and match the latent batch")
-        if encoder_hidden_states.shape[2] != self.cond_channels:
-            raise ValueError(f"encoder_hidden_states last dimension must be {self.cond_channels}")
         timestep = torch.as_tensor(timestep, device=hidden_states.device)
         if timestep.ndim == 0:
             timestep = timestep.expand(batch_size)
@@ -555,7 +560,7 @@ class Trellis2SparseStructureFlowModel(_Trellis2FlowInitialization, Object3DMode
         inner_dtype = get_parameter_dtype(self.blocks)
         hidden_states = hidden_states.to(dtype=inner_dtype)
         modulation = modulation.to(dtype=inner_dtype)
-        encoder_hidden_states = encoder_hidden_states.to(dtype=inner_dtype)
+        encoder_hidden_states = self._block_context(encoder_hidden_states, batch_size, inner_dtype)
         phases = None if self.rope_phases is None else self.rope_phases.to(device=hidden_states.device)
         for block in self.blocks:
             if torch.is_grad_enabled() and self.gradient_checkpointing:
@@ -719,6 +724,21 @@ class Trellis2SLatFlowModel(_Trellis2FlowInitialization, Object3DModel, Object3D
             "dtype": "float32",
         }
 
+    def _validate_context(self, encoder_hidden_states: Any, hidden_states: TrellisSparseTensor) -> None:
+        if encoder_hidden_states.ndim != 3 or encoder_hidden_states.shape != (
+            hidden_states.batch_size,
+            encoder_hidden_states.shape[1],
+            self.cond_channels,
+        ):
+            raise ValueError("encoder_hidden_states must match sparse batch and context channels")
+
+    def _batch_context(
+        self, encoder_hidden_states: Any, batch_index: int, positions: torch.Tensor, dtype: torch.dtype
+    ) -> Any:
+        """One batch item's cross-attention context; ``positions`` are its rows of the sparse input."""
+
+        return encoder_hidden_states[batch_index : batch_index + 1].to(dtype=dtype)
+
     def forward(
         self,
         hidden_states: TrellisSparseTensor,
@@ -742,12 +762,7 @@ class Trellis2SLatFlowModel(_Trellis2FlowInitialization, Object3DModel, Object3D
         # ``resolution`` is nominal: RoPE and the sinusoidal APE are unbounded, and the released 1536 cascade
         # runs the 1024 model on a 96^3 grid.
         batch_size = hidden_states.batch_size
-        if encoder_hidden_states.ndim != 3 or encoder_hidden_states.shape != (
-            batch_size,
-            encoder_hidden_states.shape[1],
-            self.cond_channels,
-        ):
-            raise ValueError("encoder_hidden_states must match sparse batch and context channels")
+        self._validate_context(encoder_hidden_states, hidden_states)
         timestep = torch.as_tensor(timestep, device=hidden_states.device)
         if timestep.ndim == 0:
             timestep = timestep.expand(batch_size)
@@ -765,7 +780,7 @@ class Trellis2SLatFlowModel(_Trellis2FlowInitialization, Object3DModel, Object3D
             inner_dtype = get_parameter_dtype(self.blocks)
             batch_features = features[positions].unsqueeze(0).to(dtype=inner_dtype)
             batch_modulation = modulation[batch_index : batch_index + 1].to(dtype=inner_dtype)
-            batch_context = encoder_hidden_states[batch_index : batch_index + 1].to(dtype=inner_dtype)
+            batch_context = self._batch_context(encoder_hidden_states, batch_index, positions, inner_dtype)
             phases = None if self.rope is None else self.rope(hidden_states.coordinates[positions, 1:]).unsqueeze(0)
             for block in self.blocks:
                 if torch.is_grad_enabled() and self.gradient_checkpointing:

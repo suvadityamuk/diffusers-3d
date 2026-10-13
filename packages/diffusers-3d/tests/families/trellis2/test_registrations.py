@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from diffusers_3d import (
-    Trellis2Dinov3Conditioner,
     Trellis2ImageTo3DPipeline,
     Trellis2PBRSparseDecoder,
     Trellis2ShapeDualGridDecoder,
@@ -27,7 +26,6 @@ def test_registries_contain_exact_trellis2_classes():
         registration for registration in _PIPELINE_REGISTRY if _is_trellis2_type(registration.pipeline_class)
     )
     assert {registration.model_class for registration in model_registrations} == {
-        Trellis2Dinov3Conditioner,
         Trellis2SparseStructureDecoder,
         Trellis2SparseStructureFlowModel,
         Trellis2SLatFlowModel,

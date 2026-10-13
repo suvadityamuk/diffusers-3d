@@ -1,0 +1,35 @@
+StepFun Step1X-3D integration notice
+
+Portions of the geometry flow transformer, shape-VAE decoder, image
+conditioning, image framing, sampling loop, and surface-extraction mapping in
+this family are modified from:
+
+  stepfun-ai/Step1X-3D
+  https://github.com/stepfun-ai/Step1X-3D
+  revision cb5ac944709c6c913109070c7b90c3447f57f3d4
+
+Those portions are provided under the accompanying Apache License 2.0
+(LICENSE-APACHE-2.0). Copyright (c) StepFun. All ported source files carry a
+prominent modification notice. Independently written diffusers-3d package glue
+remains under the package Apache-2.0 license.
+
+Step1X-3D's shape VAE descends from Michelangelo
+(https://github.com/NeuralCarver/Michelangelo, GPL-3.0), whose perceiver
+attention layers in turn follow OpenAI Shap-E (MIT). Step1X-3D distributes its
+version without a GPL notice under Apache-2.0; this family re-implements the
+decoder on stock Diffusers blocks and copies no Michelangelo source.
+
+Not included: upstream files carrying the Tencent Hunyuan 3D non-commercial
+license header (step1x3d_geometry/models/autoencoders/volume_decoders.py and
+the texture-stage custom_rasterizer and differentiable_renderer). Occupancy is
+evaluated on a dense grid written for this package instead of upstream's
+hierarchical volume decoder. pymeshlab (GPL) post-processing is not used.
+
+The converted weights come from https://huggingface.co/stepfun-ai/Step1X-3D
+(Apache-2.0; layout checked at revision
+bf7084495b3a72222f36549b7942948aa4d9daa7). The visual encoder weights are a
+DINOv2-with-registers ViT-L/14 (facebook/dinov2-with-registers-large,
+Apache-2.0). Model weights keep their own licenses.
+
+No affiliation, sponsorship, or endorsement by StepFun, Meta, Tencent, or
+OpenAI is claimed.

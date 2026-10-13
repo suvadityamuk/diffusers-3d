@@ -2,9 +2,9 @@
 
 The whole thing is three calls::
 
-    conditioner = Trellis2Dinov3Conditioner.from_dinov3_pretrained("facebook/dinov3-vitl16-pretrain-lvd1689m")
+    image_encoder = DINOv3ViTModel.from_pretrained("facebook/dinov3-vitl16-pretrain-lvd1689m")
     pipeline = AutoPipelineForImageTo3D.from_pretrained(
-        "suvadityamuk/TRELLIS.2-4B-diffusers-3d", conditioner=conditioner
+        "suvadityamuk/TRELLIS.2-4B-diffusers-3d", image_encoder=image_encoder
     ).to("cuda")
     output = pipeline(ImageCondition(image=rgba))
     ovoxel = output.objects[0]                      # OVoxelAsset: dual-grid shape + PBR channels
@@ -14,13 +14,13 @@ sampler knobs, what comes back, and how to write each asset type to disk.
 
 Run it::
 
-    # against the published conversion (the gated DINOv3 conditioner is fetched separately)
+    # against the published conversion (the gated DINOv3 image encoder is fetched separately)
     python -m diffusers_3d.families.trellis2.examples.image_to_3d \
         --model suvadityamuk/TRELLIS.2-4B-diffusers-3d --image chair.png --output out/
 
-    # against a folder you converted yourself with ``diffusers-3d-convert-trellis2`` (conditioner included)
+    # against a folder you converted yourself with ``diffusers-3d-convert-trellis2`` (image encoder included)
     python -m diffusers_3d.families.trellis2.examples.image_to_3d \
-        --model /path/to/trellis2 --no-conditioner-download --image chair.png --output out/
+        --model /path/to/trellis2 --no-image-encoder-download --image chair.png --output out/
 
     # offline, on CPU, with random tiny weights; exercises every call but produces no real geometry
     python -m diffusers_3d.families.trellis2.examples.image_to_3d --tiny --output out/
@@ -41,6 +41,7 @@ from typing import Sequence
 import numpy as np
 import torch
 from PIL import Image
+from transformers import DINOv3ViTModel
 
 from diffusers_3d import (
     AutoPipelineForImageTo3D,
@@ -50,7 +51,6 @@ from diffusers_3d import (
     Object3DPipelineOutput,
     OVoxelAsset,
     SparseVoxelAsset,
-    Trellis2Dinov3Conditioner,
     Trellis2ImageTo3DPipeline,
     write_ovoxel_npz,
 )
@@ -65,7 +65,7 @@ ALL_STAGE_FORMATS = ("sparse_structure", "shape_slat", "texture_slat", "o_voxel"
 
 
 def load_pipeline(
-    model: str, *, device: str, dtype: torch.dtype, conditioner_repo: str | None
+    model: str, *, device: str, dtype: torch.dtype, image_encoder_repo: str | None
 ) -> Trellis2ImageTo3DPipeline:
     """A converted checkpoint loads like any Diffusers pipeline.
 
@@ -75,14 +75,14 @@ def load_pipeline(
 
         Trellis2ImageTo3DPipeline.from_pretrained(model)
 
-    The published repository leaves out the DINOv3 conditioner because its weights are gated under
-    Meta's license; ``conditioner_repo`` names the gated Hub repository to build it from, and passing
-    the object to ``from_pretrained`` uses it instead of a ``conditioner/`` subfolder.
+    The published repository leaves out the DINOv3 image encoder because its weights are gated under
+    Meta's license; ``image_encoder_repo`` names the gated Hub repository to load it from, and passing
+    the object to ``from_pretrained`` uses it instead of an ``image_encoder/`` subfolder.
     """
 
     components = {}
-    if conditioner_repo is not None:
-        components["conditioner"] = Trellis2Dinov3Conditioner.from_dinov3_pretrained(conditioner_repo)
+    if image_encoder_repo is not None:
+        components["image_encoder"] = DINOv3ViTModel.from_pretrained(image_encoder_repo)
     pipeline = AutoPipelineForImageTo3D.from_pretrained(model, **components)
     return pipeline.to(device=device, dtype=dtype)
 
@@ -220,14 +220,14 @@ def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     source = parser.add_mutually_exclusive_group()
     source.add_argument("--model", help="Converted TRELLIS.2 checkpoint directory or Hub repository ID.")
     parser.add_argument(
-        "--conditioner",
+        "--image-encoder",
         default="facebook/dinov3-vitl16-pretrain-lvd1689m",
-        help="Gated DINOv3 repository to build the conditioner from when --model does not ship one.",
+        help="Gated DINOv3 repository to load the image encoder from when --model does not ship one.",
     )
     parser.add_argument(
-        "--no-conditioner-download",
+        "--no-image-encoder-download",
         action="store_true",
-        help="Load the conditioner from the --model folder instead (a local conversion includes it).",
+        help="Load the image encoder from the --model folder instead (a local conversion includes it).",
     )
     source.add_argument("--tiny", action="store_true", help="Use randomly initialised tiny CPU components.")
     parser.add_argument("--image", action="append", default=[], help="Input image; repeat for a batch.")
@@ -262,7 +262,7 @@ def main(argv: Sequence[str] | None = None) -> None:
             args.model,
             device=args.device,
             dtype=getattr(torch, args.dtype),
-            conditioner_repo=None if args.no_conditioner_download else args.conditioner,
+            image_encoder_repo=None if args.no_image_encoder_download else args.image_encoder,
         )
         steps = args.steps
 

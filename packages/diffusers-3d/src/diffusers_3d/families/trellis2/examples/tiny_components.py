@@ -8,9 +8,9 @@ hand. The tiny pipeline exists so the examples and docs can be executed on CPU i
 from __future__ import annotations
 
 import torch
+from transformers import DINOv3ViTConfig, DINOv3ViTModel
 
 from diffusers_3d import (
-    Trellis2Dinov3Conditioner,
     Trellis2FlowEulerScheduler,
     Trellis2ImageTo3DPipeline,
     Trellis2PBRSparseDecoder,
@@ -31,7 +31,17 @@ def build_tiny_pipeline(*, include_slat: bool = False) -> Trellis2ImageTo3DPipel
 
     torch.manual_seed(0)
     components: dict[str, object] = {
-        "conditioner": Trellis2Dinov3Conditioner(**Trellis2Dinov3Conditioner.tiny_config()),
+        "image_encoder": DINOv3ViTModel(
+            DINOv3ViTConfig(
+                image_size=8,
+                patch_size=4,
+                hidden_size=12,
+                intermediate_size=24,
+                num_hidden_layers=1,
+                num_attention_heads=3,
+                num_register_tokens=2,
+            )
+        ).eval(),
         "sparse_structure_flow_model": Trellis2SparseStructureFlowModel(
             **Trellis2SparseStructureFlowModel.tiny_config()
         ),
@@ -59,7 +69,7 @@ def build_tiny_pipeline(*, include_slat: bool = False) -> Trellis2ImageTo3DPipel
             texture_slat_std=[1.0] * texture_flow.config.out_channels,
         )
     # Converted checkpoints ship "1024_cascade"; the single-stage "512" preset is enough for tiny weights.
-    return Trellis2ImageTo3DPipeline(**components, default_pipeline_type="512")
+    return Trellis2ImageTo3DPipeline(**components, default_pipeline_type="512", image_size=8)
 
 
 __all__ = ["build_tiny_pipeline"]

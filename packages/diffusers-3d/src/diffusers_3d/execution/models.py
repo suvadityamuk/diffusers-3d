@@ -1,11 +1,12 @@
 from __future__ import annotations
 
-from typing import ClassVar
+import os
+from typing import Any, ClassVar
 
 from diffusers import ConfigMixin, ModelMixin
 
 from ..objects import Object3DKind
-from .exceptions import Object3DSchemaError
+from .exceptions import Object3DLoadingError, Object3DSchemaError
 from .metadata import (
     OBJECT3D_API_VERSION,
     OBJECT3D_SCHEMA_VERSION,
@@ -31,6 +32,21 @@ class Object3DModel(ModelMixin, ConfigMixin):
     required_backends: ClassVar[tuple[str, ...]] = ()
     contribution_status: ClassVar[ContributionStatus] = ContributionStatus.EXPERIMENTAL_HUB
     review_status: ClassVar[ReviewStatus] = ReviewStatus.UNREVIEWED
+
+    @classmethod
+    def from_pretrained(cls, pretrained_model_name_or_path: str | os.PathLike[str] | None, **kwargs: Any) -> Any:
+        """``ModelMixin.from_pretrained`` that raises, instead of warning, when the checkpoint lacks weights."""
+
+        output_loading_info = kwargs.pop("output_loading_info", False)
+        model, loading_info = super().from_pretrained(
+            pretrained_model_name_or_path, output_loading_info=True, **kwargs
+        )
+        if loading_info["missing_keys"]:
+            raise Object3DLoadingError(
+                f"{pretrained_model_name_or_path} has no weights for {cls.__name__} parameters "
+                f"{sorted(loading_info['missing_keys'])[:8]} ({len(loading_info['missing_keys'])} in total)"
+            )
+        return (model, loading_info) if output_loading_info else model
 
     @classmethod
     def object3d_metadata(cls) -> Object3DModelMetadata:

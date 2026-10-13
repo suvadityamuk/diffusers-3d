@@ -1,0 +1,15 @@
+Tencent Hunyuan 3D 2.1 is licensed under the Tencent Hunyuan 3D 2.1 Community License Agreement, Copyright © 2025 Tencent. All Rights Reserved. The trademark rights of “Tencent Hunyuan” are owned by Tencent or its affiliate.
+
+The model, scheduler, image preprocessing, and pipeline semantics in this directory are modified from:
+
+  Tencent-Hunyuan/Hunyuan3D-2.1
+  https://github.com/Tencent-Hunyuan/Hunyuan3D-2.1
+  revision 82920d643c0dc2f7bfd7255f45f62d386edfe60c
+
+and load weights converted from the Hugging Face Hub repository tencent/Hunyuan3D-2.1 at revision
+0b94677654c57bb9a6b6845cd7b704ccf551d327. Those portions and any converted weights are governed by the accompanying
+LICENSE-TENCENT-HUNYUAN-3D-2.1, not by the Apache-2.0 license of the rest of diffusers-3d. The license does not apply
+in the European Union, the United Kingdom, or South Korea, and its Acceptable Use Policy and use restrictions
+(Sections 5(a) and 5(b)) apply to every use. Every modified file carries a prominent modification notice.
+
+diffusers-3d is not affiliated with, associated with, sponsored by, or endorsed by Tencent.

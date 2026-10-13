@@ -76,6 +76,10 @@ Two TRELLIS paths are pure PyTorch on top of the adapters above:
 - `radiance_field.render_radiance_field(asset, cameras)` volume-renders a `RadianceFieldAsset` on any device. It is an
   independent implementation of the tri-vector field's definition, not a port of `diffoctreerast`, which stays a
   research-only registry entry.
+- `mesh_rasterizer.rasterize(clip_positions, faces, image_size)` returns per-pixel face index, perspective-correct
+  barycentrics, and depth on any device, with `interpolate` for vertex attributes and `rasterize_mesh(mesh, cameras)`
+  for pinhole `CameraRig`s. With `align_corners=True` it follows the `custom_rasterizer` semantics used by the
+  Hunyuan3D-2.1 and Step1X-3D texture bakers; it is an independent implementation with no compiled extension.
 
 `utils3d` means the EasternJournalist repository used by TRELLIS, not the unrelated PyPI distribution. It must be
 installed from an audited pinned revision.
