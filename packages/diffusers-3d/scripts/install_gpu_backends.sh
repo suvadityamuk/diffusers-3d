@@ -4,7 +4,8 @@
 # Needs a CUDA toolchain (nvcc) matching the installed torch and an already installed diffusers-3d, whose
 # registry supplies the URLs and revisions so this script cannot drift from the package's provenance checks.
 #
-#   ACCEPT_NVDIFFRAST_RESEARCH_LICENSE=1   also build nvdiffrast and the O-Voxel runtime (which imports it).
+#   ACCEPT_NVDIFFRAST_RESEARCH_LICENSE=1   also build nvdiffrast and the O-Voxel runtime (which imports it); only
+#                                          .vxz and voxel rendering need them.
 #                                          nvdiffrast is research/evaluation only; read its license first.
 #   TORCH_CUDA_ARCH_LIST                   defaults to 8.0 (A100).
 #   MAX_JOBS                               parallel nvcc jobs, defaults to 8.
@@ -27,9 +28,6 @@ step() { echo; echo "=== $* ($(date +%H:%M:%S))"; }
 
 step "build tools"
 python -m pip install -q ninja
-
-step "utils3d (pinned source, not the PyPI project of the same name)"
-python -m pip install -q "$(pin utils3d)"
 
 step "FlexGEMM"
 python -m pip install -q --no-build-isolation "$(pin flex_gemm)"
@@ -56,7 +54,7 @@ step "installed backends"
 python - <<'PY'
 from diffusers_3d.backends import BACKEND_REGISTRY, discover_backend
 
-for name in ("utils3d", "flex_gemm", "cumesh", "gsplat", "nvdiffrast", "o_voxel"):
+for name in ("flex_gemm", "cumesh", "gsplat", "nvdiffrast", "o_voxel"):
     status = discover_backend(BACKEND_REGISTRY.get(name))
     print(f"{name:12s} installed={status.installed} importable={status.importable} provenance={status.provenance_verified}")
 PY

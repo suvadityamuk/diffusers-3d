@@ -111,8 +111,7 @@ a dual-grid surface and the PBR decoder paints it.
 
 - `formats` names the representations to return, in order, from `"sparse_structure"`, `"shape_slat"`,
   `"texture_slat"`, `"o_voxel"`, and `"mesh"`. It defaults to `("o_voxel",)` when the texture stage is loaded and to
-  `("sparse_structure",)` otherwise. `"mesh"` runs O-Voxel meshing through `OVoxelBackend` and needs the compiled
-  runtime; every other format runs in plain PyTorch on CPU or GPU.
+  `("sparse_structure",)` otherwise. Every format, `"mesh"` included, runs in plain PyTorch on CPU or GPU.
 - `*_sampler_params` are per-stage mappings. Omitted keys fall back to the released defaults serialized in
   `pipeline.config` (for the sparse-structure stage: 12 steps, guidance strength 7.5, guidance rescale 0.7,
   guidance interval `(0.6, 1.0)`, `rescale_t` 5.0).
@@ -148,9 +147,26 @@ Which asset type you get depends on the format:
 | `sparse_structure` | `SparseVoxelAsset` | Occupancy grid decoded from dense latents. |
 | `shape_slat`, `texture_slat` | `SparseVoxelAsset` | Denoised structured latents on the final stage's grid. `metadata["stage"]` is `"shape"` or `"texture"`. |
 | `o_voxel` | `OVoxelAsset` | Dual-grid surface plus PBR channels (`base_color`, `metallic`, `roughness`, `opacity`, `normals`, `emissive`). |
-| `mesh` | `MeshAsset` | Extracted through `OVoxelBackend`, which needs the compiled O-Voxel runtime. |
+| `mesh` | `MeshAsset` | The O-Voxel's dual-grid surface, one vertex per voxel, coloured by base colour and opacity. |
 
-## 6. Save assets
+## 6. Load LoRA weights
+
+Each pipeline loads LoRA weights saved in the Diffusers format into its flow models. Install PEFT first with
+`pip install "peft>=0.17.0"` (or the `lora` extra: `pip install -e "packages/diffusers-3d[lora]"`); without it,
+loading raises an `ImportError` with that command.
+
+```python
+pipeline.load_lora_weights("user/trellis2-style-lora", adapter_name="style")
+pipeline.set_adapters("style", adapter_weights=0.8)  # scale it; fuse_lora() / unfuse_lora() also work
+pipeline.unload_lora_weights()
+```
+
+A Diffusers-format checkpoint is a safetensors file whose keys start with the component they adapt, for example
+`sparse_structure_flow_model.blocks.0.self_attn.to_qkv.lora_A.weight`. TRELLIS accepts `sparse_structure_flow_model`
+and `slat_flow_model`; TRELLIS.2 accepts `sparse_structure_flow_model` and the four shape and texture SLAT flow
+models. Checkpoints with any other key prefix are rejected rather than converted.
+
+## 7. Save assets
 
 There is no single 3D file format, so serialization is per representation:
 
@@ -162,13 +178,20 @@ if isinstance(asset, SparseVoxelAsset):
 elif isinstance(asset, OVoxelAsset):
     write_ovoxel_npz("object.npz", asset)                 # pure NumPy, readable by the official TRELLIS.2 tools
 elif isinstance(asset, MeshAsset):
+    asset = asset.to_coordinate_system("right_handed_y_up")  # TRELLIS families are Z-up; GLB is Y-up
     TrimeshBackend().export_mesh(asset, "object.glb")     # needs the `portable` extra
 ```
 
-`.vxz`, dual-grid mesh extraction, voxel rendering, and PBR GLB baking delegate to the compiled O-Voxel runtime and
-its research-licensed dependencies. They are never imported implicitly; see [backends.md](backends.md) for how to
-install and select them, and call `pipeline.postprocess_ovoxel(asset, output_format="glb")` explicitly when they are
-available.
+For a PBR-textured mesh like upstream's `to_glb`, install CuMesh, which compiles against your PyTorch and CUDA (see
+[backends.md](backends.md)):
+
+```bash
+pip install --no-build-isolation -r packages/diffusers-3d/requirements/backends/cumesh.txt
+```
+
+Then call `pipeline.postprocess_ovoxel(asset, output_format="textured_mesh")`; convert the result with
+`to_coordinate_system("right_handed_y_up")` before exporting it. `.vxz` and voxel rendering still need the compiled
+O-Voxel runtime and its research-licensed nvdiffrast dependency, which are never imported implicitly.
 
 ## TRELLIS (v1) differences
 

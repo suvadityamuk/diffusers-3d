@@ -4,7 +4,7 @@
 #
 # MIT License. Copyright (c) Microsoft Corporation.
 # Modified for typed object-native stages and explicit backend/license gates.
-# Sparse convolution and attention run in plain PyTorch; only mesh extraction needs the O-Voxel runtime.
+# Sparse convolution, attention, and mesh extraction run in plain PyTorch.
 
 from __future__ import annotations
 
@@ -15,8 +15,9 @@ from typing import Any
 import torch
 from diffusers.utils.torch_utils import randn_tensor
 
-from ...backends import OVoxelBackend, Trellis2PBRPostprocessFacade
+from ...backends import Trellis2PBRPostprocessFacade, ovoxel_to_mesh
 from ...data import ImageCondition, preprocess_image_condition
+from ...execution.lora import Object3DLoraLoaderMixin
 from ...execution.metadata import (
     ContributionStatus,
     Object3DComponentSpec,
@@ -118,15 +119,15 @@ def _sampler_parameters(defaults: Mapping[str, Any], overrides: Mapping[str, Any
     }
 
 
-class Trellis2ImageTo3DPipeline(Object3DPipeline):
+class Trellis2ImageTo3DPipeline(Object3DPipeline, Object3DLoraLoaderMixin):
     """TRELLIS.2 image-to-3D: sparse structure -> shape SLAT -> texture SLAT -> O-Voxels, all in plain PyTorch.
 
     The four released presets are ``pipeline_type`` values. ``"512"`` and ``"1024"`` run one shape and one
     texture flow model; the cascades sample the 512 shape model first, grow its coordinates with the shape
     decoder, and sample the 1024 models on the grown grid. Component names follow the released
     ``pipeline.json``: ``shape_slat_flow_model`` / ``texture_slat_flow_model`` are the 512 models, the
-    ``*_1024`` components are the 1024 models. Meshing O-Voxels needs ``OVoxelBackend``; everything else runs
-    on CPU.
+    ``*_1024`` components are the 1024 models. Everything runs in plain PyTorch on any device; only the
+    textured-mesh postprocess needs CuMesh.
     """
 
     family_id = "trellis2"
@@ -249,6 +250,13 @@ class Trellis2ImageTo3DPipeline(Object3DPipeline):
         "texture_slat_flow_model_1024",
         "texture_slat_scheduler",
         "pbr_decoder",
+    ]
+    _lora_loadable_modules = [
+        "sparse_structure_flow_model",
+        "shape_slat_flow_model",
+        "shape_slat_flow_model_1024",
+        "texture_slat_flow_model",
+        "texture_slat_flow_model_1024",
     ]
 
     def __init__(
@@ -712,18 +720,17 @@ class Trellis2ImageTo3DPipeline(Object3DPipeline):
         asset: OVoxelAsset,
         *,
         output_format: str,
-        ovoxel_backend: OVoxelBackend | None = None,
         pbr_postprocess: Trellis2PBRPostprocessFacade | None = None,
-        postprocess_kwargs: Mapping[str, Any] | None = None,
-    ) -> Any:
-        kwargs = {} if postprocess_kwargs is None else dict(postprocess_kwargs)
+        **kwargs: Any,
+    ) -> MeshAsset:
+        """Mesh an O-Voxel (``"mesh"``) or bake it into a PBR-textured mesh (``"textured_mesh"``, needs CuMesh)."""
+
         if output_format == "mesh":
-            backend = OVoxelBackend() if ovoxel_backend is None else ovoxel_backend
-            return backend.to_mesh(asset, **kwargs)
-        if output_format == "glb":
+            return ovoxel_to_mesh(asset)
+        if output_format == "textured_mesh":
             facade = Trellis2PBRPostprocessFacade() if pbr_postprocess is None else pbr_postprocess
-            return facade.to_glb(asset, **kwargs)
-        raise ValueError("output_format must be 'mesh' or 'glb'")
+            return facade.to_textured_mesh(asset, **kwargs)
+        raise ValueError("output_format must be 'mesh' or 'textured_mesh'")
 
     def _require_stage_components(self, preset: _PipelineType, *, needs_texture: bool) -> None:
         if self.shape_slat_flow_model is None and self.shape_slat_flow_model_1024 is None:
@@ -750,8 +757,6 @@ class Trellis2ImageTo3DPipeline(Object3DPipeline):
         sparse_structure_latents: torch.Tensor | None = None,
         shape_slat_latents: TrellisSparseTensor | None = None,
         texture_slat_latents: TrellisSparseTensor | None = None,
-        ovoxel_backend: OVoxelBackend | None = None,
-        postprocess_kwargs: Mapping[str, Any] | None = None,
         return_latents: bool = True,
         return_dict: bool = True,
     ) -> Object3DPipelineOutput | tuple[tuple[Object3D, ...], Latent3DOutput | None]:
@@ -759,7 +764,7 @@ class Trellis2ImageTo3DPipeline(Object3DPipeline):
 
         ``formats`` picks what is returned, in this order: ``"sparse_structure"`` (occupancy voxels),
         ``"shape_slat"`` and ``"texture_slat"`` (structured latents), ``"o_voxel"`` (decoded PBR O-Voxels), and
-        ``"mesh"`` (O-Voxels meshed through ``ovoxel_backend``). It defaults to ``"o_voxel"`` when the texture
+        ``"mesh"`` (O-Voxel surfaces with vertex colours). It defaults to ``"o_voxel"`` when the texture
         components are loaded and to ``"sparse_structure"`` otherwise. ``pipeline_type`` selects the released
         preset; ``max_num_tokens`` caps the cascade's second-stage grid. ``shape_slat_latents`` and
         ``texture_slat_latents`` replace the sampled noise of the last stage.
@@ -852,15 +857,7 @@ class Trellis2ImageTo3DPipeline(Object3DPipeline):
                 if "o_voxel" in formats:
                     objects.extend(ovoxels)
                 if "mesh" in formats:
-                    objects.extend(
-                        self.postprocess_ovoxel(
-                            asset,
-                            output_format="mesh",
-                            ovoxel_backend=ovoxel_backend,
-                            postprocess_kwargs=postprocess_kwargs,
-                        )
-                        for asset in ovoxels
-                    )
+                    objects.extend(ovoxel_to_mesh(asset) for asset in ovoxels)
         latent_output = (
             Latent3DOutput(latents=dense_latents, metadata={"family": "trellis2", "stage": "sparse_structure"})
             if return_latents

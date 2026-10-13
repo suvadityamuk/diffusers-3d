@@ -146,17 +146,18 @@ DEFAULT_BACKEND_SPECS = (
             }
         ),
         support_level=BackendSupportLevel.ACCELERATED,
-        license_class=BackendLicenseClass.PERMISSIVE,
+        license_class=BackendLicenseClass.RESTRICTED,
         devices=frozenset({"cuda"}),
         dtypes=frozenset({"float32"}),
         differentiable=False,
         install_hint=(
-            f"Build CuMesh from JeffreyXiang/CuMesh revision {_CUMESH_REVISION} against the active PyTorch and CUDA"
+            "Build CuMesh against the active PyTorch and CUDA, for example the tested revision: pip install "
+            f'--no-build-isolation "cumesh @ git+https://github.com/JeffreyXiang/CuMesh.git@{_CUMESH_REVISION}". '
+            "CuMesh bundles cubvh under NVIDIA's non-commercial Source Code License."
         ),
         tested_build="Source build; PyTorch, CUDA, compiler, and GPU architecture must be recorded",
         source_url="https://github.com/JeffreyXiang/CuMesh.git",
         source_revision=_CUMESH_REVISION,
-        requires_source_provenance=True,
     ),
     BackendSpec(
         name="kaolin",

@@ -53,7 +53,7 @@ subclass `SchedulerMixin`. So `from_pretrained`, `save_pretrained`, `.to()`, and
 **Each integration says what it reproduces and how it was checked.** A family README names the upstream repository
 and commit it was ported from. The test suite builds tiny versions of every model from `tiny_config()` and compares
 outputs and selected gradients against that pinned upstream code on CPU. Where a stage has not been run at production
-scale (for TRELLIS.2, the 1024 cascade and the compiled O-Voxel/PBR stages), the pipeline config records it under
+scale (for TRELLIS.2, the 1024 cascade), the pipeline config records it under
 `capability_limitations` and the pipeline raises `NotImplementedError` with that reason rather than producing
 unverified output.
 
@@ -75,7 +75,7 @@ restricted dependencies require an explicit license acknowledgement argument.
 | Family | Pipeline | Task | Outputs | Needs a compiled backend |
 |---|---|---|---|---|
 | [TRELLIS](packages/diffusers-3d/src/diffusers_3d/families/trellis/README.md) | `TrellisImageTo3DPipeline`, `TrellisTextTo3DPipeline` | image → 3D, text → 3D | sparse structure, SLAT, Gaussian splats, FlexiCubes mesh, tri-vector radiance field | rendering the splats (gsplat); simplifying the mesh for the textured GLB (CuMesh) |
-| [TRELLIS.2](packages/diffusers-3d/src/diffusers_3d/families/trellis2/README.md) | `Trellis2ImageTo3DPipeline` | image → 3D | sparse structure, shape/texture SLAT, O-Voxel (dual grid + PBR) | meshing and GLB export (O-Voxel runtime) |
+| [TRELLIS.2](packages/diffusers-3d/src/diffusers_3d/families/trellis2/README.md) | `Trellis2ImageTo3DPipeline` | image → 3D | sparse structure, shape/texture SLAT, O-Voxel (dual grid + PBR) | PBR-textured mesh export (CuMesh) |
 
 Every network in both pipelines runs in plain PyTorch on CPU or GPU. The sparse convolutions, pooling, subdivision,
 and windowed attention that upstream implements with `spconv`, FlexGEMM, and `xformers` live in
@@ -91,9 +91,10 @@ uv pip install -e .                                  # diffusers core
 uv pip install -e packages/diffusers-3d               # diffusers_3d
 ```
 
-Optional extras: `portable` (trimesh, scikit-image, xatlas for CPU mesh I/O), `gaussian` (gsplat). Compiled and
-research backends are installed separately; see [backends.md](packages/diffusers-3d/docs/backends.md). Requires
-Python 3.10+, PyTorch 2.6+, Transformers 5.5+, Accelerate 1.1+.
+Optional extras: `portable` (trimesh, scikit-image, xatlas for CPU mesh I/O), `gaussian` (gsplat), `lora` (PEFT,
+for `load_lora_weights`). Compiled and research backends are installed separately; see
+[backends.md](packages/diffusers-3d/docs/backends.md). Requires Python 3.10+, PyTorch 2.6+, Transformers 5.5+,
+Accelerate 1.1+.
 
 ## Quickstart
 

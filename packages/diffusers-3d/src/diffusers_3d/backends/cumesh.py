@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import warnings
 from collections.abc import Mapping
 from typing import Any
 
@@ -40,6 +41,12 @@ class CuMeshBackend:
             "CuMesh",
             device=self.device,
             dtype=torch.float32,
+        )
+        warnings.warn(
+            "CuMesh bundles cubvh, which NVIDIA licenses for non-commercial research and evaluation use only. "
+            "You are responsible for making sure your use of it complies with that license.",
+            UserWarning,
+            stacklevel=2,
         )
         if not callable(getattr(self._module, "CuMesh", None)):
             raise RuntimeError("the selected CuMesh build does not expose CuMesh")

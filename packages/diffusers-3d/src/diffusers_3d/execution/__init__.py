@@ -15,6 +15,7 @@ from .exceptions import (
     Object3DSchemaError,
     Object3DTaskError,
 )
+from .lora import Object3DLoraLoaderMixin, Object3DPeftAdapterMixin
 from .metadata import (
     OBJECT3D_API_VERSION,
     OBJECT3D_MODEL_INDEX_NAME,
@@ -46,11 +47,13 @@ __all__ = [
     "ContributionStatus",
     "ModularObject3DPipeline",
     "Object3DExecutionError",
+    "Object3DLoraLoaderMixin",
     "Object3DLoadingError",
     "Object3DMetadataError",
     "Object3DComponentSpec",
     "Object3DModel",
     "Object3DModelIndex",
+    "Object3DPeftAdapterMixin",
     "Object3DModelMetadata",
     "Object3DModelRegistration",
     "Object3DModelRegistry",

@@ -61,7 +61,7 @@ jobs:
           python -m pip install -e .
           python -m pip install -e "packages/diffusers-3d[test]" --no-deps
           python -m pip install \
-            accelerate pytest pytest-cov safetensors "transformers>=5.5.0"
+            accelerate peft pytest pytest-cov safetensors "transformers>=5.5.0"
       - name: Verify CPU import and all backend-independent tests
         run: |
           python -c "import diffusers_3d"
@@ -145,7 +145,7 @@ jobs:
           skipped = sum(int(suite.attrib.get("skipped", 0)) for suite in suites)
           failures = sum(int(suite.attrib.get("failures", 0)) for suite in suites)
           errors = sum(int(suite.attrib.get("errors", 0)) for suite in suites)
-          assert tests == 10, f"expected 10 reference-parity cases, collected {tests}"
+          assert tests == 12, f"expected 12 reference-parity cases, collected {tests}"
           assert (skipped, failures, errors) == (0, 0, 0), (
               f"reference parity was not clean: skipped={skipped}, "
               f"failures={failures}, errors={errors}"

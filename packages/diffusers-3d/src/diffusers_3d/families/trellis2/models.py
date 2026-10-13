@@ -21,6 +21,7 @@ from diffusers.models.modeling_utils import get_parameter_dtype
 from diffusers.utils import BaseOutput
 from torch import nn
 
+from ...execution.lora import Object3DPeftAdapterMixin
 from ...execution.metadata import ContributionStatus, ReviewStatus
 from ...execution.models import Object3DModel
 from ...objects import Object3DKind
@@ -384,7 +385,7 @@ class _Trellis2FlowInitialization:
         nn.init.zeros_(self.out_layer.bias)
 
 
-class Trellis2SparseStructureFlowModel(_Trellis2FlowInitialization, Object3DModel):
+class Trellis2SparseStructureFlowModel(_Trellis2FlowInitialization, Object3DModel, Object3DPeftAdapterMixin):
     """Reviewed dense TRELLIS.2 sparse-structure flow transformer."""
 
     family_id = "trellis2"
@@ -585,7 +586,7 @@ class Trellis2SparseStructureFlowModel(_Trellis2FlowInitialization, Object3DMode
         return Trellis2SparseStructureFlowOutput(sample=hidden_states)
 
 
-class Trellis2SLatFlowModel(_Trellis2FlowInitialization, Object3DModel):
+class Trellis2SLatFlowModel(_Trellis2FlowInitialization, Object3DModel, Object3DPeftAdapterMixin):
     """TRELLIS.2 shape / texture SLAT flow transformer (released ``SLatFlowModel`` layout).
 
     Unlike TRELLIS, the TRELLIS.2 SLAT denoiser has no sparse-convolution stages: it is a linear input

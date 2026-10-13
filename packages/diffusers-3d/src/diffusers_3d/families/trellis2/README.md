@@ -3,9 +3,9 @@
 This family integrates the MIT-licensed Microsoft TRELLIS.2 implementation at
 revision `75fbf0183001ed9876c8dbb35de6b68552ee08bd`. It is a distinct
 `trellis2` family. The whole released network stack (sparse-structure stage,
-512/1024 shape and texture SLAT flows, shape and PBR decoders) runs in plain
-PyTorch; mesh conversion and PBR/GLB postprocess delegate to the compiled
-O-Voxel runtime and stay capability-gated.
+512/1024 shape and texture SLAT flows, shape and PBR decoders) and mesh
+extraction run in plain PyTorch; the PBR-textured mesh postprocess also needs
+a user-installed CuMesh.
 
 A runnable end-to-end example lives in
 [`examples/image_to_3d.py`](examples/image_to_3d.py); see
@@ -59,8 +59,9 @@ The package-owned O-Voxel adapter has independent capability surfaces:
 - `.vxz` read/write delegates unsorted global coordinates to
   `o_voxel.io.read_vxz`/`write_vxz`, whose official runtime performs
   chunk-local ordering;
-- dual-grid mesh extraction delegates to
-  `o_voxel.convert.flexible_dual_grid_to_mesh`;
+- dual-grid mesh extraction (`ovoxel_to_mesh`) is a plain-PyTorch port of
+  `o_voxel.convert.flexible_dual_grid_to_mesh` whose vertices and faces match
+  the pinned upstream code bit for bit on every device;
 - voxel rendering delegates to `o_voxel.rasterize.VoxelRenderer`.
 
 `.vxz` is never advertised as a pure codec. It does not encode the original
@@ -92,25 +93,29 @@ on any device; tiny outputs match the pinned upstream code with FlexGEMM and
 xformers replaced by dense PyTorch in the test.
 
 `formats` accepts `sparse_structure`, `shape_slat`, `texture_slat`, `o_voxel`,
-and `mesh` (through the explicit O-Voxel backend). GLB postprocess is not a
-`formats` value: call `postprocess_ovoxel(asset, output_format="glb")` when
-the optional, license-gated stack is available.
+and `mesh` (vertex-coloured, on any device). The PBR-textured mesh is not a
+`formats` value: call `postprocess_ovoxel(asset, output_format="textured_mesh")`
+once CuMesh is installed.
 
 ## Backend and license boundaries
 
 - `FlexGemmBackend` is limited to released submanifold sparse convolution and
   3D grid sampling. `CuMeshBackend` is limited to repair, simplify, remesh, UV,
   and BVH operations. This package pins FlexGEMM at
-  `6dd94a859c26ee8246888502eada3dd8ad85532e` and CuMesh at
-  `12289e1062f0603f2f0d0771b02e1395d247f26f`; discovery and runtime loading
+  `6dd94a859c26ee8246888502eada3dd8ad85532e`; discovery and runtime loading
   require matching PEP 610 source provenance followed by runtime API/toolchain
-  checks. Raw upstream modules do not need custom attestation attributes.
-- Compiled O-Voxel source is not vendored. Native conversion, `.vxz`, and voxel
-  rendering are API-tested with fakes in the CPU test matrix and were run once
+  checks. CuMesh is accepted from any install (tested at
+  `12289e1062f0603f2f0d0771b02e1395d247f26f`) and only runtime-checked. It
+  bundles cubvh under NVIDIA's non-commercial license, and loading it warns
+  that compliance is on the user.
+- Compiled O-Voxel source is not vendored. `.vxz` and voxel rendering are
+  API-tested with fakes in the CPU test matrix and were run once
   by hand on an A100 against real outputs (see `docs/compatibility.md`).
-- `Trellis2PBRPostprocessFacade` requires O-Voxel, CuMesh, FlexGEMM, and
-  nvdiffrast together. nvdiffrast is research/restricted and requires an
-  explicit license acknowledgement; it is never invoked silently.
+- `Trellis2PBRPostprocessFacade` follows upstream `o_voxel.postprocess.to_glb`
+  step for step on CuMesh (hole filling, simplification or remeshing, cleanup,
+  UV unwrapping, BVH reprojection). The texel rasterization and trilinear
+  attribute baking that upstream runs on nvdiffrast and FlexGEMM are plain
+  PyTorch, so the textured mesh needs neither nvdiffrast nor O-Voxel.
 - Production `facebook/dinov3-vitl16-pretrain-lvd1689m` weights are gated on
   the Hub and governed by the separate DINOv3 License. The package does not
   redistribute them.
@@ -135,9 +140,9 @@ the published repository.
 
 ## Explicit limitations
 
-- No official full 4B checkpoint, production-resolution GPU, compiled O-Voxel
-  mesh conversion, voxel rendering, PBR GLB export, or visual quality run was
-  performed in this package's test matrix.
+- No official full 4B checkpoint, production-resolution GPU, CuMesh textured
+  mesh, voxel rendering, or visual quality run is part of this package's CPU
+  test matrix.
 - Parity is measured with tiny weights against the pinned upstream code on
   CPU, for every network. Released state-dict layouts are checked against the
   published safetensors headers.

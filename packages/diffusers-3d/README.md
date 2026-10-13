@@ -29,16 +29,17 @@ expression does not relicense any family code or model artifact.
 ## Current TRELLIS.2 limitations
 
 - Every network runs in plain PyTorch, with tiny-weight parity against the pinned upstream code in the CPU test
-  matrix. The full 4B checkpoint, the compiled O-Voxel mesh/render path, and the PBR GLB export run in the separate
-  GPU smoke workflow (`scripts/gpu_smoke.py`), which checks coarse invariants only; quality is not claimed.
+  matrix, and mesh extraction matches the pinned upstream code bit for bit. The full 4B checkpoint and the CuMesh
+  textured-mesh export run in the separate GPU smoke workflow (`scripts/gpu_smoke.py`), which checks coarse invariants only; quality is not claimed.
 - O-Voxel schema/mixed lossless packing and deterministic lexicographic NPZ across the uint16 coordinate domain are
   pure package code. Explicit 30-bit Morton ordering remains available through coordinate 1023. Unit-domain PBR
   channels use uint8 while out-of-cell dual vertices and unbounded split weights retain float16/float32. NPZ files
-  contain only official-reader fields. `.vxz`, native dual-grid conversion, and voxel rendering require a separately
+  contain only official-reader fields. `.vxz` and voxel rendering require a separately
   compiled, pinned O-Voxel runtime; the pinned VXZ v0 codec cannot losslessly store floating-point attributes and
   rejects such writes.
-- FlexGEMM and CuMesh are MIT source builds pinned by this package to audited commits with direct-URL provenance and
-  runtime API/toolchain checks. Raw upstream modules do not need custom revision or build attributes.
+- FlexGEMM is an MIT source build pinned by this package to an audited commit with direct-URL provenance and runtime
+  API/toolchain checks. CuMesh is accepted from any install and only runtime-checked; it bundles cubvh under NVIDIA's
+  non-commercial license, and loading it warns that compliance is on the user.
 - Production DINOv3 weights are gated under the separate DINOv3 License. nvdiffrast is a restricted research
   dependency and requires explicit acknowledgement; neither is redistributed or selected silently.
 

@@ -54,7 +54,7 @@ pip install "git+https://github.com/suvadityamuk/diffusers.git#subdirectory=pack
 ```
 
 `diffusers-3d` runs every network in plain PyTorch on CPU or GPU. Rendering Gaussian splats needs the optional
-`gsplat` backend; meshing and PBR export for TRELLIS.2 need the compiled O-Voxel runtime (see the package docs).
+`gsplat` backend; the PBR-textured mesh for TRELLIS.2 needs CuMesh (see the package docs).
 """
 
 
@@ -199,9 +199,10 @@ output = pipeline(ImageCondition(image=rgba), pipeline_type="512")
 ovoxel = output.objects[0]  # OVoxelAsset: dual-grid surface with PBR channels
 ```
 
-`pipeline_type` selects the released preset (`512`, `1024`, `1024_cascade`, `1536_cascade`). Meshing the O-Voxel
-(`OVoxelBackend.to_mesh`) and baking the PBR GLB (`pipeline.postprocess_ovoxel(..., output_format="glb")`) need
-the compiled O-Voxel runtime and its research-licensed nvdiffrast dependency; see the package docs.
+`pipeline_type` selects the released preset (`512`, `1024`, `1024_cascade`, `1536_cascade`). `formats=("mesh",)`
+returns a vertex-coloured mesh on any device; baking the PBR-textured mesh
+(`pipeline.postprocess_ovoxel(..., output_format="textured_mesh")`) needs CuMesh, which bundles cubvh under NVIDIA's
+non-commercial license; see the package docs.
 
 ## Components
 

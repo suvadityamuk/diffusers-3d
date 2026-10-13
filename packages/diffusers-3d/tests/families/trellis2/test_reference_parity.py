@@ -15,13 +15,16 @@ from PIL import Image
 
 from diffusers_3d import (
     TRELLIS2_REFERENCE_REVISION,
+    CoordinateSystem,
     ImageCondition,
+    OVoxelAsset,
     Trellis2PBRSparseDecoder,
     Trellis2ShapeDualGridDecoder,
     Trellis2SLatFlowModel,
     Trellis2SparseStructureDecoder,
     Trellis2SparseStructureFlowModel,
     TrellisSparseTensor,
+    ovoxel_to_mesh,
     preprocess_image_condition,
 )
 from diffusers_3d._reference import ReferenceCheckoutError, reference_unavailable, validate_reference_checkout
@@ -45,6 +48,7 @@ REFERENCE_PATHS = (
     "trellis2/models/sc_vaes/fdg_vae.py",
     "trellis2/modules/sparse/__init__.py",
     "trellis2/utils/elastic_utils.py",
+    "o-voxel/o_voxel/convert/flexible_dual_grid.py",
 )
 REFERENCE_PACKAGE = "_diffusers_3d_trellis2_reference"
 _REFERENCE_TYPES: tuple[type[torch.nn.Module], type[torch.nn.Module]] | None = None
@@ -504,3 +508,72 @@ def test_tiny_shape_and_pbr_decoders_match_pinned_reference():
     for index, asset in enumerate(pbr_assets):
         expected_coordinates = expected_pbr.coords[expected_pbr.coords[:, 0] == index][:, 1:]
         assert torch.equal(asset.active_coordinates, expected_coordinates.to(torch.int64))
+
+
+def _load_reference_mesher():
+    """Upstream ``flexible_dual_grid_to_mesh`` with its CUDA hash map replaced by a dict of the same contract."""
+
+    _validate_reference()
+    package = _package(f"{REFERENCE_PACKAGE}_ovoxel", REFERENCE_ROOT / "o-voxel" / "o_voxel")
+    _package(f"{package.__name__}.convert", REFERENCE_ROOT / "o-voxel" / "o_voxel" / "convert")
+    tables = {}
+
+    def keys(coordinates, width, height, depth):
+        coordinates = coordinates.long()
+        inside = ((coordinates[:, 1:] >= 0) & (coordinates[:, 1:] < torch.tensor([width, height, depth]))).all(1)
+        flat = ((coordinates[:, 0] * width + coordinates[:, 1]) * height + coordinates[:, 2]) * depth + coordinates[
+            :, 3
+        ]
+        return flat.tolist(), inside.tolist()
+
+    def insert(table_keys, table_values, coordinates, width, height, depth):
+        tables[table_keys.data_ptr()] = {
+            key: row for row, key in enumerate(keys(coordinates, width, height, depth)[0])
+        }
+
+    def lookup(table_keys, table_values, coordinates, width, height, depth):
+        rows = tables[table_keys.data_ptr()]
+        flat, inside = keys(coordinates, width, height, depth)
+        found = [rows.get(key, 0xFFFFFFFF) if valid else 0xFFFFFFFF for key, valid in zip(flat, inside)]
+        return torch.tensor(found, dtype=torch.int64).to(torch.uint32)
+
+    package._C = types.SimpleNamespace(hashmap_insert_3d_idx_as_val_cuda=insert, hashmap_lookup_3d_cuda=lookup)
+    module = _load_module(
+        f"{package.__name__}.convert.flexible_dual_grid",
+        REFERENCE_ROOT / "o-voxel" / "o_voxel" / "convert" / "flexible_dual_grid.py",
+    )
+    return module.flexible_dual_grid_to_mesh
+
+
+@pytest.mark.parametrize("with_split_weights", [True, False])
+def test_mesh_extraction_matches_pinned_flexible_dual_grid_to_mesh(with_split_weights):
+    reference = _load_reference_mesher()
+    generator = torch.Generator().manual_seed(0)
+    resolution = 24
+    grid = torch.stack(torch.meshgrid(*[torch.arange(resolution)] * 3, indexing="ij"), -1).reshape(-1, 3)
+    centers = (grid.float() + 0.5) / resolution - 0.5
+    shell = (centers.norm(dim=1) - 0.3).abs() < 1.2 / resolution
+    coordinates = grid[shell | (torch.rand(len(grid), generator=generator) < 0.01)].int()
+    coordinates = coordinates[torch.randperm(len(coordinates), generator=generator)]
+    count = len(coordinates)
+    dual_vertices = torch.rand(count, 3, generator=generator) * 1.2 - 0.1
+    flags = torch.rand(count, 3, generator=generator) < 0.6
+    split_weights = torch.rand(count, 1, generator=generator) * 2 if with_split_weights else None
+    aabb = [[-0.5] * 3, [0.5] * 3]
+    asset = OVoxelAsset(
+        active_coordinates=coordinates,
+        base_color=torch.rand(count, 3, generator=generator),
+        metallic=torch.rand(count, generator=generator),
+        roughness=torch.rand(count, generator=generator),
+        dual_grid_vertex_offsets=dual_vertices,
+        intersection_data=flags.to(torch.uint8),
+        split_weights=split_weights,
+        coordinate_system=CoordinateSystem.RIGHT_HANDED_Z_UP,
+        metadata={"resolution": resolution, "aabb": aabb},
+    )
+
+    mesh = ovoxel_to_mesh(asset)
+    vertices, faces = reference(coordinates, dual_vertices, flags, split_weights, aabb=aabb, grid_size=resolution)
+
+    assert torch.equal(mesh.vertices, vertices)
+    assert torch.equal(mesh.faces, faces.long())

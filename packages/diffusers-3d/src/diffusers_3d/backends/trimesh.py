@@ -61,6 +61,21 @@ def _texture_image(value: torch.Tensor) -> Any:
     return Image.fromarray(array, mode="RGBA" if array.shape[-1] == 4 else "RGB")
 
 
+def _metallic_roughness(material: PBRMaterial) -> tuple[Any, float | None, float | None]:
+    """glTF metallic-roughness texture (G = roughness, B = metallic) and factors for textured channels."""
+
+    channels = (material.roughness, material.metallic)
+    textured = [channel for channel in channels if channel is not None and channel.numel() > 1]
+    if not textured:
+        return None, _constant_scalar(material.metallic, "metallic"), _constant_scalar(material.roughness, "roughness")
+    shape = material.base_color.shape[:-1]
+    planes = [
+        torch.ones(shape) if channel is None else channel.detach().cpu().float().squeeze(-1).expand(shape)
+        for channel in channels
+    ]
+    return _texture_image(torch.stack([torch.zeros(shape), *planes], dim=-1)), 1.0, 1.0
+
+
 def _texture_tensor(image: Any) -> torch.Tensor:
     import numpy as np
 
@@ -112,14 +127,17 @@ class TrimeshBackend:
         name = material.metadata.get("name")
         if name is not None and not isinstance(name, str):
             raise ValueError("PBR material metadata 'name' must be a string for trimesh conversion")
+        metallic_roughness_texture, metallic, roughness = _metallic_roughness(material)
         return self._trimesh.visual.material.PBRMaterial(
             name=name,
             baseColorFactor=base_color,
             baseColorTexture=base_color_texture,
-            metallicFactor=_constant_scalar(material.metallic, "metallic"),
-            roughnessFactor=_constant_scalar(material.roughness, "roughness"),
+            metallicRoughnessTexture=metallic_roughness_texture,
+            metallicFactor=metallic,
+            roughnessFactor=roughness,
             emissiveFactor=emissive,
             alphaMode="BLEND" if base_color[3] < 1.0 else None,
+            doubleSided=bool(material.metadata.get("double_sided", False)),
         )
 
     def to_trimesh(self, mesh: MeshAsset) -> Any:

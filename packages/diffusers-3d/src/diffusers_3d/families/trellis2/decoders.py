@@ -335,8 +335,7 @@ class Trellis2ShapeDualGridDecoder(_Trellis2SparseUnetDecoder):
 
     Each upsampling stage predicts which children to keep, so the decoder grows from the 32^3 / 64^3 latent
     grid to the 512 / 1024 output grid on its own. The seven output channels are the dual vertex offset,
-    three per-axis intersection logits, and the quad split weight; turning them into a mesh needs the
-    compiled O-Voxel runtime (``OVoxelBackend``), the ``.npz`` codec needs nothing.
+    three per-axis intersection logits, and the quad split weight; ``ovoxel_to_mesh`` turns them into a mesh.
     """
 
     family_id = "trellis2"

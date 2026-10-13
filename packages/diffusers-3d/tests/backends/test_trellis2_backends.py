@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import dataclasses
 import io
 import json
 import subprocess
@@ -34,11 +35,13 @@ from diffusers_3d import (
     OVoxelRuntimeUnavailableError,
     SparseVoxelAsset,
     Trellis2PBRPostprocessFacade,
+    TrimeshBackend,
     morton_decode_3d,
     morton_encode_3d,
     official_tensors_from_ovoxel_asset,
     ovoxel_asset_from_official,
     ovoxel_grid_transform,
+    ovoxel_to_mesh,
     read_ovoxel_npz,
     write_ovoxel_npz,
 )
@@ -382,7 +385,6 @@ def test_ovoxel_capabilities_are_independent_and_vxz_never_claims_pure_support(
     assert backend.supports(OVoxelCapability.SCHEMA_PACK)
     assert backend.supports(OVoxelCapability.NPZ_CODEC)
     assert not backend.supports(OVoxelCapability.NATIVE_CODEC)
-    assert not backend.supports(OVoxelCapability.NATIVE_CONVERSION)
     assert not backend.supports(OVoxelCapability.NATIVE_RENDERING)
     with pytest.raises(OVoxelRuntimeUnavailableError, match="accept_nvdiffrast"):
         backend.read_vxz("not-real.vxz")
@@ -413,7 +415,6 @@ def test_ovoxel_native_facade_delegates_to_pinned_io_dual_grid_and_renderer_api(
 
     module = types.ModuleType("o_voxel")
     module.io = types.SimpleNamespace(read_vxz=read_vxz, write_vxz=write_vxz)
-    module.convert = types.SimpleNamespace()
     module.rasterize = types.SimpleNamespace()
     monkeypatch.setitem(sys.modules, "o_voxel", module)
     spec = spec_factory(
@@ -437,32 +438,7 @@ def test_ovoxel_native_facade_delegates_to_pinned_io_dual_grid_and_renderer_api(
         accept_nvdiffrast_research_license=True,
     )
     assert backend.supports(OVoxelCapability.NATIVE_CODEC)
-    assert not backend.supports(OVoxelCapability.NATIVE_CONVERSION)
     assert not backend.supports(OVoxelCapability.NATIVE_RENDERING)
-
-    def flexible_dual_grid_to_mesh(
-        coord,
-        dual_vertices,
-        intersected,
-        split_weight,
-        *,
-        grid_size,
-        aabb,
-        train,
-    ):
-        calls["to_mesh"] = {
-            "coord": coord,
-            "dual_vertices": dual_vertices,
-            "intersected": intersected,
-            "split_weight": split_weight,
-            "grid_size": grid_size,
-            "aabb": aabb,
-            "train": train,
-        }
-        return (
-            torch.tensor([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]]),
-            torch.tensor([[0, 1, 2]], dtype=torch.int32),
-        )
 
     class VoxelRenderer:
         def __init__(self, rendering_options):
@@ -476,9 +452,7 @@ def test_ovoxel_native_facade_delegates_to_pinned_io_dual_grid_and_renderer_api(
                 alpha=torch.ones(4, 4),
             )
 
-    module.convert.flexible_dual_grid_to_mesh = flexible_dual_grid_to_mesh
     module.rasterize.VoxelRenderer = VoxelRenderer
-    assert backend.supports(OVoxelCapability.NATIVE_CONVERSION)
     assert backend.supports(OVoxelCapability.NATIVE_RENDERING)
 
     with pytest.raises(ValueError, match="does not encode.*resolution"):
@@ -499,19 +473,6 @@ def test_ovoxel_native_facade_delegates_to_pinned_io_dual_grid_and_renderer_api(
             continue
         assert torch.equal(output_attributes[name], value)
     assert output_kwargs == {"compression": "zstd"}
-
-    asset.transform = torch.eye(4)
-    asset.transform[:3, 3] = torch.tensor([1.0, 2.0, 3.0])
-    mesh = backend.to_mesh(asset, train=True)
-    assert mesh.faces.dtype is torch.int64
-    assert mesh.metadata["resolution"] == [8, 8, 8]
-    torch.testing.assert_close(mesh.transform, asset.transform)
-    assert torch.equal(
-        calls["to_mesh"]["intersected"],
-        torch.tensor([[True, False, True], [False, True, False], [True, True, True], [False, False, False]]),
-    )
-    assert calls["to_mesh"]["grid_size"] == [8, 8, 8]
-    assert calls["to_mesh"]["train"]
 
     asset.transform = torch.eye(4)
     asset.grid_transform = asset.grid_transform.to(dtype=torch.float16)
@@ -734,10 +695,8 @@ def test_cumesh_cpu_fake_covers_repair_simplify_remesh_uv_and_bvh(
         import_name="cumesh",
         distribution_name="cumesh",
     )
-    backend = CuMeshBackend(
-        device="cpu",
-        registry=registry_factory((spec,)),
-    )
+    with pytest.warns(UserWarning, match="non-commercial"):
+        backend = CuMeshBackend(device="cpu", registry=registry_factory((spec,)))
     assert backend.build_identity is None
     mesh = MeshAsset(
         vertices=torch.tensor([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]]),
@@ -833,54 +792,110 @@ def test_source_backends_reject_wrong_pep610_source_before_import(
     assert name not in sys.modules
 
 
-def test_pbr_facade_requires_all_backends_and_explicit_research_license(
-    registry_factory,
-    spec_factory,
+def test_ovoxel_to_mesh_builds_one_vertex_per_voxel_and_two_triangles_per_closed_quad(slab_ovoxel):
+    asset = slab_ovoxel
+
+    mesh = ovoxel_to_mesh(asset)
+
+    assert mesh.vertices.shape == (64, 3) and mesh.faces.shape == (2 * 7 * 7, 3)
+    torch.testing.assert_close(mesh.vertices[:, 2], torch.full((64,), 4.5 / 8 - 0.5))
+    torch.testing.assert_close(mesh.colors, torch.cat([asset.base_color, asset.opacity[:, None]], dim=1))
+    assert mesh.coordinate_system is CoordinateSystem.RIGHT_HANDED_Z_UP
+    with pytest.raises(ValueError, match="resolution and aabb"):
+        ovoxel_to_mesh(dataclasses.replace(asset, metadata={}))
+    with pytest.raises(ValueError, match="no surface"):
+        ovoxel_to_mesh(dataclasses.replace(asset, intersection_data=torch.zeros_like(asset.intersection_data)))
+
+
+@pytest.mark.portable
+@pytest.mark.parametrize("remesh", [False, True])
+def test_textured_mesh_follows_upstream_steps_and_bakes_textures_a_viewer_reads_back(
+    monkeypatch, registry_factory, spec_factory, slab_ovoxel, remesh
 ):
-    specs = (
-        spec_factory(
-            "o_voxel",
-            capabilities=(BackendCapability.NATIVE_REPRESENTATION,),
-            support_level=BackendSupportLevel.ACCELERATED,
-            devices=("cpu",),
-            differentiable=False,
-            import_name="o_voxel",
-            distribution_name="o-voxel",
-        ),
-        spec_factory(
-            "cumesh",
-            capabilities=(BackendCapability.GEOMETRY_PROCESSING,),
-            support_level=BackendSupportLevel.ACCELERATED,
-            devices=("cpu",),
-            differentiable=False,
-            import_name="cumesh",
-            distribution_name="cumesh",
-        ),
-        spec_factory(
-            "flex_gemm",
-            capabilities=(BackendCapability.SPARSE_COMPUTE,),
-            support_level=BackendSupportLevel.ACCELERATED,
-            devices=("cpu",),
-            differentiable=True,
-            import_name="flex_gemm",
-            distribution_name="flex-gemm",
-        ),
-        spec_factory(
-            "nvdiffrast",
-            capabilities=(BackendCapability.MESH_RASTERIZATION,),
-            support_level=BackendSupportLevel.RESEARCH_ONLY,
-            license_class=BackendLicenseClass.RESTRICTED,
-            devices=("cpu",),
-            differentiable=True,
-            import_name="nvdiffrast",
-            distribution_name="nvdiffrast",
-        ),
+    pytest.importorskip("trimesh")
+    calls = []
+
+    class FakeCuMesh:
+        def init(self, vertices, faces):
+            self.vertices, self.faces = vertices, faces
+
+        def read(self):
+            return self.vertices, self.faces
+
+        def __getattr__(self, name):
+            return lambda *args, **kwargs: calls.append((name, *args, *kwargs.values()))
+
+        def uv_unwrap(self, *, compute_charts_kwargs, return_vmaps):
+            calls.append(("uv_unwrap",))
+            uvs = self.vertices[:, :2] + 0.5
+            return self.vertices, self.faces, uvs, torch.arange(self.vertices.shape[0])
+
+        def read_vertex_normals(self):
+            return torch.tensor([0.0, 0.0, 1.0]).expand(self.vertices.shape[0], 3)
+
+    class FakeBVH:
+        def __init__(self, vertices, faces):
+            self.triangles = vertices[faces.long()][..., :2]  # the slab is flat, so barycentrics are planar
+
+        def unsigned_distance(self, points, *, return_uvw):
+            a, b, c = self.triangles.unbind(1)
+            v0, v1, v2 = b - a, c - a, points[:, None, :2] - a
+            denominator = v0[:, 0] * v1[:, 1] - v1[:, 0] * v0[:, 1]
+            w1 = (v2[..., 0] * v1[:, 1] - v1[:, 0] * v2[..., 1]) / denominator
+            w2 = (v0[:, 0] * v2[..., 1] - v2[..., 0] * v0[:, 1]) / denominator
+            uvw = torch.stack([1 - w1 - w2, w1, w2], dim=-1)
+            face_id = uvw.amin(dim=-1).argmax(dim=1)
+            return torch.zeros(points.shape[0]), face_id, uvw[torch.arange(points.shape[0]), face_id]
+
+    def remesh_narrow_band_dc(vertices, faces, **kwargs):
+        calls.append(("remesh", kwargs["resolution"]))
+        return vertices, faces
+
+    module = types.ModuleType("cumesh")
+    module.CuMesh, module.cuBVH = FakeCuMesh, FakeBVH
+    module.remeshing = types.SimpleNamespace(remesh_narrow_band_dc=remesh_narrow_band_dc)
+    monkeypatch.setitem(sys.modules, "cumesh", module)
+    spec = spec_factory(
+        "cumesh",
+        capabilities=(BackendCapability.GEOMETRY_PROCESSING, BackendCapability.CONVERSION),
+        support_level=BackendSupportLevel.ACCELERATED,
+        devices=("cpu",),
+        dtypes=("float32",),
+        differentiable=False,
+        import_name="cumesh",
+        distribution_name="cumesh",
     )
-    facade = Trellis2PBRPostprocessFacade(registry=registry_factory(specs))
-    with pytest.raises(ValueError, match="accept_nvdiffrast_research_license"):
-        facade.requirements(device="cpu")
-    requirements = facade.requirements(
-        device="cpu",
-        accept_nvdiffrast_research_license=True,
+    facade = Trellis2PBRPostprocessFacade(registry=registry_factory((spec,)))
+    assert set(facade.requirements(device="cpu")) == {"cumesh"}
+
+    textured = facade.to_textured_mesh(
+        slab_ovoxel, device="cpu", decimation_target=100, texture_size=64, remesh=remesh
     )
-    assert set(requirements) == {"o_voxel", "cumesh", "flex_gemm", "nvdiffrast"}
+
+    cleanup = [
+        ("remove_duplicate_faces",),
+        ("repair_non_manifold_edges",),
+        ("remove_small_connected_components", 1e-5),
+    ]
+    fill = ("fill_holes", 3e-2)
+    expected = (
+        [fill, ("remesh", 8), ("simplify", 100)]
+        if remesh
+        else [fill, ("simplify", 300), *cleanup, fill, ("simplify", 100), *cleanup, fill, ("unify_face_orientations",)]
+    )
+    assert calls == [*expected, ("uv_unwrap",), ("compute_vertex_normals",)]
+
+    material = textured.materials[0]
+    assert material.metadata["double_sided"] is not remesh
+    # Read each vertex's texel the way a viewer does (OpenGL uvs: v up, row 0 at the top).
+    size = material.base_color.shape[0]
+    columns = (textured.uvs[:, 0] * size).long().clamp(0, size - 1)
+    rows = ((1 - textured.uvs[:, 1]) * size).long().clamp(0, size - 1)
+    ramp = (textured.vertices[:, :2] + 0.5) * 8 / 7 - 1 / 14
+    torch.testing.assert_close(material.base_color[rows, columns, :2], ramp, atol=0.05, rtol=0)
+    torch.testing.assert_close(material.metallic[rows, columns], ramp[:, 0], atol=0.05, rtol=0)
+    torch.testing.assert_close(material.roughness[rows, columns], ramp[:, 1], atol=0.05, rtol=0)
+
+    exported = TrimeshBackend().to_trimesh(textured.to_coordinate_system(CoordinateSystem.RIGHT_HANDED_Y_UP))
+    assert exported.visual.material.metallicRoughnessTexture is not None
+    assert exported.visual.material.doubleSided is not remesh

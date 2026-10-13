@@ -21,6 +21,7 @@ from ..objects import CoordinateSystem, MeshAsset, OVoxelAsset
 from .defaults import BACKEND_REGISTRY
 from .registry import BackendRegistry
 from .types import BackendCapability
+from .voxel_index import VoxelIndex
 
 OVOXEL_REFERENCE_REVISION = "75fbf0183001ed9876c8dbb35de6b68552ee08bd"
 _LEGACY_OVOXEL_METADATA_PREFIX = "__diffusers_3d_ovoxel_"
@@ -35,13 +36,11 @@ class OVoxelCapability(str, Enum):
 
     SCHEMA_PACK = "schema_pack"
     NPZ_CODEC = "npz_codec"
-    NATIVE_CONVERSION = "native_conversion"
     NATIVE_CODEC = "native_codec"
     NATIVE_RENDERING = "native_rendering"
 
 
 _NATIVE_CAPABILITY_MEMBERS = {
-    OVoxelCapability.NATIVE_CONVERSION: ("convert.flexible_dual_grid_to_mesh",),
     OVoxelCapability.NATIVE_CODEC: ("io.read_vxz", "io.write_vxz"),
     OVoxelCapability.NATIVE_RENDERING: ("rasterize.VoxelRenderer",),
 }
@@ -488,6 +487,75 @@ def read_ovoxel_npz(
     )
 
 
+_EDGE_NEIGHBOR_OFFSETS = torch.tensor(
+    [
+        [[0, 0, 0], [0, 0, 1], [0, 1, 1], [0, 1, 0]],
+        [[0, 0, 0], [1, 0, 0], [1, 0, 1], [0, 0, 1]],
+        [[0, 0, 0], [0, 1, 0], [1, 1, 0], [1, 0, 0]],
+    ]
+)
+_QUAD_SPLITS = torch.tensor([[0, 1, 2, 0, 2, 3], [0, 1, 3, 3, 1, 2]])
+
+
+def _split_alignment(vertices: torch.Tensor, triangles: torch.Tensor) -> torch.Tensor:
+    # Upstream scores a split from the first four entries of its six-index triangle list; kept for parity.
+    corners = vertices[triangles[:, :4]]
+    first = torch.cross(corners[:, 1] - corners[:, 0], corners[:, 2] - corners[:, 0], dim=1)
+    second = torch.cross(corners[:, 2] - corners[:, 1], corners[:, 3] - corners[:, 1], dim=1)
+    return (first * second).sum(dim=1).abs()
+
+
+def ovoxel_to_mesh(asset: OVoxelAsset) -> MeshAsset:
+    """Extract an O-Voxel's dual-grid surface as a triangle mesh coloured by its base colour and opacity.
+
+    A plain-PyTorch port of upstream ``o_voxel.convert.flexible_dual_grid_to_mesh``: one vertex per active voxel,
+    and one quad, split into two triangles, around every crossed voxel edge whose four voxels are all active.
+    """
+
+    resolution, aabb = asset.metadata.get("resolution"), asset.metadata.get("aabb")
+    if resolution is None or aabb is None:
+        raise ValueError("mesh extraction requires explicit resolution and aabb metadata")
+    if asset.dual_grid_vertex_offsets is None or asset.intersection_data is None:
+        raise ValueError("mesh extraction requires dual-grid vertices and intersection flags")
+    coordinates = asset.active_coordinates
+    device = coordinates.device
+    grid_size = _resolution_tuple(resolution)
+    aabb = torch.tensor(aabb, dtype=torch.float32, device=device)
+    voxel_size = (aabb[1] - aabb[0]) / torch.tensor(grid_size, dtype=torch.int32, device=device)
+    vertices = (coordinates.float() + asset.dual_grid_vertex_offsets.float()) * voxel_size + aabb[0]
+
+    flags = _unpack_intersection_flags(asset.intersection_data, coordinates.shape[0])
+    edges = coordinates[:, None, None, :] + _EDGE_NEIGHBOR_OFFSETS.to(device)
+    quads = VoxelIndex(coordinates, grid_size).lookup(edges[flags])
+    quads = quads[(quads >= 0).all(dim=1)]
+    first_split, second_split = (quads[:, split] for split in _QUAD_SPLITS.to(device))
+    if asset.split_weights is None:
+        use_first = _split_alignment(vertices, first_split) > _split_alignment(vertices, second_split)
+    else:
+        weights = asset.split_weights.float().reshape(-1)[quads]
+        use_first = weights[:, 0] * weights[:, 2] > weights[:, 1] * weights[:, 3]
+    faces = torch.where(use_first[:, None], first_split, second_split).reshape(-1, 3)
+    if faces.numel() == 0:
+        raise ValueError("the O-Voxel has no surface: no crossed voxel edge has all four of its voxels active")
+
+    colors = asset.base_color
+    if asset.opacity is not None:
+        colors = torch.cat([colors, asset.opacity.reshape(-1, 1)], dim=1)
+    return MeshAsset(
+        vertices=vertices,
+        faces=faces,
+        transform=asset.transform.to(device=device, dtype=vertices.dtype),
+        coordinate_system=asset.coordinate_system,
+        colors=colors.to(vertices.dtype),
+        metadata={
+            "source": "o_voxel",
+            "reference_revision": OVOXEL_REFERENCE_REVISION,
+            "resolution": list(grid_size),
+            "aabb": aabb.tolist(),
+        },
+    )
+
+
 class OVoxelBackend:
     """Portable schema/NPZ adapter with explicitly lazy native O-Voxel operations."""
 
@@ -683,40 +751,6 @@ class OVoxelBackend:
             **kwargs,
         )
 
-    def to_mesh(self, asset: OVoxelAsset, *, train: bool = False) -> MeshAsset:
-        runtime = self._load_runtime(
-            "O-Voxel mesh conversion",
-            capability=OVoxelCapability.NATIVE_CONVERSION,
-            required_members=("convert.flexible_dual_grid_to_mesh",),
-        )
-        coordinates, attributes = self.to_official(asset, packed=False, morton_order=False)
-        resolution = asset.metadata.get("resolution")
-        aabb = asset.metadata.get("aabb")
-        if resolution is None or aabb is None:
-            raise ValueError("native mesh conversion requires explicit resolution and aabb metadata")
-        intersected = _unpack_intersection_flags(asset.intersection_data, asset.active_coordinates.shape[0])
-        vertices, faces = runtime.convert.flexible_dual_grid_to_mesh(
-            coordinates.to(device=self.device, dtype=torch.int32),
-            attributes["dual_vertices"].to(self.device),
-            intersected.to(self.device),
-            None if asset.split_weights is None else asset.split_weights.to(self.device),
-            grid_size=resolution,
-            aabb=aabb,
-            train=train,
-        )
-        return MeshAsset(
-            vertices=vertices,
-            faces=faces.to(dtype=torch.int64),
-            transform=asset.transform.to(device=vertices.device, dtype=vertices.dtype),
-            coordinate_system=asset.coordinate_system,
-            metadata={
-                "source": "o_voxel",
-                "reference_revision": OVOXEL_REFERENCE_REVISION,
-                "resolution": list(_resolution_tuple(resolution)),
-                "aabb": aabb,
-            },
-        )
-
     def render_voxels(
         self,
         asset: OVoxelAsset,
@@ -809,6 +843,7 @@ __all__ = [
     "morton_decode_3d",
     "morton_encode_3d",
     "official_tensors_from_ovoxel_asset",
+    "ovoxel_to_mesh",
     "ovoxel_grid_transform",
     "ovoxel_asset_from_official",
     "read_ovoxel_npz",

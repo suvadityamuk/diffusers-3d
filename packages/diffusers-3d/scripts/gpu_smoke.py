@@ -2,14 +2,14 @@
 
 This is the manual/scheduled counterpart of the CPU test suite (see ``.github/workflows/diffusers_3d_gpu_smoke.yml``
 for how it runs on Hugging Face Jobs). It converts the official checkpoints (or loads the published
-conversions with ``--hub-namespace``), generates from one image and one prompt, pushes the outputs through gsplat, the O-Voxel runtime, CuMesh, the PBR facade, the texture baker, and the
-radiance-field renderer, checks a few invariants (finite tensors, non-empty geometry, non-blank renders), and
+conversions with ``--hub-namespace``), generates from one image and one prompt, pushes the outputs through gsplat, CuMesh, the PBR facade, the texture baker, and the radiance-field
+renderer, checks a few invariants (finite tensors, non-empty geometry, non-blank renders), and
 writes ``report.json`` plus preview PNGs and GLBs to ``--output``. It exits non-zero when any stage fails.
 
     python scripts/gpu_smoke.py --work /tmp/smoke --output /tmp/smoke/out
 
 Requires a CUDA device, ``HF_TOKEN`` with access to the gated DINOv3 weights, and the backends built by
-``scripts/install_gpu_backends.sh`` (with ``ACCEPT_NVDIFFRAST_RESEARCH_LICENSE=1`` for the TRELLIS.2 stage).
+``scripts/install_gpu_backends.sh``.
 """
 
 from __future__ import annotations
@@ -140,7 +140,7 @@ def stage_status(report: dict, device) -> None:
     report["device"] = torch.cuda.get_device_name(device)
     report["torch"] = torch.__version__
     statuses = {}
-    for name in ("o_voxel", "cumesh", "flex_gemm", "nvdiffrast", "gsplat", "trimesh", "xatlas", "utils3d"):
+    for name in ("cumesh", "flex_gemm", "gsplat", "trimesh", "xatlas", "o_voxel", "nvdiffrast"):
         status = discover_backend(BACKEND_REGISTRY.get(name))
         statuses[name] = {
             "installed": status.installed,
@@ -153,14 +153,13 @@ def stage_status(report: dict, device) -> None:
 
 def stage_trellis2(work: Path, out: Path, report: dict, condition, *, dtype, device, hub_namespace) -> None:
     from diffusers_3d import AutoPipelineForImageTo3D
-    from diffusers_3d.backends import CuMeshBackend, OVoxelBackend, Trellis2PBRPostprocessFacade, TrimeshBackend
+    from diffusers_3d.backends import CuMeshBackend, TrimeshBackend
 
     record = report.setdefault("trellis2", {})
     components = {} if hub_namespace is None else {"conditioner": dinov3_conditioner(work, device, dtype)}
     pipeline = AutoPipelineForImageTo3D.from_pretrained(
         pipeline_source("trellis2", work, hub_namespace), dtype=dtype, **components
     ).to(device)
-    ovoxel_backend = OVoxelBackend(device=device, accept_nvdiffrast_research_license=True)
     cumesh = CuMeshBackend(device=device)
     trimesh_backend = TrimeshBackend()
 
@@ -171,7 +170,7 @@ def stage_trellis2(work: Path, out: Path, report: dict, condition, *, dtype, dev
     check(record["cells"] > 1000, "TRELLIS.2 produced almost no O-Voxel cells")
 
     with timed(record, "to_mesh"):
-        mesh = ovoxel_backend.to_mesh(ovoxel)
+        mesh = pipeline.postprocess_ovoxel(ovoxel, output_format="mesh")
     record["mesh"] = {"vertices": int(mesh.vertices.shape[0]), "faces": int(mesh.faces.shape[0])}
     check(bool(torch.isfinite(mesh.vertices).all()) and mesh.faces.shape[0] > 0, "O-Voxel mesh is empty or NaN")
     trimesh_backend.export_mesh(mesh.to("cpu").to_coordinate_system("right_handed_y_up"), out / "t2_mesh.glb")
@@ -185,46 +184,22 @@ def stage_trellis2(work: Path, out: Path, report: dict, condition, *, dtype, dev
     }
     check(0 < simplified.faces.shape[0] <= 100_000, "CuMesh simplification did not hit the target")
 
-    cameras = turntable(4, ovoxel.coordinate_system, image_size=512, device=device)
-    frames = []
-    with timed(record, "render_voxels"):
-        for index in range(4):
-            rendered = ovoxel_backend.render_voxels(
-                ovoxel,
-                extrinsics=cameras.world_to_camera[index],
-                intrinsics=cameras.intrinsics[index],
-                image_size=512,
-                attribute="base_color",
-            )
-            frames.append(rendered["attr"][:3])
-    frames = torch.stack(frames)
-    record["render_voxels"]["nonblack_fraction"] = round(float((frames.sum(dim=1) > 0).float().mean()), 4)
-    check(record["render_voxels"]["nonblack_fraction"] > 0.05, "voxel renders are blank")
-    save_png(tile(frames), out / "t2_voxel_render.png")
-
-    with timed(record, "to_glb"):
-        glb = pipeline.postprocess_ovoxel(
-            ovoxel,
-            output_format="glb",
-            pbr_postprocess=Trellis2PBRPostprocessFacade(),
-            postprocess_kwargs={
-                "accept_nvdiffrast_research_license": True,
-                "device": device,
-                "decimation_target": 300_000,
-                "texture_size": 2048,
-            },
+    with timed(record, "textured_mesh"):
+        textured = pipeline.postprocess_ovoxel(
+            ovoxel, output_format="textured_mesh", device=device, decimation_target=300_000, texture_size=2048
         )
-    glb.export(str(out / "t2_pbr.glb"))
-    material = glb.visual.material
-    record["to_glb"].update(
+    trimesh_backend.export_mesh(textured.to("cpu").to_coordinate_system("right_handed_y_up"), out / "t2_pbr.glb")
+    material = textured.materials[0]
+    record["textured_mesh"].update(
         {
-            "vertices": int(glb.vertices.shape[0]),
-            "faces": int(glb.faces.shape[0]),
-            "material": type(material).__name__,
-            "base_color_texture": None if material.baseColorTexture is None else list(material.baseColorTexture.size),
+            "vertices": int(textured.vertices.shape[0]),
+            "faces": int(textured.faces.shape[0]),
+            "base_color_texture": list(material.base_color.shape),
+            "mean_base_color": [round(float(value), 4) for value in material.base_color[..., :3].mean(dim=(0, 1))],
         }
     )
-    check(material.baseColorTexture is not None, "PBR GLB has no baked base colour texture")
+    check(material.base_color.ndim == 3 and material.metallic.ndim == 2, "PBR mesh has no baked textures")
+    save_png(material.base_color[..., :3].permute(2, 0, 1), out / "t2_texture.png")
     del pipeline
     torch.cuda.empty_cache()
 

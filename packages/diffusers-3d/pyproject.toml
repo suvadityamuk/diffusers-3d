@@ -50,6 +50,7 @@ portable = [
     "xatlas",
 ]
 gaussian = ["gsplat"]
+lora = ["peft>=0.17.0"]
 reference-test = [
     "einops",
 ]

@@ -298,50 +298,42 @@ def test_pipeline_type_is_validated_for_sparse_only_calls(tiny_trellis2_pipeline
         )
 
 
-def test_glb_is_explicit_postprocess_and_return_dict_false_preserves_mesh(
-    tiny_trellis2_full_pipeline,
+def test_mesh_format_runs_on_cpu_and_textured_mesh_is_an_explicit_postprocess(
+    monkeypatch, tiny_trellis2_full_pipeline, slab_ovoxel
 ):
     pipeline = tiny_trellis2_full_pipeline
     with pytest.raises(ValueError, match="formats must contain unique values"):
         pipeline(torch.zeros(3, 8, 8), formats=("glb",))
+    # Tiny random decoders cross no voxel edge, so decode a known surface instead.
+    monkeypatch.setattr(pipeline, "decode_ovoxel", lambda *args, **kwargs: (slab_ovoxel,))
 
-    class MeshBackend:
-        asset = None
-
-        def to_mesh(self, asset, **kwargs):
-            self.asset = asset
-            return MeshAsset(
-                vertices=torch.tensor([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]]),
-                faces=torch.tensor([[0, 1, 2]], dtype=torch.int64),
-            )
-
-    mesh_backend = MeshBackend()
     objects, latent_output = pipeline(
         torch.zeros(3, 8, 8),
-        formats=("mesh",),
+        formats=("o_voxel", "mesh"),
         sparse_structure_sampler_params={"steps": 1, "guidance_rescale": 0.0},
         shape_slat_sampler_params={"steps": 1},
         texture_slat_sampler_params={"steps": 1},
         sparse_structure_latents=torch.zeros(1, 2, 2, 2, 2),
-        ovoxel_backend=mesh_backend,
         return_dict=False,
     )
-    assert len(objects) == 1
-    assert type(objects[0]) is MeshAsset
+    ovoxel, mesh = objects
+    assert type(mesh) is MeshAsset
+    assert mesh.vertices.shape[0] == ovoxel.active_coordinates.shape[0]
+    assert mesh.colors is not None and mesh.colors.shape[1] == 4
     assert latent_output is not None
 
     sentinel = object()
 
     class PBRPostprocess:
-        def to_glb(self, asset, **kwargs):
-            assert asset is mesh_backend.asset
+        def to_textured_mesh(self, asset, **kwargs):
+            assert asset is ovoxel and kwargs == {"texture_size": 32}
             return sentinel
 
     assert (
         pipeline.postprocess_ovoxel(
-            mesh_backend.asset,
-            output_format="glb",
-            pbr_postprocess=PBRPostprocess(),
+            ovoxel, output_format="textured_mesh", pbr_postprocess=PBRPostprocess(), texture_size=32
         )
         is sentinel
     )
+    with pytest.raises(ValueError, match="output_format"):
+        pipeline.postprocess_ovoxel(ovoxel, output_format="glb")

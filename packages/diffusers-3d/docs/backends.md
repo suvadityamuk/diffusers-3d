@@ -57,10 +57,11 @@ The TRELLIS.2 adapters intentionally expose only reviewed narrow API surfaces:
   `requirements/backends/o-voxel.txt`; first install the pinned FlexGEMM and CuMesh records, then install O-Voxel with
   `--no-deps --no-build-isolation` so its mutable transitive Git dependencies cannot replace those pins.
 - The pinned `o_voxel` top-level package eagerly imports its nvdiffrast-dependent postprocess module. Native O-Voxel
-  loading therefore requires explicit nvdiffrast license acknowledgement even for codec/conversion members. Pure
-  schema and NPZ paths remain CPU-safe and never perform that import.
-- `Trellis2PBRPostprocessFacade` gates the combined O-Voxel, CuMesh, FlexGEMM, and nvdiffrast path. It never runs
-  during ordinary pipeline output or backend discovery.
+  loading (`.vxz`, voxel rendering) therefore requires explicit nvdiffrast license acknowledgement. Mesh extraction
+  (`ovoxel_to_mesh`), schema, and NPZ paths are plain PyTorch and never perform that import.
+- `Trellis2PBRPostprocessFacade.to_textured_mesh` follows upstream `to_glb` on CuMesh alone: texel rasterization and
+  trilinear PBR baking run in plain PyTorch instead of nvdiffrast and FlexGEMM. It never runs during ordinary
+  pipeline output or backend discovery.
 
 These native TRELLIS.2 paths are adapter/API tested with CPU fakes in CI and run on an A100 by the GPU smoke workflow
 (`scripts/gpu_smoke.py`, backends built by `scripts/install_gpu_backends.sh` at the registry pins); render or GLB

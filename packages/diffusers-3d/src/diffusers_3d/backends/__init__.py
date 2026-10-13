@@ -31,6 +31,7 @@ from .o_voxel import (
     official_tensors_from_ovoxel_asset,
     ovoxel_asset_from_official,
     ovoxel_grid_transform,
+    ovoxel_to_mesh,
     read_ovoxel_npz,
     write_ovoxel_npz,
 )
@@ -54,7 +55,7 @@ from .research import (
 )
 from .scikit_image import ScikitImageBackend
 from .spconv import SPCONV_BATCH_INDICES, SpconvBackend
-from .trellis2_pbr import OVoxelPBRPostprocessFacade, Trellis2PBRPostprocessFacade
+from .trellis2_pbr import Trellis2PBRPostprocessFacade
 from .trellis_glb import TrellisGlbPostprocessFacade
 from .trimesh import TrimeshBackend
 from .types import (
@@ -65,6 +66,7 @@ from .types import (
     BackendStatus,
     BackendSupportLevel,
 )
+from .voxel_index import VoxelIndex, trilinear_sample
 from .xatlas import XAtlasBackend
 
 __all__ = [
@@ -101,7 +103,6 @@ __all__ = [
     "NvdiffrastBackendFacade",
     "OVoxelBackend",
     "OVoxelCapability",
-    "OVoxelPBRPostprocessFacade",
     "OVoxelRuntimeUnavailableError",
     "PBRBakingBackend",
     "ResearchOnlyBackendFacade",
@@ -115,12 +116,15 @@ __all__ = [
     "Trellis2PBRPostprocessFacade",
     "TrellisGlbPostprocessFacade",
     "KaolinFlexiCubesBackend",
+    "VoxelIndex",
     "XAtlasBackend",
     "create_default_backend_registry",
     "discover_backend",
     "morton_decode_3d",
     "morton_encode_3d",
     "official_tensors_from_ovoxel_asset",
+    "ovoxel_to_mesh",
+    "trilinear_sample",
     "ovoxel_asset_from_official",
     "ovoxel_grid_transform",
     "read_ovoxel_npz",

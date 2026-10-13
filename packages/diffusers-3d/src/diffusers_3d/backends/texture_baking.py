@@ -217,17 +217,36 @@ def bake_texture(
     texel_colors = accumulated / total_weight.clamp(min=1e-8).unsqueeze(1)
 
     texture = torch.zeros(texture_size * texture_size, 3, device=device, dtype=torch.float32)
-    filled = torch.zeros(texture_size * texture_size, dtype=torch.bool, device=device)
+    known = torch.zeros(texture_size * texture_size, dtype=torch.bool, device=device)
     texture[surface.texel_index[observed]] = texel_colors[observed]
-    filled[surface.texel_index[observed]] = True
-    observed_map = filled.clone().reshape(texture_size, texture_size)
-    covered = torch.zeros_like(filled)
+    known[surface.texel_index[observed]] = True
+    covered = torch.zeros_like(known)
     covered[surface.texel_index] = True
-    texture = texture.reshape(texture_size, texture_size, 3).permute(2, 0, 1).unsqueeze(0)
-    filled = filled.reshape(1, 1, texture_size, texture_size).float()
-    # Grow observed colours into unobserved covered texels and a two-texel border around every chart.
-    wanted = F.max_pool2d(covered.reshape(1, 1, texture_size, texture_size).float(), 5, stride=1, padding=2) > 0
-    for _ in range(fill_iterations):
+    known = known.reshape(texture_size, texture_size)
+    texture = fill_texture(
+        texture.reshape(texture_size, texture_size, 3),
+        known,
+        covered.reshape(texture_size, texture_size),
+        iterations=fill_iterations,
+    )
+    return texture, known
+
+
+def fill_texture(
+    texture: torch.Tensor, known: torch.Tensor, covered: torch.Tensor, *, iterations: int = 32
+) -> torch.Tensor:
+    """Fill the unknown texels of an ``(H, W, C)`` texture so seams do not bleed the background.
+
+    Known values grow into unknown ``covered`` texels and a two-texel border around every chart, up to
+    ``iterations`` rings; the rest of the atlas gets the mean known value so mipmaps do not pull in black.
+    """
+
+    height, width, channels = texture.shape
+    known_values = texture[known]
+    texture = texture.permute(2, 0, 1).unsqueeze(0)
+    filled = known.reshape(1, 1, height, width).float()
+    wanted = F.max_pool2d(covered.reshape(1, 1, height, width).float(), 5, stride=1, padding=2) > 0
+    for _ in range(iterations):
         missing = wanted & (filled == 0)
         if not bool(missing.any()):
             break
@@ -236,11 +255,10 @@ def bake_texture(
         fillable = missing & (weight > 0)
         texture = torch.where(fillable, blurred / weight.clamp(min=1e-8), texture)
         filled = torch.where(fillable, torch.ones_like(filled), filled)
-    if bool(observed.any()):
-        # Uncovered atlas space gets the mean observed colour so mipmaps do not pull in black.
-        background = texel_colors[observed].mean(dim=0).reshape(1, 3, 1, 1)
+    if known_values.numel():
+        background = known_values.mean(dim=0).reshape(1, channels, 1, 1)
         texture = torch.where(filled > 0, texture, background.expand_as(texture))
-    return texture[0].permute(1, 2, 0).clamp(0, 1).contiguous(), observed_map
+    return texture[0].permute(1, 2, 0).clamp(0, 1).contiguous()
 
 
-__all__ = ["TexelSurface", "bake_texture", "rasterize_uv_atlas", "sphere_hammersley_cameras"]
+__all__ = ["TexelSurface", "bake_texture", "fill_texture", "rasterize_uv_atlas", "sphere_hammersley_cameras"]

@@ -13,6 +13,7 @@ import torch
 from diffusers.utils.torch_utils import randn_tensor
 
 from ...data import ImageCondition, TextCondition, preprocess_image_condition
+from ...execution.lora import Object3DLoraLoaderMixin
 from ...execution.metadata import (
     ContributionStatus,
     Object3DComponentSpec,
@@ -55,7 +56,7 @@ def _conditioner_spec(conditioner_type: type[Object3DModel]) -> Object3DComponen
     )
 
 
-class _TrellisTwoStagePipeline(Object3DPipeline):
+class _TrellisTwoStagePipeline(Object3DPipeline, Object3DLoraLoaderMixin):
     """Shared TRELLIS stages: sparse structure -> SLAT -> Gaussian splats, FlexiCubes meshes, and/or radiance fields.
 
     Subclasses supply the conditioner (DINOv2 image tokens or CLIP text tokens) and ``__call__``. ``formats``
@@ -152,6 +153,7 @@ class _TrellisTwoStagePipeline(Object3DPipeline):
         "mesh_decoder",
         "radiance_field_decoder",
     ]
+    _lora_loadable_modules = ["sparse_structure_flow_model", "slat_flow_model"]
 
     def __init__(
         self,

@@ -82,7 +82,7 @@ DIFFUSERS_3D_REQUIRE_REFERENCE=1 \
 ```
 
 Required mode turns every reference or dependency skip condition into a test failure. CI also parses JUnit output to
-require all 4 cases and zero skips. Scheduler, guidance, objective, target, and timestep equations still run
+require all 12 cases and zero skips. Scheduler, guidance, objective, target, and timestep equations still run
 deterministically in the ordinary CPU lane without those trees.
 
 ## Static and release checks

@@ -15,13 +15,13 @@ import torch
 import torch.nn.functional as F
 from diffusers import ModelMixin  # noqa: F401 - required by external-component loading
 from diffusers.configuration_utils import register_to_config
-from diffusers.loaders import PeftAdapterMixin
 from diffusers.models.attention import AttentionModuleMixin
 from diffusers.models.attention_dispatch import dispatch_attention_fn
 from diffusers.models.modeling_utils import get_parameter_dtype
 from diffusers.utils import BaseOutput
 from torch import nn
 
+from ...execution.lora import Object3DPeftAdapterMixin
 from ...execution.metadata import ContributionStatus, ReviewStatus
 from ...execution.models import Object3DModel
 from ...objects import Object3DKind
@@ -474,7 +474,7 @@ def _unpatchify_3d(hidden_states: torch.Tensor, patch_size: int) -> torch.Tensor
     )
 
 
-class TrellisSparseStructureFlowModel(Object3DModel, PeftAdapterMixin):
+class TrellisSparseStructureFlowModel(Object3DModel, Object3DPeftAdapterMixin):
     """Production-name-compatible dense TRELLIS sparse-structure flow model."""
 
     family_id = "trellis"
@@ -694,7 +694,7 @@ class TrellisSparseStructureFlowModel(Object3DModel, PeftAdapterMixin):
         return TrellisSparseStructureFlowOutput(sample=hidden_states)
 
 
-class TrellisSLatFlowModel(Object3DModel, PeftAdapterMixin):
+class TrellisSLatFlowModel(Object3DModel, Object3DPeftAdapterMixin):
     """TRELLIS structured-latent flow transformer with its sparse-convolution IO stages.
 
     Matches the released ``SLatFlowModel`` layout: a linear input layer, ``num_io_res_blocks`` residual
