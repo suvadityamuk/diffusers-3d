@@ -93,8 +93,8 @@ explicit backend installation. See [docs/backends.md](docs/backends.md).
 
 ## Usage
 
-Converted checkpoints for every geometry pipeline are published on the Hub (see the root README); load them with
-`AutoPipelineForImageTo3D.from_pretrained`. [docs/inference.md](docs/inference.md) covers loading, conditioning,
+Converted checkpoints for every pipeline are published on the Hub (see the root README); load them with
+`AutoPipelineForImageTo3D.from_pretrained`, or `AutoPipelineFor3D.from_pretrained` for the texture stages. [docs/inference.md](docs/inference.md) covers loading, conditioning,
 `formats`, saving each asset type, texturing a mesh, and the converter for every family. The runnable [TRELLIS.2 example](src/diffusers_3d/families/trellis2/examples/image_to_3d.py) exercises the whole
 inference API and has an offline tiny-component mode:
 

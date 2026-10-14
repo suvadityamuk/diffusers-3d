@@ -87,8 +87,7 @@ alpha or mask isolates the object, and returns a UV-textured `MeshAsset` with on
 texture and metallic and roughness textures. Export it as GLB with `TrimeshBackend().export_mesh(mesh, "out.glb")`.
 
 ```python
-# A folder written by diffusers-3d-convert-hunyuan3d-paint
-pipeline = Hunyuan3DPaintPipeline.from_pretrained("/path/to/hunyuan3d-paint", dtype=torch.float16).to("cuda")
+pipeline = Hunyuan3DPaintPipeline.from_pretrained("suvadityamuk/Hunyuan3D-2.1-Paint-diffusers-3d", dtype=torch.float16).to("cuda")
 textured = pipeline(mesh, image, generator=torch.Generator("cuda").manual_seed(0)).objects[0]
 ```
 

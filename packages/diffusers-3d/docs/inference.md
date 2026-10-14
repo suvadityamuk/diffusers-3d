@@ -28,9 +28,11 @@ Converted checkpoints are published on the Hub, so the usual path is to load one
 | `suvadityamuk/Hunyuan3D-2.1-diffusers-3d` | `Hunyuan3DImageTo3DPipeline` | every shape-stage component, DINOv2 image encoder included; Tencent Hunyuan 3D 2.1 Community License |
 | `suvadityamuk/sam-3d-objects-diffusers-3d` | `Sam3DObjectsPipeline` | every component, DINOv2 image encoder included; SAM License |
 | `suvadityamuk/Pixal3D-diffusers-3d` | `Pixal3DImageTo3DPipeline` | every component except the gated DINOv3 image encoder |
+| `suvadityamuk/Step1X-3D-Texture-diffusers-3d` | `Step1X3DMeshTexturePipeline` | every texture-stage component, SDXL base included; CreativeML Open RAIL++-M |
+| `suvadityamuk/Hunyuan3D-2.1-Paint-diffusers-3d` | `Hunyuan3DPaintPipeline` | every Paint component, DINOv2-giant and Real-ESRGAN included; Tencent Hunyuan 3D 2.1 Community License |
 
-Each repository ships its family's license and notice files; read them before use. The two texture stages are not
-published yet, so convert them yourself.
+Each repository ships its family's license and notice files, plus the license texts of any third-party base weights
+it redistributes; read them before use.
 
 `scripts/publish_hub_checkpoints.py` produced the repositories with the packaged converters, so converting yourself
 gives the same result. Every converter writes a Diffusers pipeline folder from an official release:
@@ -223,7 +225,7 @@ O-Voxel runtime and its research-licensed nvdiffrast dependency, which are never
 
 Two pipelines paint an existing mesh from a reference image. Both take a `MeshAsset`, for example a shape pipeline's
 output, and an `ImageCondition` whose alpha or `mask` isolates the object, and return a UV-textured `MeshAsset`. Load
-them with `AutoPipelineFor3D` (task `mesh-texturing`) or their concrete classes, from a folder you converted:
+them with `AutoPipelineFor3D` (task `mesh-texturing`) or their concrete classes:
 
 ```python
 import torch
@@ -232,7 +234,7 @@ from diffusers_3d import AutoPipelineFor3D, AutoPipelineForImageTo3D, ImageCondi
 shape = AutoPipelineForImageTo3D.from_pretrained("suvadityamuk/Hunyuan3D-2.1-diffusers-3d", dtype=torch.float16).to("cuda")
 mesh = shape(ImageCondition(image=rgba), generator=torch.Generator("cuda").manual_seed(0)).objects[0]
 
-paint = AutoPipelineFor3D.from_pretrained("/path/to/hunyuan3d-paint", dtype=torch.float16).to("cuda")
+paint = AutoPipelineFor3D.from_pretrained("suvadityamuk/Hunyuan3D-2.1-Paint-diffusers-3d", dtype=torch.float16).to("cuda")
 textured = paint(mesh, ImageCondition(image=rgba), generator=torch.Generator("cuda").manual_seed(0)).objects[0]
 TrimeshBackend().export_mesh(textured.to("cpu"), "textured.glb")
 ```

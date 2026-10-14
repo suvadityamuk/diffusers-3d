@@ -11,6 +11,8 @@ Publishes one model repo per release under ``<owner>``:
 * ``TripoSG-diffusers-3d``, ``Step1X-3D-Geometry-1300m-diffusers-3d``, ``Hunyuan3D-2.1-diffusers-3d``,
   ``sam-3d-objects-diffusers-3d``, and ``Pixal3D-diffusers-3d``, each with its family's license and notice files.
   Pixal3D, like TRELLIS.2, leaves out the gated DINOv3 image encoder.
+* ``Step1X-3D-Texture-diffusers-3d`` and ``Hunyuan3D-2.1-Paint-diffusers-3d``, the two mesh-texturing stages, with
+  the license texts of the base models they redistribute.
 
 Each repo gets a model card with provenance and loading instructions. Needs ``HF_TOKEN`` with write access to the
 namespace and read access to the gated source weights (used locally to run the converters). Every release
@@ -25,6 +27,7 @@ import importlib
 import json
 import shutil
 import sys
+import urllib.request
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -39,6 +42,8 @@ REPOSITORIES = {
     "hunyuan3d": "Hunyuan3D-2.1-diffusers-3d",
     "sam3d-objects": "sam-3d-objects-diffusers-3d",
     "pixal3d": "Pixal3D-diffusers-3d",
+    "step1x3d-texture": "Step1X-3D-Texture-diffusers-3d",
+    "hunyuan3d-paint": "Hunyuan3D-2.1-Paint-diffusers-3d",
 }
 # Families whose license and notice files are copied into the published repo.
 FAMILY_PACKAGES = {
@@ -47,6 +52,18 @@ FAMILY_PACKAGES = {
     "hunyuan3d": "hunyuan3d",
     "sam3d-objects": "sam3d_objects",
     "pixal3d": "pixal3d",
+    "step1x3d-texture": "step1x3d",
+    "hunyuan3d-paint": "hunyuan3d",
+}
+# License texts of redistributed third-party weights that the family directories do not carry. Stability AI no longer
+# hosts Stable Diffusion 2.x, so the CreativeML Open RAIL++-M text comes from the SDXL release.
+EXTRA_LICENSES = {
+    "hunyuan3d-paint": {
+        "LICENSE-OPENRAIL-PLUSPLUS-M.md": "https://huggingface.co/stabilityai/stable-diffusion-xl-base-1.0/raw/"
+        "462165984030d82259a11f4367a4eed129e94a7b/LICENSE.md",
+        "LICENSE-REAL-ESRGAN": "https://raw.githubusercontent.com/xinntao/Real-ESRGAN/"
+        "a4abfb2979a7bbff3f69f58f58ae324608821e27/LICENSE",
+    },
 }
 # Gated encoders the converters need but that must not be republished.
 WITHHELD = {"trellis2": ["image_encoder/*"], "pixal3d": ["image_encoder/*"]}
@@ -77,8 +94,8 @@ def _install_note() -> str:
     return """## Install
 
 ```bash
-pip install git+https://github.com/suvadityamuk/diffusers.git
-pip install "git+https://github.com/suvadityamuk/diffusers.git#subdirectory=packages/diffusers-3d"
+pip install git+https://github.com/suvadityamuk/diffusers-3d.git
+pip install "git+https://github.com/suvadityamuk/diffusers-3d.git#subdirectory=packages/diffusers-3d"
 ```
 
 `diffusers-3d` runs every network in plain PyTorch on CPU or GPU. Rendering Gaussian splats needs the optional
@@ -95,7 +112,7 @@ def card_trellis_image(namespace: str, version: str) -> str:
 # TRELLIS-image-large for diffusers-3d
 
 [microsoft/TRELLIS-image-large](https://huggingface.co/microsoft/TRELLIS-image-large) converted into a
-[diffusers-3d](https://github.com/suvadityamuk/diffusers) pipeline: ordinary Diffusers component folders
+[diffusers-3d](https://github.com/suvadityamuk/diffusers-3d) pipeline: ordinary Diffusers component folders
 (`config.json` + `safetensors`) plus the `object3d_model_index.json` sidecar that the package's auto-loader
 validates before downloading anything. Nothing here requires remote code.
 
@@ -154,7 +171,7 @@ def card_trellis_text(namespace: str, version: str) -> str:
 # TRELLIS-text-large for diffusers-3d
 
 [microsoft/TRELLIS-text-large](https://huggingface.co/microsoft/TRELLIS-text-large) converted into a
-[diffusers-3d](https://github.com/suvadityamuk/diffusers) pipeline. The text release shares its decoders with
+[diffusers-3d](https://github.com/suvadityamuk/diffusers-3d) pipeline. The text release shares its decoders with
 the image release; they are included here so the repository loads on its own.
 
 {_install_note()}
@@ -206,7 +223,7 @@ def card_trellis2(namespace: str, version: str) -> str:
 # TRELLIS.2-4B for diffusers-3d
 
 [microsoft/TRELLIS.2-4B](https://huggingface.co/microsoft/TRELLIS.2-4B) converted into a
-[diffusers-3d](https://github.com/suvadityamuk/diffusers) pipeline.
+[diffusers-3d](https://github.com/suvadityamuk/diffusers-3d) pipeline.
 
 **The DINOv3 image encoder is not included.** Its weights are gated under Meta's DINOv3 License, so this
 repository ships every TRELLIS.2 component except `image_encoder/`; you accept the license on
@@ -293,15 +310,16 @@ def _family_card(
     notes: str,
     license_text: str,
     withheld: tuple[str, ...] = (),
+    extra_tags: tuple[str, ...] = ("image-to-3d",),
 ) -> str:
     return (
         _card_header(
-            pipeline_tag="image-to-3d", base_model=source, extra_tags=["image-to-3d"], family=family, license=license
+            pipeline_tag="image-to-3d", base_model=source, extra_tags=list(extra_tags), family=family, license=license
         )
         + f"""
 # {title} for diffusers-3d
 
-[{source}](https://huggingface.co/{source}) converted into a [diffusers-3d](https://github.com/suvadityamuk/diffusers)
+[{source}](https://huggingface.co/{source}) converted into a [diffusers-3d](https://github.com/suvadityamuk/diffusers-3d)
 pipeline: ordinary Diffusers and Transformers component folders plus the `object3d_model_index.json` sidecar that
 the package's auto-loader validates before downloading anything. Nothing here requires remote code.
 
@@ -475,6 +493,101 @@ endorsed by Tencent, valeo.ai, or Meta.""",
     )
 
 
+_TEXTURE_NOTE = (
+    "`mesh` is any `MeshAsset`, for example a shape pipeline's output, and `rgba` a `(4, H, W)` tensor in `[0, 1]` "
+    "whose alpha masks the object. The result is a UV-textured `MeshAsset`; export it with "
+    '`TrimeshBackend().export_mesh(textured.to("cpu"), "textured.glb")` (needs the `portable` extra).'
+)
+
+
+def card_step1x3d_texture(namespace: str, version: str, folder: Path) -> str:
+    return _family_card(
+        namespace=namespace,
+        version=version,
+        folder=folder,
+        repo=REPOSITORIES["step1x3d-texture"],
+        title="Step1X-3D Texture",
+        source="stepfun-ai/Step1X-3D",
+        family="step1x3d",
+        license="license: openrail++",
+        converter="diffusers-3d-convert-step1x3d-texture",
+        usage="""import torch
+from diffusers_3d import AutoPipelineFor3D, AutoPipelineForImageTo3D, ImageCondition
+
+shape = AutoPipelineForImageTo3D.from_pretrained("{namespace}/Step1X-3D-Geometry-1300m-diffusers-3d").to("cuda")
+mesh = shape(ImageCondition(image=rgba), generator=torch.Generator("cuda").manual_seed(0)).objects[0]
+
+texture = AutoPipelineFor3D.from_pretrained("{repo}", dtype=torch.float16).to("cuda")
+textured = texture(mesh, ImageCondition(image=rgba), generator=torch.Generator("cuda").manual_seed(0)).objects[0]""".replace(
+            "{namespace}", namespace
+        ),
+        notes=_TEXTURE_NOTE + " The pipeline generates six orthographic views with SDXL, Step1X-3D's multi-view "
+        "adapter, and a T2I-Adapter fed position and normal renders, keeps them consistent through a shared latent "
+        "texture, and bakes a base-colour texture in plain PyTorch. `output.previews` holds the six views.",
+        license_text="""This repository combines three sets of weights, each under its own license:
+
+- the SDXL base UNet, text encoders, and tokenizers from
+  [stabilityai/stable-diffusion-xl-base-1.0](https://huggingface.co/stabilityai/stable-diffusion-xl-base-1.0), under
+  the CreativeML Open RAIL++-M License in `LICENSE-SDXL.md`, including its use-based restrictions, which apply to
+  everyone who uses these files;
+- the VAE from [madebyollin/sdxl-vae-fp16-fix](https://huggingface.co/madebyollin/sdxl-vae-fp16-fix) (MIT);
+- Step1X-3D's T2I-Adapter and multi-view adapter weights from `Step1X-3D-Texture` (Apache-2.0, Copyright (c)
+  StepFun; see `LICENSE-APACHE-2.0` and `NOTICE`).
+
+The texture synchronisation follows SyncMVD (MIT, `LICENSE-MIT`). Not affiliated with or endorsed by StepFun or
+Stability AI.""",
+        extra_tags=("image-to-3d", "texturing"),
+    )
+
+
+def card_hunyuan3d_paint(namespace: str, version: str, folder: Path) -> str:
+    return _family_card(
+        namespace=namespace,
+        version=version,
+        folder=folder,
+        repo=REPOSITORIES["hunyuan3d-paint"],
+        title="Hunyuan3D-2.1 Paint",
+        source="tencent/Hunyuan3D-2.1",
+        family="hunyuan3d",
+        license="license: other\nlicense_name: tencent-hunyuan-3d-2-1-community\nlicense_link: "
+        f"https://huggingface.co/{namespace}/{REPOSITORIES['hunyuan3d-paint']}/blob/main/LICENSE-TENCENT-HUNYUAN-3D-2.1",
+        converter="diffusers-3d-convert-hunyuan3d-paint",
+        usage="""import torch
+from diffusers_3d import AutoPipelineFor3D, AutoPipelineForImageTo3D, ImageCondition
+
+shape = AutoPipelineForImageTo3D.from_pretrained("{namespace}/Hunyuan3D-2.1-diffusers-3d", dtype=torch.float16).to("cuda")
+mesh = shape(ImageCondition(image=rgba), generator=torch.Generator("cuda").manual_seed(0)).objects[0]
+
+paint = AutoPipelineFor3D.from_pretrained("{repo}", dtype=torch.float16).to("cuda")
+textured = paint(mesh, ImageCondition(image=rgba), generator=torch.Generator("cuda").manual_seed(0)).objects[0]""".replace(
+            "{namespace}", namespace
+        ),
+        notes=_TEXTURE_NOTE + " Paint simplifies the mesh to 40k faces (`max_faces=None` keeps it; simplifying needs "
+        "`fast-simplification`), unwraps it with xatlas, generates albedo and metallic-roughness views, upscales "
+        "them with Real-ESRGAN, and bakes a base-colour plus metallic-roughness `PBRMaterial` in plain PyTorch.",
+        license_text="""**Tencent Hunyuan 3D 2.1 is licensed under the Tencent Hunyuan 3D 2.1 Community License Agreement,
+Copyright © 2025 Tencent. All Rights Reserved. The trademark rights of "Tencent Hunyuan" are owned by Tencent or its
+affiliate.**
+
+This repository redistributes modified Tencent Hunyuan 3D 2.1 works: diffusers-3d converted the released
+`hunyuan3d-paintpbr-v2-1` weights into Diffusers component folders (parameters renamed into stock modules, the unused
+CLIP encoders dropped; weight values unchanged). The license, including its Acceptable Use Policy and the use
+restrictions of its Sections 5(a) and 5(b), applies to everyone who uses these files; read
+`LICENSE-TENCENT-HUNYUAN-3D-2.1` and `NOTICE` before use. The license **does not apply in the European Union, the
+United Kingdom, or South Korea**, and products above 1 million monthly active users need a separate license from
+Tencent.
+
+The Paint UNets and VAE derive from Stable Diffusion 2.1-base and are also subject to the CreativeML Open RAIL++-M
+License and its use-based restrictions; `LICENSE-OPENRAIL-PLUSPLUS-M.md` is that license's text as published with
+SDXL, since Stability AI no longer hosts Stable Diffusion 2.x. The image encoder is
+[facebook/dinov2-giant](https://huggingface.co/facebook/dinov2-giant) (Apache-2.0). The upscaler holds the
+RealESRGAN_x4plus weights of [Real-ESRGAN](https://github.com/xinntao/Real-ESRGAN), BSD-3-Clause, Copyright (c) 2021
+Xintao Wang (`LICENSE-REAL-ESRGAN`). This repository and diffusers-3d are not affiliated with, sponsored, or
+endorsed by Tencent, Stability AI, Meta, or the Real-ESRGAN authors.""",
+        extra_tags=("image-to-3d", "texturing", "pbr"),
+    )
+
+
 def _with_folder(card):
     return lambda namespace, version, folder: card(namespace, version)
 
@@ -488,6 +601,8 @@ CARDS = {
     "hunyuan3d": card_hunyuan3d,
     "sam3d-objects": card_sam3d,
     "pixal3d": card_pixal3d,
+    "step1x3d-texture": card_step1x3d_texture,
+    "hunyuan3d-paint": card_hunyuan3d_paint,
 }
 
 
@@ -497,6 +612,8 @@ def copy_license_files(name: str, folder: Path) -> None:
     package = Path(importlib.import_module(f"diffusers_3d.families.{FAMILY_PACKAGES[name]}").__file__).parent
     for path in [*package.glob("LICENSE*"), package / "NOTICE"]:
         shutil.copyfile(path, folder / path.name)
+    for filename, url in EXTRA_LICENSES.get(name, {}).items():
+        urllib.request.urlretrieve(url, folder / filename)
 
 
 def main() -> int:

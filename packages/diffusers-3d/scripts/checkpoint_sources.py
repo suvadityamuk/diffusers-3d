@@ -74,6 +74,21 @@ def _convert_hunyuan3d(work: Path, target: Path) -> None:
     convert_hunyuan3d_checkpoint(RELEASES["hunyuan3d"]["source"], target)
 
 
+def _convert_step1x3d_texture(work: Path, target: Path) -> None:
+    from diffusers_3d.families.step1x3d.conversion import STEP1X3D_CHECKPOINT_REVISION
+    from diffusers_3d.families.step1x3d.texture_conversion import convert_step1x3d_texture_checkpoint
+
+    folder = "Step1X-3D-Texture"
+    source = download(RELEASES["step1x3d-texture"]["source"], work, [f"{folder}/*"], STEP1X3D_CHECKPOINT_REVISION)
+    convert_step1x3d_texture_checkpoint(source / folder, target)
+
+
+def _convert_hunyuan3d_paint(work: Path, target: Path) -> None:
+    from diffusers_3d.families.hunyuan3d.paint_conversion import convert_hunyuan3d_paint_checkpoint
+
+    convert_hunyuan3d_paint_checkpoint(RELEASES["hunyuan3d-paint"]["source"], target)
+
+
 def _convert_sam3d(work: Path, target: Path) -> None:
     from diffusers_3d.families.sam3d_objects.conversion import convert_sam3d_checkpoint
 
@@ -113,7 +128,9 @@ RELEASES = {
     },
     "triposg": {"source": "VAST-AI/TripoSG", "convert": _convert_triposg},
     "step1x3d": {"source": "stepfun-ai/Step1X-3D", "convert": _convert_step1x3d},
+    "step1x3d-texture": {"source": "stepfun-ai/Step1X-3D", "convert": _convert_step1x3d_texture},
     "hunyuan3d": {"source": "tencent/Hunyuan3D-2.1", "convert": _convert_hunyuan3d},
+    "hunyuan3d-paint": {"source": "tencent/Hunyuan3D-2.1", "convert": _convert_hunyuan3d_paint},
     "sam3d-objects": {"source": "facebook/sam-3d-objects", "convert": _convert_sam3d},
     "pixal3d": {
         "source": "TencentARC/Pixal3D",

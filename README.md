@@ -124,6 +124,8 @@ load them directly. Each repository ships its family's license and notice files:
 | [`suvadityamuk/Hunyuan3D-2.1-diffusers-3d`](https://huggingface.co/suvadityamuk/Hunyuan3D-2.1-diffusers-3d) | `Hunyuan3DImageTo3DPipeline` | complete shape stage, including the DINOv2 image encoder; Tencent Hunyuan 3D 2.1 Community License (not available in the EU, UK, or South Korea) |
 | [`suvadityamuk/sam-3d-objects-diffusers-3d`](https://huggingface.co/suvadityamuk/sam-3d-objects-diffusers-3d) | `Sam3DObjectsPipeline` | complete, including the DINOv2 image encoder; SAM License |
 | [`suvadityamuk/Pixal3D-diffusers-3d`](https://huggingface.co/suvadityamuk/Pixal3D-diffusers-3d) | `Pixal3DImageTo3DPipeline` | everything except the gated DINOv3 image encoder, which is passed in at load time as for TRELLIS.2 |
+| [`suvadityamuk/Step1X-3D-Texture-diffusers-3d`](https://huggingface.co/suvadityamuk/Step1X-3D-Texture-diffusers-3d) | `Step1X3DMeshTexturePipeline` | complete texture stage: SDXL base (CreativeML Open RAIL++-M), VAE, T2I-Adapter, and multi-view adapter |
+| [`suvadityamuk/Hunyuan3D-2.1-Paint-diffusers-3d`](https://huggingface.co/suvadityamuk/Hunyuan3D-2.1-Paint-diffusers-3d) | `Hunyuan3DPaintPipeline` | complete Paint stage, including DINOv2-giant and the Real-ESRGAN upscaler; Tencent Hunyuan 3D 2.1 Community License |
 
 ```python
 import torch
@@ -154,9 +156,8 @@ mesh = pipeline(ImageCondition(image=rgba), generator=torch.Generator("cuda").ma
 TrimeshBackend().export_mesh(mesh.to("cpu"), "mesh.glb")
 ```
 
-The texture stages (`Hunyuan3DPaintPipeline`, `Step1X3DMeshTexturePipeline`) are not published yet; convert them with
-`diffusers-3d-convert-hunyuan3d-paint` and `diffusers-3d-convert-step1x3d-texture`, then texture any mesh as shown in
-[inference.md](packages/diffusers-3d/docs/inference.md#8-texture-a-mesh).
+The texture stages load with `AutoPipelineFor3D` and paint any mesh, for example one the shape pipelines just made;
+see [inference.md](packages/diffusers-3d/docs/inference.md#8-texture-a-mesh).
 
 ### Converting a checkpoint yourself
 

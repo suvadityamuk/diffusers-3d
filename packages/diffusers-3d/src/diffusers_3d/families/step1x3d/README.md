@@ -122,6 +122,17 @@ By hand on an A100 (2026-10-13), the published
 returns the mesh UV-unwrapped with a base-colour texture, following the
 released `Step1X-3D-Texture` pipeline (MV-Adapter image-guided SDXL):
 
+```python
+from diffusers_3d import AutoPipelineFor3D
+
+texture = AutoPipelineFor3D.from_pretrained("suvadityamuk/Step1X-3D-Texture-diffusers-3d", dtype=torch.float16).to("cuda")
+textured = texture(mesh, ImageCondition(image=rgba), generator=torch.Generator("cuda").manual_seed(0)).objects[0]
+```
+
+Upstream decimates the geometry stage's mesh to 200k faces before texturing; do the same with
+`TrimeshBackend().process_geometry(mesh, operation="simplify_quadric_decimation", parameters={"face_count": 200_000})`.
+The pipeline runs these steps:
+
 1. The mesh is cleaned with trimesh (optional), unwrapped with xatlas, and
    scaled to `max |x| = 0.5` in a Z-up frame.
 2. Six orthographic renders (front, right, back, left, top, bottom) of
