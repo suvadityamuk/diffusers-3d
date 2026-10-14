@@ -22,6 +22,16 @@ from .flex_gemm import (
 from .gsplat import GsplatBackend
 from .kaolin_flexicubes import KaolinFlexiCubesBackend
 from .mesh_rasterizer import Rasterization, interpolate, rasterize, rasterize_mesh
+from .multiview_baking import (
+    canny,
+    inpaint_texture,
+    look_at_view,
+    merge_views,
+    orthographic_projection,
+    project_view,
+    rasterize_texels,
+    splat_view,
+)
 from .o_voxel import (
     OVOXEL_REFERENCE_REVISION,
     OVoxelBackend,
@@ -120,18 +130,26 @@ __all__ = [
     "KaolinFlexiCubesBackend",
     "VoxelIndex",
     "XAtlasBackend",
+    "canny",
     "create_default_backend_registry",
     "discover_backend",
+    "inpaint_texture",
     "interpolate",
+    "look_at_view",
+    "merge_views",
     "morton_decode_3d",
     "morton_encode_3d",
     "official_tensors_from_ovoxel_asset",
     "ovoxel_to_mesh",
     "trilinear_sample",
+    "orthographic_projection",
     "ovoxel_asset_from_official",
     "ovoxel_grid_transform",
+    "project_view",
     "rasterize",
     "rasterize_mesh",
+    "rasterize_texels",
     "read_ovoxel_npz",
+    "splat_view",
     "write_ovoxel_npz",
 ]

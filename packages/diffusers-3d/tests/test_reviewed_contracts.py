@@ -7,7 +7,7 @@ from typing import Any, Callable
 
 import pytest
 import torch
-from diffusers import FlowMatchEulerDiscreteScheduler
+from diffusers import AutoencoderKL, FlowMatchEulerDiscreteScheduler, UniPCMultistepScheduler
 from torch.utils.checkpoint import checkpoint as apply_checkpoint
 from transformers import (
     BitImageProcessorPil,
@@ -25,6 +25,9 @@ from diffusers_3d import (
     Hunyuan3DDiTModel,
     Hunyuan3DFlowMatchEulerDiscreteScheduler,
     Hunyuan3DImageTo3DPipeline,
+    Hunyuan3DPaintPipeline,
+    Hunyuan3DPaintRRDBNet,
+    Hunyuan3DPaintUNet,
     Hunyuan3DShapeVAE,
     ImageCondition,
     MeshAsset,
@@ -39,6 +42,8 @@ from diffusers_3d import (
     Sam3DSparseStructureFlowModel,
     Step1X3DFlowMatchEulerScheduler,
     Step1X3DImageTo3DPipeline,
+    Step1X3DMeshTexturePipeline,
+    Step1X3DMultiViewAdapter,
     Step1X3DShapeDecoder,
     Step1X3DTransformer1DModel,
     Trellis2FlowEulerScheduler,
@@ -372,6 +377,20 @@ def _invoke_step1x3d_shape_decoder(model: torch.nn.Module, batch_size: int, retu
     return _output_tensor(output, return_dict=return_dict)
 
 
+def _invoke_step1x3d_mv_adapter(model: torch.nn.Module, batch_size: int, return_dict: bool) -> torch.Tensor:
+    from diffusers.models.attention_processor import Attention
+
+    device, dtype = _parameter_properties(model)
+    (name,) = model.config.hidden_sizes
+    processor = model.get_submodule(name)
+    torch.manual_seed(0)
+    attention = Attention(8, heads=2, dim_head=4, processor=processor).to(device=device, dtype=dtype)
+    hidden_states = torch.linspace(-1.0, 1.0, batch_size * 6 * 4 * 8, device=device, dtype=dtype)
+    hidden_states = hidden_states.reshape(batch_size * 6, 4, 8)
+    output = attention(hidden_states, reference_hidden_states={processor: hidden_states[:, :3].flip(-1)})
+    return output.unflatten(0, (batch_size, 6))
+
+
 def _invoke_hunyuan3d_transformer(model: torch.nn.Module, batch_size: int, return_dict: bool) -> torch.Tensor:
     device, dtype = _parameter_properties(model)
     latents = torch.linspace(-1.0, 1.0, batch_size * 6 * 8, device=device, dtype=dtype).reshape(batch_size, 6, 8)
@@ -384,6 +403,34 @@ def _invoke_hunyuan3d_vae(model: torch.nn.Module, batch_size: int, return_dict: 
     device, dtype = _parameter_properties(model)
     latents = torch.linspace(-1.0, 1.0, batch_size * 6 * 8, device=device, dtype=dtype).reshape(batch_size, 6, 8)
     return _output_tensor(model(latents, return_dict=return_dict), return_dict=return_dict)
+
+
+def _invoke_hunyuan3d_paint_unet(model: Hunyuan3DPaintUNet, batch_size: int, return_dict: bool) -> torch.Tensor:
+    device, dtype = _parameter_properties(model)
+    config = model.config
+    size, views, channels = config.sample_size, 2, config.latent_channels
+
+    def ramp(*shape: int, low: float = -1.0) -> torch.Tensor:
+        return torch.linspace(low, 1.0, torch.Size(shape).numel(), device=device, dtype=dtype).reshape(shape)
+
+    output = model(
+        ramp(batch_size, 2, views, channels, size, size),
+        torch.tensor(500.0, device=device, dtype=dtype),
+        ramp(views, 2 * channels, size, size),
+        ramp(views, 3, 2 * size, 2 * size, low=0.0),
+        ramp(batch_size, 3, config.image_embed_dim),
+        model.encode_reference(ramp(1, channels, size, size)),
+        ramp(batch_size, low=0.0),
+        return_dict=return_dict,
+    )
+    return _output_tensor(output, return_dict=return_dict)
+
+
+def _invoke_hunyuan3d_paint_rrdbnet(model: torch.nn.Module, batch_size: int, return_dict: bool) -> torch.Tensor:
+    device, dtype = _parameter_properties(model)
+    return model(
+        torch.linspace(0.0, 1.0, batch_size * 3 * 5 * 6, device=device, dtype=dtype).reshape(batch_size, 3, 5, 6)
+    )
 
 
 MODEL_CONTRACTS = (
@@ -404,11 +451,14 @@ MODEL_CONTRACTS = (
     ModelContract(Sam3DConditionEmbedder, _invoke_sam3d_conditioner),
     ModelContract(Step1X3DTransformer1DModel, _invoke_step1x3d_transformer),
     ModelContract(Step1X3DShapeDecoder, _invoke_step1x3d_shape_decoder),
+    ModelContract(Step1X3DMultiViewAdapter, _invoke_step1x3d_mv_adapter),
     ModelContract(Pixal3DSparseStructureFlowModel, _invoke_pixal3d_flow),
     ModelContract(Pixal3DSLatFlowModel, _invoke_pixal3d_texture_slat_flow),
     ModelContract(Pixal3DNAFUpsampler, _invoke_feature_upsampler),
     ModelContract(Hunyuan3DDiTModel, _invoke_hunyuan3d_transformer),
     ModelContract(Hunyuan3DShapeVAE, _invoke_hunyuan3d_vae),
+    ModelContract(Hunyuan3DPaintUNet, _invoke_hunyuan3d_paint_unet),
+    ModelContract(Hunyuan3DPaintRRDBNet, _invoke_hunyuan3d_paint_rrdbnet),
 )
 # Sparse voxel models index by coordinates (unique / nonzero) and mixture-of-experts models route tokens with
 # nonzero, so their shapes are data-dependent and they cannot be captured as a single graph.
@@ -730,6 +780,61 @@ def _step1x3d_pipeline(request=None):
     )
 
 
+def _step1x3d_texture_pipeline(request):
+    from diffusers import AutoencoderKL, DDPMScheduler, T2IAdapter, UNet2DConditionModel
+    from transformers import CLIPTextModelWithProjection
+
+    torch.manual_seed(0)
+    unet = UNet2DConditionModel(
+        block_out_channels=(8, 8, 16),
+        layers_per_block=1,
+        sample_size=8,
+        down_block_types=("DownBlock2D", "CrossAttnDownBlock2D", "CrossAttnDownBlock2D"),
+        up_block_types=("CrossAttnUpBlock2D", "CrossAttnUpBlock2D", "UpBlock2D"),
+        attention_head_dim=2,
+        use_linear_projection=True,
+        addition_embed_type="text_time",
+        addition_time_embed_dim=4,
+        projection_class_embeddings_input_dim=6 * 4 + 8,
+        cross_attention_dim=16,
+        norm_num_groups=4,
+    )
+    text = CLIPTextConfig(
+        vocab_size=64,
+        hidden_size=8,
+        intermediate_size=16,
+        num_hidden_layers=2,
+        num_attention_heads=2,
+        max_position_embeddings=8,
+        bos_token_id=0,
+        eos_token_id=1,
+        projection_dim=8,
+    )
+    tokenizer = request.getfixturevalue("tiny_clip_tokenizer")
+    return Step1X3DMeshTexturePipeline(
+        vae=AutoencoderKL(
+            block_out_channels=(4, 4),
+            down_block_types=("DownEncoderBlock2D",) * 2,
+            up_block_types=("UpDecoderBlock2D",) * 2,
+            norm_num_groups=2,
+        ),
+        text_encoder=CLIPTextModel(text),
+        text_encoder_2=CLIPTextModelWithProjection(text),
+        tokenizer=tokenizer,
+        tokenizer_2=tokenizer,
+        unet=unet,
+        adapter=T2IAdapter(
+            in_channels=6,
+            channels=(8, 8, 16, 16),
+            num_res_blocks=1,
+            downscale_factor=4,
+            adapter_type="full_adapter_xl",
+        ),
+        mv_adapter=Step1X3DMultiViewAdapter(hidden_sizes=Step1X3DMultiViewAdapter.hidden_sizes_for(unet)),
+        scheduler=DDPMScheduler(beta_schedule="scaled_linear", beta_start=0.00085, beta_end=0.012, clip_sample=False),
+    )
+
+
 def _pixal3d_pipeline(request=None):
     decoder = Trellis2SparseStructureDecoder(**Trellis2SparseStructureDecoder.tiny_config())
     with torch.no_grad():
@@ -767,6 +872,31 @@ def _hunyuan3d_pipeline(request=None):
         )
 
 
+def _hunyuan3d_paint_pipeline(request=None):
+    torch.manual_seed(0)
+    unet = Hunyuan3DPaintUNet(**Hunyuan3DPaintUNet.tiny_config())
+    with torch.no_grad():
+        for parameter in unet.parameters():
+            parameter.normal_(std=0.05)
+    with warnings.catch_warnings():
+        warnings.filterwarnings("ignore", message="Hunyuan3D-2.1 weights", category=UserWarning)
+        return Hunyuan3DPaintPipeline(
+            feature_extractor=BitImageProcessorPil(size={"shortest_edge": 32}, crop_size={"height": 28, "width": 28}),
+            image_encoder=Dinov2Model(
+                Dinov2Config(hidden_size=10, num_hidden_layers=1, num_attention_heads=2, image_size=28, patch_size=14)
+            ),
+            unet=unet,
+            vae=AutoencoderKL(
+                block_out_channels=(8, 16),
+                down_block_types=("DownEncoderBlock2D",) * 2,
+                up_block_types=("UpDecoderBlock2D",) * 2,
+                norm_num_groups=8,
+            ),
+            scheduler=UniPCMultistepScheduler(prediction_type="v_prediction", timestep_spacing="trailing"),
+            upscaler=Hunyuan3DPaintRRDBNet(**Hunyuan3DPaintRRDBNet.tiny_config()),
+        )
+
+
 PIPELINE_FACTORIES = (
     pytest.param(_trellis_pipeline, id="TrellisImageTo3DPipeline"),
     pytest.param(_trellis_text_pipeline, id="TrellisTextTo3DPipeline"),
@@ -775,6 +905,8 @@ PIPELINE_FACTORIES = (
     pytest.param(_triposg_pipeline, id="TripoSGImageTo3DPipeline", marks=pytest.mark.portable),
     pytest.param(_sam3d_pipeline, id="Sam3DObjectsPipeline"),
     pytest.param(_step1x3d_pipeline, id="Step1X3DImageTo3DPipeline", marks=pytest.mark.portable),
+    # Meshes are UV-unwrapped with xatlas.
+    pytest.param(_step1x3d_texture_pipeline, id="Step1X3DMeshTexturePipeline", marks=pytest.mark.portable),
     pytest.param(_pixal3d_pipeline, id="Pixal3DImageTo3DPipeline"),
     # Surface extraction uses scikit-image.
     pytest.param(_hunyuan3d_pipeline, id="Hunyuan3DImageTo3DPipeline", marks=pytest.mark.portable),
@@ -812,6 +944,21 @@ def _invoke_pipeline(pipeline, *, return_dict: bool):
             sparse_structure_num_inference_steps=2,
             return_dict=return_dict,
         )
+    if isinstance(pipeline, Step1X3DMeshTexturePipeline):
+        import trimesh
+
+        sphere = trimesh.creation.icosphere(subdivisions=1)
+        mesh = MeshAsset(vertices=torch.tensor(sphere.vertices, dtype=dtype), faces=torch.tensor(sphere.faces))
+        return pipeline(
+            [mesh, mesh],
+            [ImageCondition(image=image) for image in images],
+            num_inference_steps=2,
+            resolution=16,
+            latent_texture_size=16,
+            texture_size=16,
+            generator=torch.Generator().manual_seed(0),
+            return_dict=return_dict,
+        )
     if isinstance(pipeline, Step1X3DImageTo3DPipeline):
         latents = torch.linspace(-1.0, 1.0, 2 * 8 * 4, dtype=dtype).reshape(2, 8, 4)
         return pipeline(images, latents=latents, num_inference_steps=2, octree_resolution=8, return_dict=return_dict)
@@ -835,6 +982,34 @@ def _invoke_pipeline(pipeline, *, return_dict: bool):
         sparse_structure_num_inference_steps=2,
         return_dict=return_dict,
     )
+
+
+@pytest.mark.integration
+@pytest.mark.portable
+def test_reviewed_texturing_pipeline_dtype_device_and_tuple_contract():
+    pipeline = _hunyuan3d_paint_pipeline().to(device="cpu", dtype=torch.float64)
+    trimesh = pytest.importorskip("trimesh")
+    sphere = trimesh.creation.icosphere(subdivisions=1)
+    mesh = MeshAsset(vertices=torch.tensor(sphere.vertices, dtype=torch.float32), faces=torch.tensor(sphere.faces))
+    image = ImageCondition(image=torch.linspace(0.0, 1.0, 4 * 8 * 8, dtype=torch.float64).reshape(4, 8, 8))
+    outputs = [
+        pipeline(
+            mesh,
+            image,
+            num_inference_steps=2,
+            view_size=16,
+            render_size=32,
+            texture_size=16,
+            max_faces=None,
+            generator=torch.Generator().manual_seed(0),
+            return_dict=return_dict,
+        )
+        for return_dict in (True, False)
+    ]
+    assert len(outputs[0].objects) == len(outputs[1][0]) == 1
+    assert outputs[0].latents.latents.dtype is torch.float64 and outputs[0].latents.latents.device.type == "cpu"
+    torch.testing.assert_close(outputs[0].latents.latents, outputs[1][1].latents)
+    torch.testing.assert_close(outputs[0].objects[0].materials[0].base_color, outputs[1][0][0].materials[0].base_color)
 
 
 def _asset_tensor(asset) -> torch.Tensor:
@@ -873,6 +1048,8 @@ def test_pipeline_contracts_cover_every_reviewed_registration():
         TripoSGImageTo3DPipeline,
         Sam3DObjectsPipeline,
         Step1X3DImageTo3DPipeline,
+        Step1X3DMeshTexturePipeline,
         Pixal3DImageTo3DPipeline,
         Hunyuan3DImageTo3DPipeline,
+        Hunyuan3DPaintPipeline,
     } == {registration.pipeline_class for registration in pipeline_registrations}

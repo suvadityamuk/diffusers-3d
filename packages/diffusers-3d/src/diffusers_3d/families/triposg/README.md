@@ -12,7 +12,7 @@ step runs in plain PyTorch on any device, plus scikit-image for marching cubes.
 import torch
 from diffusers_3d import AutoPipelineForImageTo3D, ImageCondition
 
-pipeline = AutoPipelineForImageTo3D.from_pretrained("path/to/converted").to("cuda", torch.float16)
+pipeline = AutoPipelineForImageTo3D.from_pretrained("suvadityamuk/TripoSG-diffusers-3d").to("cuda", torch.float16)
 mesh = pipeline(ImageCondition(image=rgba), generator=torch.Generator("cuda").manual_seed(42)).objects[0]
 ```
 
@@ -128,7 +128,9 @@ With tiny random weights on CPU, the transformer, the VAE decoder, the
 scheduler loop, the hierarchical extraction of an analytic field
 (128 → 256 cells), and the whole pipeline (4 steps with CFG, refined grid)
 are bitwise equal to the pinned upstream code. No production-checkpoint GPU run
-is part of the CPU test matrix.
+is part of the CPU test matrix. By hand on an A100 (2026-10-13), the published
+checkpoint `suvadityamuk/TripoSG-diffusers-3d` turned the TRELLIS `T.png`
+example into a watertight 1.21M-face mesh in 83 s (float32, 10.1 GB peak).
 
 See `LICENSE-MIT` and `NOTICE`. The upstream transformer file says it is based
 on Tencent HunyuanDiT, whose Tencent Hunyuan Community License does not apply in

@@ -47,7 +47,7 @@ from transformers import DINOv3ViTModel
 from diffusers_3d import AutoPipelineForImageTo3D, ImageCondition
 
 image_encoder = DINOv3ViTModel.from_pretrained("facebook/dinov3-vitl16-pretrain-lvd1689m")
-pipeline = AutoPipelineForImageTo3D.from_pretrained("/path/to/pixal3d", image_encoder=image_encoder).to("cuda")
+pipeline = AutoPipelineForImageTo3D.from_pretrained("suvadityamuk/Pixal3D-diffusers-3d", image_encoder=image_encoder).to("cuda")
 output = pipeline(ImageCondition(rgba), camera_angle_x=math.radians(40), formats=("o_voxel",))
 ```
 
@@ -105,7 +105,9 @@ port on CPU float32 (maximum absolute differences measured on macOS arm64):
 | Single-view NAF stages (512, 1024, texture), dense and sparse cells | 2.4e-7 |
 | Multi-view: `to_cond_tensor`, global tokens | bitwise; projected features 4.8e-7 |
 
-Not covered by parity: full-checkpoint numerics, `bfloat16` execution, and the RNG sequence of a whole run.
+Not covered by parity: full-checkpoint numerics, `bfloat16` execution, and the RNG sequence of a whole run. By hand
+on an A100 (2026-10-13), the published `suvadityamuk/Pixal3D-diffusers-3d` turned the TRELLIS `T.png` example
+(`camera_angle_x=0.35`, `1536_cascade`, bfloat16) into an O-Voxel and a 14.6M-face mesh in 40 s at 35.8 GB peak.
 
 ## Licenses
 

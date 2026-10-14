@@ -12,7 +12,8 @@ implementations can change numerical or visual output.
 ## Supported portable adapters
 
 `TrimeshBackend`, `ScikitImageBackend`, and `XAtlasBackend` implement CPU mesh I/O/processing, marching cubes, and
-UV unwrapping respectively. Constructing an adapter explicitly selects its exact entry in `BACKEND_REGISTRY` before
+UV unwrapping respectively. `TrimeshBackend`'s `simplify_quadric_decimation` operation (used by Hunyuan3D-2.1 Paint's
+optional remesh) needs `fast-simplification`, which the `portable` extra installs. Constructing an adapter explicitly selects its exact entry in `BACKEND_REGISTRY` before
 the optional module is imported. Their NumPy/CPU conversions are non-differentiable.
 
 `ScikitImageBackend.extract_surface` generically defaults to
@@ -67,7 +68,7 @@ These native TRELLIS.2 paths are adapter/API tested with CPU fakes in CI and run
 (`scripts/gpu_smoke.py`, backends built by `scripts/install_gpu_backends.sh` at the registry pins); render or GLB
 quality beyond "recognizable" is not claimed.
 
-Two TRELLIS paths are pure PyTorch on top of the adapters above:
+These rendering and baking paths are plain PyTorch, built on the adapters above where noted:
 
 - `TrellisGlbPostprocessFacade.to_textured_mesh(mesh, gaussians)` reproduces upstream `to_glb`: CuMesh repair and
   simplify, xatlas unwrap, gsplat renders from Hammersley views, and `texture_baking.py`, which rasterizes the UV atlas
@@ -80,6 +81,16 @@ Two TRELLIS paths are pure PyTorch on top of the adapters above:
   barycentrics, and depth on any device, with `interpolate` for vertex attributes and `rasterize_mesh(mesh, cameras)`
   for pinhole `CameraRig`s. With `align_corners=True` it follows the `custom_rasterizer` semantics used by the
   Hunyuan3D-2.1 and Step1X-3D texture bakers; it is an independent implementation with no compiled extension.
+- `multiview_baking` is the multi-view texture baker of `MeshRender`, which Hunyuan3D-2.1 Paint and Step1X-3D share,
+  in plain PyTorch:
+  - `look_at_view` and `orthographic_projection` build its cameras.
+  - `rasterize_texels` finds the surface point under every texel of a UV atlas.
+  - `project_view` back-projects a view by sampling it at those points (`back_sample`), and `splat_view` splats a
+    view's pixels into UV space (`linear`). Both weight texels by the view-angle cosine, cut off at 75°. They distrust
+    pixels near the silhouette and near depth edges found by `canny`, which matches `cv2.Canny`.
+  - `merge_views` is `fast_bake_texture`.
+  - `inpaint_texture` propagates colours over the mesh and fills the remaining gaps ring by ring with
+    `texture_baking.fill_texture`. Upstream uses `cv2.inpaint(INPAINT_NS)` for that last step instead.
 
 `utils3d` means the EasternJournalist repository used by TRELLIS, not the unrelated PyPI distribution. It must be
 installed from an audited pinned revision.

@@ -102,7 +102,7 @@ jobs:
           python -m pip install -e "packages/diffusers-3d[reference-test,test]" --no-deps
           # Upstream reference modules import these at module level.
           python -m pip install accelerate einops opencv-python-headless optree pytest pyyaml safetensors scikit-image \
-            timm tqdm "transformers>=5.5.0" trimesh
+            timm tqdm "transformers>=5.5.0" trimesh xatlas
           # NATTEN ships only an sdist; without CUDA it builds its pure-Python Flex backend.
           python -m pip install --no-build-isolation natten==0.21.0
       - name: Fetch exact trusted reference revisions
@@ -179,7 +179,7 @@ jobs:
           skipped = sum(int(suite.attrib.get("skipped", 0)) for suite in suites)
           failures = sum(int(suite.attrib.get("failures", 0)) for suite in suites)
           errors = sum(int(suite.attrib.get("errors", 0)) for suite in suites)
-          assert tests == 37, f"expected 37 reference-parity cases, collected {tests}"
+          assert tests == 48, f"expected 48 reference-parity cases, collected {tests}"
           assert (skipped, failures, errors) == (0, 0, 0), (
               f"reference parity was not clean: skipped={skipped}, "
               f"failures={failures}, errors={errors}"
@@ -231,11 +231,13 @@ jobs:
           python -m pip install --no-deps --force-reinstall "$wheel"
           python -m pip check
           diffusers-3d-convert-hunyuan3d --help > /dev/null
+          diffusers-3d-convert-hunyuan3d-paint --help > /dev/null
           diffusers-3d-convert-trellis --help > /dev/null
           diffusers-3d-convert-trellis2 --help > /dev/null
           diffusers-3d-convert-triposg --help > /dev/null
           diffusers-3d-convert-sam3d --help > /dev/null
           diffusers-3d-convert-step1x3d --help > /dev/null
+          diffusers-3d-convert-step1x3d-texture --help > /dev/null
           diffusers-3d-convert-pixal3d --help > /dev/null
           diffusers-3d-report --help > /dev/null
           cd /tmp

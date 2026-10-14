@@ -1,4 +1,4 @@
-"""Tencent Hunyuan3D-2.1 shape stage: flow DiT, ShapeVAE decoder, scheduler, and pipeline."""
+"""Tencent Hunyuan3D-2.1: the shape stage (flow DiT, ShapeVAE, scheduler, pipeline) and the Paint PBR texture stage."""
 
 from importlib import import_module
 
@@ -8,9 +8,13 @@ _EXPORT_MODULES = {
     "Hunyuan3DDiTOutput": ".models",
     "Hunyuan3DFlowMatchEulerDiscreteScheduler": ".scheduler",
     "Hunyuan3DImageTo3DPipeline": ".pipeline",
+    "Hunyuan3DPaintPipeline": ".paint_pipeline",
+    "Hunyuan3DPaintRRDBNet": ".paint_models",
+    "Hunyuan3DPaintUNet": ".paint_models",
     "Hunyuan3DShapeVAE": ".vae",
     "Hunyuan3DShapeVAEOutput": ".vae",
     "convert_hunyuan3d_checkpoint": ".conversion",
+    "convert_hunyuan3d_paint_checkpoint": ".paint_conversion",
 }
 
 

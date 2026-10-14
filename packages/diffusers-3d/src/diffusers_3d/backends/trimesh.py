@@ -582,8 +582,21 @@ class TrimeshBackend:
             native_mesh.fix_normals()
             package_metadata = native_mesh.metadata[_METADATA_KEY]
             package_metadata["has_normals"] = True
+        elif operation == "simplify_quadric_decimation":
+            if set(options) != {"face_count"}:
+                raise ValueError("simplify_quadric_decimation takes exactly one parameter, face_count")
+            channels = (mesh.normals, mesh.colors, mesh.uvs, mesh.face_material_ids)
+            if any(channel is not None for channel in channels) or mesh.materials or mesh.extras:
+                raise ValueError("simplify_quadric_decimation cannot carry vertex, face, or material channels")
+            # Needs the fast-simplification package.
+            simplified = native_mesh.simplify_quadric_decimation(face_count=int(options["face_count"]))
+            simplified.metadata = native_mesh.metadata
+            native_mesh = simplified
         else:
-            choices = "cleanup, fix_normals, merge_vertices, recompute_vertex_normals, remove_unreferenced_vertices"
+            choices = (
+                "cleanup, fix_normals, merge_vertices, recompute_vertex_normals, remove_unreferenced_vertices, "
+                "simplify_quadric_decimation"
+            )
             raise ValueError(f"unsupported trimesh geometry operation {operation!r}; expected one of: {choices}")
         return self.from_trimesh(native_mesh)
 

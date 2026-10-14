@@ -25,7 +25,9 @@ limitations under the License.
 generative 3D. It gives 3D models the same treatment Diffusers gives image and video models: pretrained weights load
 with `from_pretrained`, and pipelines compose from swappable models and schedulers. What is different is the output.
 Instead of pixels, pipelines return meshes, Gaussian splats, sparse voxels, and O-Voxels as typed, tensor-native
-objects that keep their geometry, materials, and coordinate frames intact.
+objects that keep their geometry, materials, and coordinate frames intact. Seven model families are integrated, from
+image- and text-to-3D generators to texture stages that paint an existing mesh, and their converted checkpoints load
+straight from the Hub.
 
 The repository contains two things:
 
@@ -52,10 +54,9 @@ subclass `SchedulerMixin`. So `from_pretrained`, `save_pretrained`, `.to()`, and
 
 **Each integration says what it reproduces and how it was checked.** A family README names the upstream repository
 and commit it was ported from. The test suite builds tiny versions of every model from `tiny_config()` and compares
-outputs and selected gradients against that pinned upstream code on CPU. Where a stage has not been run at production
-scale (for TRELLIS.2, the 1024 cascade), the pipeline config records it under
-`capability_limitations` and the pipeline raises `NotImplementedError` with that reason rather than producing
-unverified output.
+outputs and selected gradients against that pinned upstream code on CPU. Runs of the released checkpoints on a GPU,
+and side-by-side comparisons with upstream where they were made, are recorded with their numbers in
+[compatibility.md](packages/diffusers-3d/docs/compatibility.md).
 
 **Loading from the Hub without running remote code.** `AutoPipelineForImageTo3D.from_pretrained(repo_or_path)`
 reads an `object3d_model_index.json` sidecar that lists, for each component, its subfolder and the installed class
@@ -77,8 +78,8 @@ restricted dependencies require an explicit license acknowledgement argument.
 | [TRELLIS](packages/diffusers-3d/src/diffusers_3d/families/trellis/README.md) | `TrellisImageTo3DPipeline`, `TrellisTextTo3DPipeline` | image → 3D, text → 3D | sparse structure, SLAT, Gaussian splats, FlexiCubes mesh, tri-vector radiance field | rendering the splats (gsplat); simplifying the mesh for the textured GLB (CuMesh) |
 | [TRELLIS.2](packages/diffusers-3d/src/diffusers_3d/families/trellis2/README.md) | `Trellis2ImageTo3DPipeline` | image → 3D | sparse structure, shape/texture SLAT, O-Voxel (dual grid + PBR) | PBR-textured mesh export (CuMesh) |
 | [TripoSG](packages/diffusers-3d/src/diffusers_3d/families/triposg/README.md) | `TripoSGImageTo3DPipeline` | image → 3D | shape latents, untextured mesh | none |
-| [Step1X-3D](packages/diffusers-3d/src/diffusers_3d/families/step1x3d/README.md) | `Step1X3DImageTo3DPipeline` | image → 3D (geometry stage) | shape latents, untextured mesh | none |
-| [Hunyuan3D-2.1](packages/diffusers-3d/src/diffusers_3d/families/hunyuan3d/README.md) | `Hunyuan3DImageTo3DPipeline` | image → 3D (shape stage) | shape latents, untextured mesh | none |
+| [Step1X-3D](packages/diffusers-3d/src/diffusers_3d/families/step1x3d/README.md) | `Step1X3DImageTo3DPipeline`, `Step1X3DMeshTexturePipeline` | image → 3D (geometry stage), mesh + image → textured mesh | shape latents, untextured mesh; six generated views, UV-textured mesh | none |
+| [Hunyuan3D-2.1](packages/diffusers-3d/src/diffusers_3d/families/hunyuan3d/README.md) | `Hunyuan3DImageTo3DPipeline`, `Hunyuan3DPaintPipeline` | image → 3D (shape stage), mesh + image → PBR texture (Paint) | shape latents, untextured mesh; UV-textured mesh with base-colour and metallic-roughness textures | none |
 | [SAM 3D Objects](packages/diffusers-3d/src/diffusers_3d/families/sam3d_objects/README.md) | `Sam3DObjectsPipeline` | masked image → 3D | sparse structure, Gaussian splats, FlexiCubes mesh, placed in the input camera's frame | rendering the splats (gsplat) |
 | [Pixal3D](packages/diffusers-3d/src/diffusers_3d/families/pixal3d/README.md) | `Pixal3DImageTo3DPipeline` | image + field of view → 3D | sparse structure, shape/texture SLAT, O-Voxel (dual grid + PBR) | PBR-textured mesh export (CuMesh) |
 
@@ -86,7 +87,11 @@ Every network in these pipelines runs in plain PyTorch on CPU or GPU. The sparse
 and windowed attention that upstream implements with `spconv`, FlexGEMM, and `xformers` live in
 [`sparse_ops.py`](packages/diffusers-3d/src/diffusers_3d/families/trellis/sparse_ops.py) and are checked against the
 pinned upstream code numerically. A textured GLB of a TRELLIS mesh (`TrellisGlbPostprocessFacade`) bakes gsplat renders of
-the splats into a base-colour texture, and radiance fields render through a pure-PyTorch volume renderer.
+the splats into a base-colour texture, and radiance fields render through a pure-PyTorch volume renderer. The two
+texture stages, Hunyuan3D-2.1 Paint and Step1X-3D's texture pipeline, rasterize, bake, and inpaint with the package's
+own plain-PyTorch [`mesh_rasterizer`](packages/diffusers-3d/src/diffusers_3d/backends/mesh_rasterizer.py) and
+[`multiview_baking`](packages/diffusers-3d/src/diffusers_3d/backends/multiview_baking.py) in place of upstream's CUDA
+rasterizers, nvdiffrast, pytorch3d, and OpenCV.
 
 ## Installation
 
@@ -96,8 +101,9 @@ uv pip install -e .                                  # diffusers core
 uv pip install -e packages/diffusers-3d               # diffusers_3d
 ```
 
-Optional extras: `portable` (trimesh, scikit-image, xatlas for CPU mesh I/O), `gaussian` (gsplat), `lora` (PEFT,
-for `load_lora_weights`). Compiled and research backends are installed separately; see
+Optional extras: `portable` (trimesh, scikit-image, xatlas, and fast-simplification for CPU mesh I/O, marching cubes,
+UV unwrapping, and decimation; TripoSG, Step1X-3D, Hunyuan3D-2.1, the texture stages, and GLB export need it),
+`gaussian` (gsplat), `lora` (PEFT, for `load_lora_weights`). Compiled and research backends are installed separately; see
 [backends.md](packages/diffusers-3d/docs/backends.md). Requires Python 3.10+, PyTorch 2.6+, Transformers 5.5+,
 Accelerate 1.1+.
 
@@ -106,13 +112,18 @@ Accelerate 1.1+.
 ### Converted checkpoints on the Hub
 
 The released checkpoints are already converted into the Diffusers layout and published, so the normal path is to
-load them directly:
+load them directly. Each repository ships its family's license and notice files:
 
 | Repository | Pipeline | Notes |
 |---|---|---|
 | [`suvadityamuk/TRELLIS-image-large-diffusers-3d`](https://huggingface.co/suvadityamuk/TRELLIS-image-large-diffusers-3d) | `TrellisImageTo3DPipeline` | complete, including the DINOv2 image encoder |
 | [`suvadityamuk/TRELLIS-text-large-diffusers-3d`](https://huggingface.co/suvadityamuk/TRELLIS-text-large-diffusers-3d) | `TrellisTextTo3DPipeline` | complete, including the CLIP text encoder and tokenizer |
 | [`suvadityamuk/TRELLIS.2-4B-diffusers-3d`](https://huggingface.co/suvadityamuk/TRELLIS.2-4B-diffusers-3d) | `Trellis2ImageTo3DPipeline` | everything except the DINOv3 image encoder, which is gated under Meta's license and is passed in at load time |
+| [`suvadityamuk/TripoSG-diffusers-3d`](https://huggingface.co/suvadityamuk/TripoSG-diffusers-3d) | `TripoSGImageTo3DPipeline` | complete, including the DINOv2 image encoder |
+| [`suvadityamuk/Step1X-3D-Geometry-1300m-diffusers-3d`](https://huggingface.co/suvadityamuk/Step1X-3D-Geometry-1300m-diffusers-3d) | `Step1X3DImageTo3DPipeline` | complete geometry stage, including the DINOv2 image encoder |
+| [`suvadityamuk/Hunyuan3D-2.1-diffusers-3d`](https://huggingface.co/suvadityamuk/Hunyuan3D-2.1-diffusers-3d) | `Hunyuan3DImageTo3DPipeline` | complete shape stage, including the DINOv2 image encoder; Tencent Hunyuan 3D 2.1 Community License (not available in the EU, UK, or South Korea) |
+| [`suvadityamuk/sam-3d-objects-diffusers-3d`](https://huggingface.co/suvadityamuk/sam-3d-objects-diffusers-3d) | `Sam3DObjectsPipeline` | complete, including the DINOv2 image encoder; SAM License |
+| [`suvadityamuk/Pixal3D-diffusers-3d`](https://huggingface.co/suvadityamuk/Pixal3D-diffusers-3d) | `Pixal3DImageTo3DPipeline` | everything except the gated DINOv3 image encoder, which is passed in at load time as for TRELLIS.2 |
 
 ```python
 import torch
@@ -131,9 +142,26 @@ the installed package, downloads only those subfolders, and never enables remote
 keyword argument (`image_encoder=...`) is used instead of a subfolder, which is how the gated encoder stays out of the
 public repository. `scripts/publish_hub_checkpoints.py` is the script that produced these repositories.
 
+Every other family loads the same way, with no extra argument except Pixal3D's `image_encoder`:
+
+```python
+import torch
+from diffusers_3d import AutoPipelineForImageTo3D, ImageCondition, TrimeshBackend
+
+rgba = ...  # (4, H, W) float tensor in [0, 1]; alpha masks the object
+pipeline = AutoPipelineForImageTo3D.from_pretrained("suvadityamuk/TripoSG-diffusers-3d").to("cuda")
+mesh = pipeline(ImageCondition(image=rgba), generator=torch.Generator("cuda").manual_seed(0)).objects[0]
+TrimeshBackend().export_mesh(mesh.to("cpu"), "mesh.glb")
+```
+
+The texture stages (`Hunyuan3DPaintPipeline`, `Step1X3DMeshTexturePipeline`) are not published yet; convert them with
+`diffusers-3d-convert-hunyuan3d-paint` and `diffusers-3d-convert-step1x3d-texture`, then texture any mesh as shown in
+[inference.md](packages/diffusers-3d/docs/inference.md#8-texture-a-mesh).
+
 ### Converting a checkpoint yourself
 
-Microsoft publishes TRELLIS.2 in its own layout: a `pipeline.json` that names each model and its sampler settings,
+Every family has a `diffusers-3d-convert-<family>` command; [inference.md](packages/diffusers-3d/docs/inference.md)
+lists them all. TRELLIS.2 shows what a converter does. Microsoft publishes TRELLIS.2 in its own layout: a `pipeline.json` that names each model and its sampler settings,
 and a `ckpts/` folder with one `<name>.json` config and one `<name>.safetensors` file per model
 (`sparse_structure_flow_model`, `sparse_structure_decoder`, `shape_slat_flow_model_512`, ...). That is not
 something `from_pretrained` can read, and the release does not bundle its image encoder at all; it expects you to
@@ -231,8 +259,11 @@ New model families are the main way to contribute. Start with the
 
 The Diffusers core is Apache-2.0. The `diffusers-3d` package uses an
 `Apache-2.0 AND MIT AND LicenseRef-SAM-License AND LicenseRef-Tencent-Hunyuan-3D-2.1-Community` aggregate.
-Package-owned glue and Step1X-3D-derived code are Apache-2.0. TRELLIS-, TRELLIS.2-, TripoSG-, and Pixal3D-derived code
-keeps its MIT terms. SAM 3D Objects-derived code is under Meta's SAM License. Hunyuan3D-2.1-derived code is under the
+Package-owned glue and Step1X-3D-derived code are Apache-2.0. TRELLIS-, TRELLIS.2-, TripoSG-, and Pixal3D-derived code,
+and Step1X-3D's SyncMVD-derived texture synchronisation, keep their MIT terms. SAM 3D Objects-derived code is under Meta's SAM License. Hunyuan3D-2.1-derived code is under the
 Tencent Hunyuan 3D 2.1 Community License, which does not apply in the European Union, the United Kingdom, or South
-Korea. Model weights, DINOv3 image encoder weights, and research backends such as nvdiffrast carry their own licenses and
-are not redistributed. Pipelines whose code or weights carry restrictive terms warn when constructed.
+Korea. Model weights keep their own licenses: the converted checkpoints on the Hub redistribute them under those
+licenses, with the license and notice files included, while gated DINOv3 weights and research backends such as
+nvdiffrast are never redistributed. The texture stages also use CreativeML Open RAIL++-M weights (the SDXL and
+Stable Diffusion 2.1 bases) and BSD-3-Clause Real-ESRGAN weights. Pipelines whose code or weights carry restrictive
+terms warn when constructed.

@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from diffusers_3d import (
     Step1X3DImageTo3DPipeline,
+    Step1X3DMeshTexturePipeline,
+    Step1X3DMultiViewAdapter,
     Step1X3DShapeDecoder,
     Step1X3DTransformer1DModel,
 )
@@ -20,10 +22,14 @@ def test_registries_contain_exact_step1x3d_classes():
     }
     pipelines = [registration for registration in _PIPELINE_REGISTRY if _is_step1x3d_type(registration.pipeline_class)]
 
-    assert models == {Step1X3DTransformer1DModel, Step1X3DShapeDecoder}
-    assert [registration.pipeline_class for registration in pipelines] == [Step1X3DImageTo3DPipeline]
-    assert pipelines[0].metadata.output_representations == ("mesh",)
-    assert (
-        _PIPELINE_REGISTRY.resolve(Step1X3DImageTo3DPipeline.object3d_model_index(), "image-to-3d")
-        is Step1X3DImageTo3DPipeline
-    )
+    assert models == {Step1X3DTransformer1DModel, Step1X3DShapeDecoder, Step1X3DMultiViewAdapter}
+    assert {registration.pipeline_class for registration in pipelines} == {
+        Step1X3DImageTo3DPipeline,
+        Step1X3DMeshTexturePipeline,
+    }
+    assert all(registration.metadata.output_representations == ("mesh",) for registration in pipelines)
+    for pipeline, task in (
+        (Step1X3DImageTo3DPipeline, "image-to-3d"),
+        (Step1X3DMeshTexturePipeline, "mesh-texturing"),
+    ):
+        assert _PIPELINE_REGISTRY.resolve(pipeline.object3d_model_index(), task) is pipeline

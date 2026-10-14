@@ -1,16 +1,19 @@
-"""Convert the released TRELLIS / TRELLIS.2 checkpoints and publish them as diffusers-3d pipelines on the Hub.
+"""Convert released 3D checkpoints and publish them as diffusers-3d pipelines on the Hub.
 
     python scripts/publish_hub_checkpoints.py --namespace <owner> --work /tmp/publish
 
-Publishes three model repos under ``<owner>``:
+Publishes one model repo per release under ``<owner>``:
 
 * ``TRELLIS-image-large-diffusers-3d`` (MIT TRELLIS weights plus the Apache-2.0 DINOv2 image encoder),
 * ``TRELLIS-text-large-diffusers-3d`` (MIT TRELLIS weights plus the MIT CLIP text encoder and tokenizer),
 * ``TRELLIS.2-4B-diffusers-3d`` (MIT TRELLIS.2 weights only: the DINOv3 image encoder is gated under Meta's own
-  license and is not redistributed; users pass it to ``from_pretrained``).
+  license and is not redistributed; users pass it to ``from_pretrained``),
+* ``TripoSG-diffusers-3d``, ``Step1X-3D-Geometry-1300m-diffusers-3d``, ``Hunyuan3D-2.1-diffusers-3d``,
+  ``sam-3d-objects-diffusers-3d``, and ``Pixal3D-diffusers-3d``, each with its family's license and notice files.
+  Pixal3D, like TRELLIS.2, leaves out the gated DINOv3 image encoder.
 
 Each repo gets a model card with provenance and loading instructions. Needs ``HF_TOKEN`` with write access to the
-namespace and read access to the gated DINOv3 weights (used locally to run the TRELLIS.2 converter). Every release
+namespace and read access to the gated source weights (used locally to run the converters). Every release
 needs about twice its size under ``--work`` (source plus conversion); on hosts with little scratch space run one
 release per invocation with ``--releases``.
 """
@@ -18,6 +21,9 @@ release per invocation with ``--releases``.
 from __future__ import annotations
 
 import argparse
+import importlib
+import json
+import shutil
 import sys
 from pathlib import Path
 
@@ -28,15 +34,37 @@ REPOSITORIES = {
     "trellis-image": "TRELLIS-image-large-diffusers-3d",
     "trellis-text": "TRELLIS-text-large-diffusers-3d",
     "trellis2": "TRELLIS.2-4B-diffusers-3d",
+    "triposg": "TripoSG-diffusers-3d",
+    "step1x3d": "Step1X-3D-Geometry-1300m-diffusers-3d",
+    "hunyuan3d": "Hunyuan3D-2.1-diffusers-3d",
+    "sam3d-objects": "sam-3d-objects-diffusers-3d",
+    "pixal3d": "Pixal3D-diffusers-3d",
 }
+# Families whose license and notice files are copied into the published repo.
+FAMILY_PACKAGES = {
+    "triposg": "triposg",
+    "step1x3d": "step1x3d",
+    "hunyuan3d": "hunyuan3d",
+    "sam3d-objects": "sam3d_objects",
+    "pixal3d": "pixal3d",
+}
+# Gated encoders the converters need but that must not be republished.
+WITHHELD = {"trellis2": ["image_encoder/*"], "pixal3d": ["image_encoder/*"]}
 TRELLIS_REVISION = "442aa1e1afb9014e80681d3bf604e8d728a86ee7"
 TRELLIS2_REVISION = "75fbf0183001ed9876c8dbb35de6b68552ee08bd"
 
 
-def _card_header(*, pipeline_tag: str, base_model: str, extra_tags: list[str]) -> str:
-    tags = "\n".join(f"- {tag}" for tag in ["diffusers-3d", "trellis", "3d", *extra_tags])
+def _card_header(
+    *,
+    pipeline_tag: str,
+    base_model: str,
+    extra_tags: list[str],
+    family: str = "trellis",
+    license: str = "license: mit",
+) -> str:
+    tags = "\n".join(f"- {tag}" for tag in ["diffusers-3d", family, "3d", *extra_tags])
     return f"""---
-license: mit
+{license}
 base_model: {base_model}
 pipeline_tag: {pipeline_tag}
 tags:
@@ -234,7 +262,241 @@ comes from TRELLIS (MIT). No DINOv3 weights are redistributed. Not affiliated wi
     )
 
 
-CARDS = {"trellis-image": card_trellis_image, "trellis-text": card_trellis_text, "trellis2": card_trellis2}
+_RGBA_NOTE = (
+    "`rgba` is a `(4, H, W)` tensor in `[0, 1]` whose alpha channel masks the object; the pipeline crops and pads it "
+    "as the released code does."
+)
+
+
+def _components(folder: Path, withheld: tuple[str, ...] = ()) -> str:
+    index = json.loads((folder / "model_index.json").read_text())
+    rows = ["| Folder | Class |", "|---|---|"]
+    for name, value in sorted(index.items()):
+        if isinstance(value, list) and len(value) == 2 and value[0]:
+            note = " (not included, pass it to `from_pretrained`)" if name in withheld else ""
+            rows.append(f"| `{name}` | `{value[0]}.{value[1]}`{note} |")
+    return "\n".join(rows)
+
+
+def _family_card(
+    *,
+    namespace: str,
+    version: str,
+    folder: Path,
+    repo: str,
+    title: str,
+    source: str,
+    family: str,
+    license: str,
+    converter: str,
+    usage: str,
+    notes: str,
+    license_text: str,
+    withheld: tuple[str, ...] = (),
+) -> str:
+    return (
+        _card_header(
+            pipeline_tag="image-to-3d", base_model=source, extra_tags=["image-to-3d"], family=family, license=license
+        )
+        + f"""
+# {title} for diffusers-3d
+
+[{source}](https://huggingface.co/{source}) converted into a [diffusers-3d](https://github.com/suvadityamuk/diffusers)
+pipeline: ordinary Diffusers and Transformers component folders plus the `object3d_model_index.json` sidecar that
+the package's auto-loader validates before downloading anything. Nothing here requires remote code.
+
+{_install_note()}
+## Usage
+
+```python
+{usage.format(repo=f"{namespace}/{repo}")}
+```
+
+{notes}
+
+## Components
+
+{_components(folder, withheld)}
+
+## Provenance
+
+Converted with `{converter}` from `diffusers-3d {version}`; the package's family README lists the pinned upstream
+revisions and how the conversion maps each tensor. Parity tests against the pinned upstream code are part of the
+package test suite.
+
+## License and attribution
+
+{license_text}
+"""
+    )
+
+
+def card_triposg(namespace: str, version: str, folder: Path) -> str:
+    return _family_card(
+        namespace=namespace,
+        version=version,
+        folder=folder,
+        repo=REPOSITORIES["triposg"],
+        title="TripoSG",
+        source="VAST-AI/TripoSG",
+        family="triposg",
+        license="license: mit",
+        converter="diffusers-3d-convert-triposg",
+        usage="""import torch
+from diffusers_3d import AutoPipelineForImageTo3D, ImageCondition
+
+pipeline = AutoPipelineForImageTo3D.from_pretrained("{repo}").to("cuda")
+mesh = pipeline(ImageCondition(image=rgba), generator=torch.Generator("cuda").manual_seed(0)).objects[0]""",
+        notes=_RGBA_NOTE + " The result is an untextured `MeshAsset` extracted with marching cubes.",
+        license_text="""TripoSG weights and code: MIT License, Copyright (c) VAST-AI-Research. The DINOv2 image encoder
+weights are Apache-2.0, Copyright (c) Meta Platforms, Inc. TripoSG's transformer is derived from Tencent HunyuanDiT,
+whose Tencent Hunyuan Community License does not apply in the European Union, the United Kingdom, or South Korea;
+you are responsible for making sure your use complies with it. See `LICENSE-MIT` and `NOTICE`. Not affiliated with
+or endorsed by VAST, Tencent, or Meta.""",
+    )
+
+
+def card_step1x3d(namespace: str, version: str, folder: Path) -> str:
+    return _family_card(
+        namespace=namespace,
+        version=version,
+        folder=folder,
+        repo=REPOSITORIES["step1x3d"],
+        title="Step1X-3D Geometry 1300m",
+        source="stepfun-ai/Step1X-3D",
+        family="step1x3d",
+        license="license: apache-2.0",
+        converter="diffusers-3d-convert-step1x3d",
+        usage="""import torch
+from diffusers_3d import AutoPipelineForImageTo3D, ImageCondition
+
+pipeline = AutoPipelineForImageTo3D.from_pretrained("{repo}").to("cuda")
+mesh = pipeline(ImageCondition(image=rgba), generator=torch.Generator("cuda").manual_seed(0)).objects[0]""",
+        notes=_RGBA_NOTE + " This is the geometry stage (`Step1X-3D-Geometry-1300m`); the result is an untextured "
+        "`MeshAsset`.",
+        license_text="""Step1X-3D weights and code: Apache-2.0, Copyright (c) StepFun. The DINOv2 image encoder weights
+are Apache-2.0, Copyright (c) Meta Platforms, Inc. See `LICENSE-APACHE-2.0` and `NOTICE`. Not affiliated with or
+endorsed by StepFun or Meta.""",
+    )
+
+
+def card_hunyuan3d(namespace: str, version: str, folder: Path) -> str:
+    return _family_card(
+        namespace=namespace,
+        version=version,
+        folder=folder,
+        repo=REPOSITORIES["hunyuan3d"],
+        title="Hunyuan3D-2.1 (shape)",
+        source="tencent/Hunyuan3D-2.1",
+        family="hunyuan3d",
+        license="license: other\nlicense_name: tencent-hunyuan-3d-2-1-community\nlicense_link: "
+        f"https://huggingface.co/{namespace}/{REPOSITORIES['hunyuan3d']}/blob/main/LICENSE-TENCENT-HUNYUAN-3D-2.1",
+        converter="diffusers-3d-convert-hunyuan3d",
+        usage="""import torch
+from diffusers_3d import AutoPipelineForImageTo3D, ImageCondition
+
+pipeline = AutoPipelineForImageTo3D.from_pretrained("{repo}", dtype=torch.float16).to("cuda")
+mesh = pipeline(ImageCondition(image=rgba), generator=torch.Generator("cuda").manual_seed(0)).objects[0]""",
+        notes=_RGBA_NOTE + " This is the shape stage (`hunyuan3d-dit-v2-1`); the result is an untextured `MeshAsset`.",
+        license_text="""**Tencent Hunyuan 3D 2.1 is licensed under the Tencent Hunyuan 3D 2.1 Community License Agreement,
+Copyright © 2025 Tencent. All Rights Reserved. The trademark rights of "Tencent Hunyuan" are owned by Tencent or its
+affiliate.**
+
+This repository redistributes modified Tencent Hunyuan 3D 2.1 works: diffusers-3d converted the released weights
+into Diffusers component folders (parameters renamed and the ShapeVAE point-cloud encoder dropped; weight values
+unchanged). The license, including its Acceptable Use Policy and the use restrictions of its Sections 5(a) and
+5(b), applies to everyone who uses these files; read `LICENSE-TENCENT-HUNYUAN-3D-2.1` and `NOTICE` before use.
+The license **does not apply in the European Union, the United Kingdom, or South Korea**, and products above
+1 million monthly active users need a separate license from Tencent. This repository and diffusers-3d are not
+affiliated with, sponsored, or endorsed by Tencent.""",
+    )
+
+
+def card_sam3d(namespace: str, version: str, folder: Path) -> str:
+    return _family_card(
+        namespace=namespace,
+        version=version,
+        folder=folder,
+        repo=REPOSITORIES["sam3d-objects"],
+        title="SAM 3D Objects",
+        source="facebook/sam-3d-objects",
+        family="sam3d-objects",
+        license="license: other\nlicense_name: sam-license\nlicense_link: "
+        f"https://huggingface.co/{namespace}/{REPOSITORIES['sam3d-objects']}/blob/main/LICENSE-SAM",
+        converter="diffusers-3d-convert-sam3d",
+        usage="""import torch
+from diffusers_3d import AutoPipelineForImageTo3D, ImageCondition
+
+pipeline = AutoPipelineForImageTo3D.from_pretrained("{repo}").to("cuda")
+output = pipeline(ImageCondition(image=rgb, mask=mask), formats=("gaussian", "mesh"))
+gaussians, mesh = output.objects""",
+        notes="`rgb` is a `(3, H, W)` tensor in `[0, 1]` and `mask` a `(1, H, W)` tensor selecting the object. The "
+        "object comes back placed in the input camera's frame. Pass `pointmap=` (camera-space points per pixel) to "
+        "use depth; without it the pointmap tokens are zero, as in the model's training dropout.",
+        license_text="""SAM 3D Objects weights and code: SAM License, Copyright (c) Meta Platforms, Inc. and affiliates.
+This repository redistributes converted SAM Materials under that Agreement, a copy of which is in `LICENSE-SAM`;
+by using these files you agree to it. It is not an open-source license: it forbids military, warfare, nuclear,
+espionage, and weapons uses and use by parties subject to trade controls, and publications using the model must
+acknowledge it. Not affiliated with or endorsed by Meta.""",
+    )
+
+
+def card_pixal3d(namespace: str, version: str, folder: Path) -> str:
+    return _family_card(
+        namespace=namespace,
+        version=version,
+        folder=folder,
+        repo=REPOSITORIES["pixal3d"],
+        title="Pixal3D",
+        source="TencentARC/Pixal3D",
+        family="pixal3d",
+        license="license: mit",
+        converter="diffusers-3d-convert-pixal3d",
+        usage="""import torch
+from transformers import DINOv3ViTModel
+
+from diffusers_3d import AutoPipelineForImageTo3D, ImageCondition
+
+image_encoder = DINOv3ViTModel.from_pretrained("facebook/dinov3-vitl16-pretrain-lvd1689m")
+pipeline = AutoPipelineForImageTo3D.from_pretrained(
+    "{repo}", image_encoder=image_encoder, dtype=torch.bfloat16
+).to("cuda")
+output = pipeline(ImageCondition(image=rgba), camera_angle_x=0.35, formats=("o_voxel", "mesh"))""",
+        notes="**The DINOv3 image encoder is not included.** Its weights are gated under Meta's DINOv3 License; "
+        "accept it on [facebook/dinov3-vitl16-pretrain-lvd1689m](https://huggingface.co/facebook/dinov3-vitl16-"
+        "pretrain-lvd1689m) and pass the encoder in when loading. " + _RGBA_NOTE + " `camera_angle_x` is the input "
+        "camera's horizontal field of view in radians; the shape is reconstructed in that camera's frame.",
+        license_text="""Pixal3D weights and code: MIT License, Copyright (c) Tencent ARC Lab. The `feature_upsampler` is
+valeo.ai's NAF (Neighborhood Attention Filtering) upsampler, converted from the release checkpoint at
+https://github.com/valeoai/NAF/releases (NAF code is Apache-2.0; the checkpoint is published there without a
+separate license). No DINOv3 weights are redistributed. See `LICENSE-MIT` and `NOTICE`. Not affiliated with or
+endorsed by Tencent, valeo.ai, or Meta.""",
+        withheld=("image_encoder",),
+    )
+
+
+def _with_folder(card):
+    return lambda namespace, version, folder: card(namespace, version)
+
+
+CARDS = {
+    "trellis-image": _with_folder(card_trellis_image),
+    "trellis-text": _with_folder(card_trellis_text),
+    "trellis2": _with_folder(card_trellis2),
+    "triposg": card_triposg,
+    "step1x3d": card_step1x3d,
+    "hunyuan3d": card_hunyuan3d,
+    "sam3d-objects": card_sam3d,
+    "pixal3d": card_pixal3d,
+}
+
+
+def copy_license_files(name: str, folder: Path) -> None:
+    if name not in FAMILY_PACKAGES:
+        return
+    package = Path(importlib.import_module(f"diffusers_3d.families.{FAMILY_PACKAGES[name]}").__file__).parent
+    for path in [*package.glob("LICENSE*"), package / "NOTICE"]:
+        shutil.copyfile(path, folder / path.name)
 
 
 def main() -> int:
@@ -258,9 +520,9 @@ def main() -> int:
         repo_id = f"{args.namespace}/{REPOSITORIES[name]}"
         print(f"== {name}: converting {RELEASES[name]['source']}", flush=True)
         folder = convert_release(name, args.work)
-        (folder / "README.md").write_text(CARDS[name](args.namespace, diffusers_3d.__version__))
-        # The TRELLIS.2 converter needs the gated DINOv3 image encoder to run, but its weights must not be republished.
-        ignore = ["image_encoder/*", "conditioner/*"] if name == "trellis2" else []
+        (folder / "README.md").write_text(CARDS[name](args.namespace, diffusers_3d.__version__, folder))
+        copy_license_files(name, folder)
+        ignore = WITHHELD.get(name, []) + ["conditioner/*"]
         if args.dry_run:
             print(f"   dry run: would upload {folder} to {repo_id} (ignoring {ignore})")
             continue

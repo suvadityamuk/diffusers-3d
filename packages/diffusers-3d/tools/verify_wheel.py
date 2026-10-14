@@ -27,6 +27,7 @@ LICENSE_FILES = {
     "src/diffusers_3d/families/sam3d_objects/LICENSE-SAM",
     "src/diffusers_3d/families/sam3d_objects/NOTICE",
     "src/diffusers_3d/families/step1x3d/LICENSE-APACHE-2.0",
+    "src/diffusers_3d/families/step1x3d/LICENSE-MIT",
     "src/diffusers_3d/families/step1x3d/NOTICE",
     "src/diffusers_3d/families/pixal3d/LICENSE-MIT",
     "src/diffusers_3d/families/pixal3d/NOTICE",
@@ -37,10 +38,12 @@ ENTRY_POINTS = {
     "diffusers-3d-convert-sam3d": "diffusers_3d.families.sam3d_objects.conversion:main",
     "diffusers-3d-convert-pixal3d": "diffusers_3d.families.pixal3d.conversion:main",
     "diffusers-3d-convert-hunyuan3d": "diffusers_3d.families.hunyuan3d.conversion:main",
+    "diffusers-3d-convert-hunyuan3d-paint": "diffusers_3d.families.hunyuan3d.paint_conversion:main",
     "diffusers-3d-convert-trellis": "diffusers_3d.families.trellis.conversion:main",
     "diffusers-3d-convert-trellis2": "diffusers_3d.families.trellis2.conversion:main",
     "diffusers-3d-convert-triposg": "diffusers_3d.families.triposg.conversion:main",
     "diffusers-3d-convert-step1x3d": "diffusers_3d.families.step1x3d.conversion:main",
+    "diffusers-3d-convert-step1x3d-texture": "diffusers_3d.families.step1x3d.texture_conversion:main",
     "diffusers-3d-report": "diffusers_3d.compatibility:main",
 }
 

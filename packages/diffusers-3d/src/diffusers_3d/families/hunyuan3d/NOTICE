@@ -12,4 +12,17 @@ LICENSE-TENCENT-HUNYUAN-3D-2.1, not by the Apache-2.0 license of the rest of dif
 in the European Union, the United Kingdom, or South Korea, and its Acceptable Use Policy and use restrictions
 (Sections 5(a) and 5(b)) apply to every use. Every modified file carries a prominent modification notice.
 
+The Hunyuan3D-Paint 2.1 files (paint_models.py, paint_pipeline.py, paint_conversion.py) reimplement semantics of the
+hy3dpaint code at the same revision and load weights converted from its hunyuan3d-paintpbr-v2-1 folder. The Paint UNets
+and VAE derive from ByteDance/sd2.1-base-zsnr-laionaes6, a fine-tune of stabilityai/stable-diffusion-2-1-base, and are
+also subject to the CreativeML Open RAIL++-M License and its use restrictions.
+
+The Paint pipeline also uses:
+
+  - facebook/dinov2-giant (revision 611a9d42f2335e0f921f1e313ad3c1b7178d206d), Apache-2.0, unmodified.
+  - The RealESRGAN_x4plus weights of Real-ESRGAN (https://github.com/xinntao/Real-ESRGAN), BSD-3-Clause,
+    Copyright (c) 2021 Xintao Wang, fetched from the Hub copy in lllyasviel/Annotators and checked against the SHA-256
+    of the release asset. Hunyuan3DPaintRRDBNet independently implements the RRDBNet generator architecture of BasicSR
+    (https://github.com/XPixelGroup/BasicSR, Apache-2.0) to load those weights.
+
 diffusers-3d is not affiliated with, associated with, sponsored by, or endorsed by Tencent.

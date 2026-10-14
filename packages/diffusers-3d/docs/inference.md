@@ -1,8 +1,9 @@
 # Inference with diffusers-3d
 
-This page shows what running a generative 3D model looks like today. It uses TRELLIS.2 throughout; TRELLIS
-(`TrellisImageTo3DPipeline`) follows the same shape with the argument names noted at the end. A complete, runnable
-version of everything below lives in
+This page shows what running a generative 3D model looks like today. Sections 2–7 use TRELLIS.2 as the running
+example; every other family loads, conditions, and saves the same way, with the arguments listed under
+[Other families](#other-families). [Section 8](#8-texture-a-mesh) textures a mesh with Hunyuan3D-2.1 Paint or Step1X-3D.
+A complete, runnable version of the TRELLIS.2 walkthrough lives in
 [`families/trellis2/examples/image_to_3d.py`](../src/diffusers_3d/families/trellis2/examples/image_to_3d.py):
 
 ```bash
@@ -22,11 +23,34 @@ Converted checkpoints are published on the Hub, so the usual path is to load one
 | `suvadityamuk/TRELLIS-image-large-diffusers-3d` | `TrellisImageTo3DPipeline` | every component, DINOv2 image encoder included |
 | `suvadityamuk/TRELLIS-text-large-diffusers-3d` | `TrellisTextTo3DPipeline` | every component, CLIP text encoder and tokenizer included |
 | `suvadityamuk/TRELLIS.2-4B-diffusers-3d` | `Trellis2ImageTo3DPipeline` | every component except the gated DINOv3 image encoder |
+| `suvadityamuk/TripoSG-diffusers-3d` | `TripoSGImageTo3DPipeline` | every component, DINOv2 image encoder included |
+| `suvadityamuk/Step1X-3D-Geometry-1300m-diffusers-3d` | `Step1X3DImageTo3DPipeline` | every geometry-stage component, DINOv2 image encoder included |
+| `suvadityamuk/Hunyuan3D-2.1-diffusers-3d` | `Hunyuan3DImageTo3DPipeline` | every shape-stage component, DINOv2 image encoder included; Tencent Hunyuan 3D 2.1 Community License |
+| `suvadityamuk/sam-3d-objects-diffusers-3d` | `Sam3DObjectsPipeline` | every component, DINOv2 image encoder included; SAM License |
+| `suvadityamuk/Pixal3D-diffusers-3d` | `Pixal3DImageTo3DPipeline` | every component except the gated DINOv3 image encoder |
 
-`scripts/publish_hub_checkpoints.py` produced them with the converters below, so converting yourself gives the same
-result. Official TRELLIS.2 releases are not in the Diffusers layout; the packaged CLI translates one, pointing at the
-release's `pipeline.json` directory and at the DINOv3 image encoder, a downloaded folder or its Hub id (the
-production weights are gated on the Hub under the DINOv3 License and are not redistributed):
+Each repository ships its family's license and notice files; read them before use. The two texture stages are not
+published yet, so convert them yourself.
+
+`scripts/publish_hub_checkpoints.py` produced the repositories with the packaged converters, so converting yourself
+gives the same result. Every converter writes a Diffusers pipeline folder from an official release:
+
+| Family | Command |
+|---|---|
+| TRELLIS | `diffusers-3d-convert-trellis <release> <out> --encoder-path facebook/dinov2-with-registers-large` (or `openai/clip-vit-large-patch14` for text) |
+| TRELLIS.2 | `diffusers-3d-convert-trellis2 <release> <out> --image-encoder-path facebook/dinov3-vitl16-pretrain-lvd1689m` |
+| TripoSG | `diffusers-3d-convert-triposg VAST-AI/TripoSG <out>` |
+| Step1X-3D geometry | `diffusers-3d-convert-step1x3d <Step1X-3D-Geometry-1300m folder> <out>` |
+| Step1X-3D texture | `diffusers-3d-convert-step1x3d-texture <Step1X-3D-Texture folder> <out>` (fetches the SDXL base and VAE) |
+| Hunyuan3D-2.1 shape | `diffusers-3d-convert-hunyuan3d tencent/Hunyuan3D-2.1 <out>` |
+| Hunyuan3D-2.1 Paint | `diffusers-3d-convert-hunyuan3d-paint tencent/Hunyuan3D-2.1 <out>` (fetches DINOv2-giant and Real-ESRGAN; `--no-upscaler` skips it) |
+| SAM 3D Objects | `diffusers-3d-convert-sam3d <sam-3d-objects checkpoints/ folder> <out>` |
+| Pixal3D | `diffusers-3d-convert-pixal3d <release> <out> --image-encoder-path facebook/dinov3-vitl16-pretrain-lvd1689m --naf-checkpoint-path naf_release.pth` |
+
+Each one validates the release's configuration, rejects missing or unexpected weights, and loads image and text
+encoders through Transformers' own `from_pretrained`, so they stay stock Transformers components. For TRELLIS.2, point
+the CLI at the release's `pipeline.json` directory and at the DINOv3 image encoder, a downloaded folder or its Hub id
+(the production weights are gated on the Hub under the DINOv3 License and are not redistributed):
 
 ```bash
 diffusers-3d-convert-trellis2 /path/to/TRELLIS.2-release /path/to/trellis2 \
@@ -195,6 +219,60 @@ Then call `pipeline.postprocess_ovoxel(asset, output_format="textured_mesh")`; c
 `to_coordinate_system("right_handed_y_up")` before exporting it. `.vxz` and voxel rendering still need the compiled
 O-Voxel runtime and its research-licensed nvdiffrast dependency, which are never imported implicitly.
 
+## 8. Texture a mesh
+
+Two pipelines paint an existing mesh from a reference image. Both take a `MeshAsset`, for example a shape pipeline's
+output, and an `ImageCondition` whose alpha or `mask` isolates the object, and return a UV-textured `MeshAsset`. Load
+them with `AutoPipelineFor3D` (task `mesh-texturing`) or their concrete classes, from a folder you converted:
+
+```python
+import torch
+from diffusers_3d import AutoPipelineFor3D, AutoPipelineForImageTo3D, ImageCondition, TrimeshBackend
+
+shape = AutoPipelineForImageTo3D.from_pretrained("suvadityamuk/Hunyuan3D-2.1-diffusers-3d", dtype=torch.float16).to("cuda")
+mesh = shape(ImageCondition(image=rgba), generator=torch.Generator("cuda").manual_seed(0)).objects[0]
+
+paint = AutoPipelineFor3D.from_pretrained("/path/to/hunyuan3d-paint", dtype=torch.float16).to("cuda")
+textured = paint(mesh, ImageCondition(image=rgba), generator=torch.Generator("cuda").manual_seed(0)).objects[0]
+TrimeshBackend().export_mesh(textured.to("cpu"), "textured.glb")
+```
+
+- `Hunyuan3DPaintPipeline` (Hunyuan3D-2.1 Paint) simplifies the mesh to `max_faces=40000` (needs
+  `fast-simplification` from the `portable` extra; `max_faces=None` keeps it), unwraps it with xatlas, picks up to
+  `max_num_views` cameras, generates albedo and metallic-roughness views with 15 UniPC steps, upscales them with
+  Real-ESRGAN, and bakes a base-colour plus metallic-roughness `PBRMaterial`.
+- `Step1X3DMeshTexturePipeline` (Step1X-3D) generates six orthographic views with SDXL, the released multi-view
+  adapter, and a T2I-Adapter fed position and normal renders, keeps them consistent by denoising through a shared
+  latent texture for the first half of the steps (`texture_sync_ratio`), and bakes a base-colour texture.
+  `output.previews` holds the six generated views.
+
+Both rasterize, bake, and inpaint in plain PyTorch through `diffusers_3d.backends` (`mesh_rasterizer` and
+`multiview_baking`) instead of upstream's CUDA rasterizers, nvdiffrast, pytorch3d, and OpenCV. Neither runs a
+background remover: pass RGBA or a mask. The texture-gap fill differs slightly from OpenCV's inpainting; see the
+family READMEs for measured differences.
+
+## Other families
+
+Every family's converted checkpoint loads with `AutoPipelineForImageTo3D.from_pretrained` and returns tensor-native
+assets in `output.objects`. Each family README lists its components, numerics, and differences from upstream.
+
+- **TripoSG** (`TripoSGImageTo3DPipeline`): RGBA in, an untextured `MeshAsset` (right-handed Y-up) out.
+  `num_inference_steps=50`, `guidance_scale=7.0`, and `dense_octree_depth` / `hierarchical_octree_depth` control the
+  marching-cubes grid.
+- **Step1X-3D** (`Step1X3DImageTo3DPipeline`): RGBA in, an untextured mesh out; `num_inference_steps=50`,
+  `guidance_scale=7.5`, `octree_resolution=384`.
+- **Hunyuan3D-2.1** (`Hunyuan3DImageTo3DPipeline`): RGBA in, an untextured mesh out; `num_inference_steps=50`,
+  `guidance_scale=5.0`, `octree_resolution=384`. Load in float16 as released.
+- **SAM 3D Objects** (`Sam3DObjectsPipeline`): an RGB image plus a `mask` selecting the object, and optionally a
+  camera-space `pointmap`. `formats` picks from `"sparse_structure"`, `"gaussian"`, and `"mesh"`; the object comes back
+  posed in the input camera's frame.
+- **Pixal3D** (`Pixal3DImageTo3DPipeline`): RGBA in plus `camera_angle_x`, the input camera's horizontal field of view
+  in radians. It shares TRELLIS.2's `formats` and `pipeline_type` (default `"1536_cascade"`) and, like TRELLIS.2, takes
+  the gated DINOv3 image encoder as an `image_encoder=` argument when loading from the Hub.
+
+TripoSG, Hunyuan3D-2.1, SAM 3D Objects, and the Hunyuan3D-2.1 Paint stage warn on construction about their
+licenses' territory or use restrictions.
+
 ## TRELLIS (v1) differences
 
 `TrellisImageTo3DPipeline` accepts `formats` from `{"sparse_structure", "slat", "gaussian", "mesh", "radiance_field"}`
@@ -226,11 +304,14 @@ diffusers-3d-convert-trellis /path/to/TRELLIS-image-large /path/to/trellis-diffu
 
 ## What is and is not covered
 
-Every network in both families (image and text encoders, sparse-structure flows and decoders, SLAT flows, the Gaussian, mesh, and
-radiance-field decoders, and the shape and PBR decoders) runs in plain PyTorch on any device. Sparse convolutions, pooling, subdivision, and
+Every network in every family runs in plain PyTorch on any device, and so do mesh extraction, rasterization,
+texture baking, and inpainting. For TRELLIS and TRELLIS.2 that covers the image and text encoders, sparse-structure
+flows and decoders, SLAT flows, the Gaussian, mesh, and radiance-field decoders, and the shape and PBR decoders. Sparse convolutions, pooling, subdivision, and
 windowed attention are implemented in `families/trellis/sparse_ops.py` and checked numerically against the pinned
 upstream code with tiny weights, with the upstream CUDA kernels (`spconv`, FlexGEMM, `xformers`) replaced by dense
 PyTorch equivalents in the test. Full-resolution generation on the released weights and the compiled mesh, render, and
 PBR GLB paths are not in the CPU CI; the [GPU smoke workflow](../../../.github/workflows/diffusers_3d_gpu_smoke.yml)
 runs them on a Hugging Face Jobs A100 on demand and weekly (`scripts/gpu_smoke.py`), and the numbers from the last
-manual run are recorded in [compatibility.md](compatibility.md). See that page and the family READMEs for the exact evidence behind each claim.
+manual run are recorded in [compatibility.md](compatibility.md). The other families and both texture stages were run
+by hand on the same hardware against their released checkpoints; that page records those runs too. See it and the
+family READMEs for the exact evidence behind each claim.

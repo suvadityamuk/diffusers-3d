@@ -1,4 +1,4 @@
-# Step1X-3D image-to-geometry
+# Step1X-3D
 
 This family integrates the geometry stage of the Apache-2.0 StepFun Step1X-3D
 implementation at revision `cb5ac944709c6c913109070c7b90c3447f57f3d4`, with
@@ -7,7 +7,21 @@ conditions a rectified-flow transformer over the shape VAE's latent set, the
 VAE decoder evaluates occupancy on a grid, and marching cubes extracts a
 watertight mesh. Everything runs in plain PyTorch on any device; mesh
 extraction needs the portable `scikit-image` backend
-(`pip install "diffusers-3d[portable]"`).
+(`pip install "diffusers-3d[portable]"`). The [texture stage](#texture-stage)
+paints a mesh from a reference image.
+
+## Usage
+
+```python
+import torch
+from diffusers_3d import AutoPipelineForImageTo3D, ImageCondition
+
+pipeline = AutoPipelineForImageTo3D.from_pretrained("suvadityamuk/Step1X-3D-Geometry-1300m-diffusers-3d").to("cuda")
+mesh = pipeline(ImageCondition(image=rgba), generator=torch.Generator("cuda").manual_seed(0)).objects[0]
+```
+
+`rgba` is a `(4, H, W)` tensor in `[0, 1]` whose alpha channel masks the object. To convert the release yourself,
+see "Conversion and parity" below.
 
 ## Components
 
@@ -76,8 +90,6 @@ extraction needs the portable `scikit-image` backend
   `Step1X3DTransformer1DModel`.
 - **The point encoder and DMC extraction.** The point encoder is training-only.
   DMC extraction would need `diso`, a CUDA build.
-- **The texture stage.** Multi-view SDXL with geometry conditioning and
-  baking is not ported yet.
 
 ## Conversion and parity
 
@@ -100,4 +112,82 @@ CPU. The following are bit for bit:
 - a full 4-step guided image-to-mesh run, covering latents, vertices, and
   faces
 
-See `LICENSE-APACHE-2.0` and `NOTICE` for source and license terms.
+By hand on an A100 (2026-10-13), the published
+`suvadityamuk/Step1X-3D-Geometry-1300m-diffusers-3d` turned the TRELLIS
+`T.png` example into a 0.93M-face mesh in 95 s (float32, 9.4 GB peak).
+
+## Texture stage
+
+`Step1X3DMeshTexturePipeline` takes a `MeshAsset` and an `ImageCondition` and
+returns the mesh UV-unwrapped with a base-colour texture, following the
+released `Step1X-3D-Texture` pipeline (MV-Adapter image-guided SDXL):
+
+1. The mesh is cleaned with trimesh (optional), unwrapped with xatlas, and
+   scaled to `max |x| = 0.5` in a Z-up frame.
+2. Six orthographic renders (front, right, back, left, top, bottom) of
+   position and normal condition a T2I-Adapter.
+3. The reference image is cropped to its alpha, fitted to 90% of the frame,
+   and composited on grey. One UNet pass over its latent caches every
+   self-attention input.
+4. The SDXL UNet denoises the six views with the MV-Adapter processors
+   installed for the call: attention along image rows across the front,
+   right, back, and left views, along columns across the front, back, top,
+   and bottom views, and to the cached reference.
+5. For the first half of the schedule the six latent views step together
+   through a shared latent texture (SyncMVD): the predicted clean views are
+   baked into the texture, the DDPM posterior is taken on the texture, and
+   the views are rendered back over solid-colour backgrounds.
+6. The decoded views are upscaled to the texture size with Lanczos and
+   baked onto the mesh UVs with the shared `multiview_baking` backend, as
+   upstream's `MeshRender` does. Texels no view covers are inpainted.
+
+Components:
+
+- `vae`, `text_encoder`, `text_encoder_2`, `tokenizer`, `tokenizer_2`, and
+  `unet` are the stock SDXL components, `adapter` is the stock `T2IAdapter`
+  (`full_adapter_xl`, six input channels), and `scheduler` is the stock
+  `DDPMScheduler` with the released shifted-SNR betas (log-SNR moving towards
+  SNR / 8) stored as `trained_betas`.
+- `Step1X3DMultiViewAdapter` (`mv_adapter`) holds one
+  `Step1X3DMultiViewAttnProcessor` per UNet self-attention layer at that
+  layer's path, so the released tensors load without renaming.
+
+Differences from the released pipeline:
+
+- **Rendering.** The package rasterizer replaces nvdiffrast (geometry
+  renders) and pytorch3d (texture synchronisation). Baking averages pixels
+  into texels directly instead of back-propagating through a render. Empty
+  texels take the value of a nearest filled texel found by jump flooding,
+  instead of the CuPy Voronoi kernel, whose source has no license.
+- **UVs.** One xatlas atlas serves the latent texture and the output;
+  upstream unwraps three times. The synchronisation's cosine weights use
+  normals of the welded mesh, and its top and bottom cameras sit at the
+  geometry renders' ±89.99° instead of ±90°.
+- **Randomness and precision.** All noise, background colours, and VAE
+  samples come from the pipeline generator; upstream also draws from the
+  global torch and Python generators. The VAE runs in its own dtype.
+- **Inputs and outputs.** No background removal runs: the reference image
+  needs an alpha channel or a mask, and opaque images are framed whole.
+  Upstream decimates the mesh with pymeshlab. The output keeps the input
+  mesh's scale and frame.
+- **Final bake.** The views are upscaled to `texture_size` for baking;
+  upstream sets that resolution separately (both are 2048). Uncovered
+  texels are filled from their neighbours instead of with `cv2.inpaint`.
+
+`diffusers-3d-convert-step1x3d-texture <Step1X-3D-Texture> <output>` loads
+the SDXL base and the fp16-fix VAE at pinned revisions, loads the
+T2I-Adapter (38 tensors) and MV-Adapter (700 tensors) from
+`step1x-3d-ig2v.safetensors`, rejecting unexpected keys, and precomputes the
+betas. The output contains the SDXL base weights, which are under the
+CreativeML Open RAIL++-M License and its use restrictions, so the converter
+copies that license next to them as `LICENSE-SDXL.md`. The VAE is MIT.
+
+Reference parity on CPU, with the package rasterizer and texel fill on both
+sides where upstream needs CUDA: the attention processors on a tiny UNet,
+the scheduler betas, and the reference framing are bit for bit; the
+geometry renders agree to 1.2e-6, the synchronised texture step to 2.4e-7,
+and the final bake (`back_project` and `fast_bake_texture`) to 3e-7 on
+covered texels.
+
+See `LICENSE-APACHE-2.0`, `LICENSE-MIT`, and `NOTICE` for source and license
+terms.

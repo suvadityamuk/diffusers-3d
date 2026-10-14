@@ -8,7 +8,7 @@ pipelines, and optional geometry backends for running generative 3D models.
 
 The package is pre-alpha. Loading metadata uses schema version `2`. Model integrations and optional compiled
 backends remain capability-gated. The reviewed model families are TRELLIS, TRELLIS.2 (including its optional O-Voxel
-paths), TripoSG, SAM 3D Objects, Step1X-3D (geometry), Pixal3D, and Hunyuan3D-2.1 (shape).
+paths), TripoSG, SAM 3D Objects, Step1X-3D (geometry and texture), Pixal3D, and Hunyuan3D-2.1 (shape and Paint texture stages).
 
 ## First-release readiness
 
@@ -23,11 +23,13 @@ actions; the package remains at its development version until then.
 
 The distribution uses an `Apache-2.0 AND MIT AND LicenseRef-SAM-License AND LicenseRef-Tencent-Hunyuan-3D-2.1-Community`
 aggregate license expression. Package-owned glue and the Step1X-3D-derived code are Apache-2.0; the TRELLIS-,
-TRELLIS.2-, TripoSG-, and Pixal3D-derived code retains MIT terms; the SAM 3D Objects-derived code is under Meta's SAM
+TRELLIS.2-, TripoSG-, and Pixal3D-derived code and Step1X-3D's SyncMVD-derived texture synchronisation retain MIT
+terms; the SAM 3D Objects-derived code is under Meta's SAM
 License (not an open-source license); and the Hunyuan3D-2.1-derived code is under the Tencent Hunyuan 3D 2.1 Community
 License, which does not apply in the European Union, the United Kingdom, or South Korea. Wheel and sdist metadata ship
 every applicable license and notice. Those terms apply to their respective files; the aggregate expression does not
-relicense any family code or model artifact. Pipelines whose weights carry restrictive terms warn when loaded.
+relicense any family code or model artifact. Pipelines whose code or weights carry restrictive terms warn when
+constructed.
 
 ## Current TRELLIS.2 limitations
 
@@ -45,6 +47,21 @@ relicense any family code or model artifact. Pipelines whose weights carry restr
   non-commercial license, and loading it warns that compliance is on the user.
 - Production DINOv3 weights are gated under the separate DINOv3 License. nvdiffrast is a restricted research
   dependency and requires explicit acknowledgement; neither is redistributed or selected silently.
+
+## Current limitations of the other families
+
+- No pipeline removes backgrounds: pass RGBA or a mask. Upstream runs a background remover on images without alpha.
+- TripoSG, Step1X-3D, and Hunyuan3D-2.1 extract meshes with scikit-image marching cubes on their released grids, and
+  return them raw. Upstream's optional CUDA-only fast decoders and extractors (FlashVDM, `diso`) and its pymeshlab
+  post-processing are not ported, mostly for licensing reasons; each family README lists what differs.
+- The texture stages fill texels no view sees with the package's own fill instead of `cv2.inpaint`; on those texels
+  the result differs from upstream by about 8–11/255 on average. Covered texels match upstream's bake closely
+  (49 dB for Hunyuan3D-2.1 Paint, 95 dB for Step1X-3D's bake).
+- Step1X-3D's texture stage draws all its randomness from the pipeline's `generator`, so its generated views cannot
+  match upstream's for a given seed; Hunyuan3D-2.1 Paint does reproduce upstream's views (61 dB).
+- SAM 3D Objects needs a mask selecting the object; depth from a pointmap is optional, and MoGe depth estimation and
+  layout post-optimization are not ported.
+- Pixal3D and TRELLIS.2 need the gated DINOv3 image encoder passed in when loading the published checkpoints.
 
 ## Design principles
 
@@ -64,7 +81,8 @@ pip install -e packages/diffusers-3d
 
 The core package requires PyTorch 2.6 or newer and `accelerate>=1.1.0`.
 
-Portable mesh processing is optional:
+Portable mesh processing (trimesh, scikit-image, xatlas, fast-simplification) is optional, but TripoSG, Step1X-3D,
+Hunyuan3D-2.1, both texture stages, and GLB export need it:
 
 ```bash
 pip install -e "packages/diffusers-3d[portable]"
@@ -75,8 +93,9 @@ explicit backend installation. See [docs/backends.md](docs/backends.md).
 
 ## Usage
 
-[docs/inference.md](docs/inference.md) covers checkpoint conversion, loading, conditioning, `formats`, and saving
-each asset type. The runnable [TRELLIS.2 example](src/diffusers_3d/families/trellis2/examples/image_to_3d.py) exercises the whole
+Converted checkpoints for every geometry pipeline are published on the Hub (see the root README); load them with
+`AutoPipelineForImageTo3D.from_pretrained`. [docs/inference.md](docs/inference.md) covers loading, conditioning,
+`formats`, saving each asset type, texturing a mesh, and the converter for every family. The runnable [TRELLIS.2 example](src/diffusers_3d/families/trellis2/examples/image_to_3d.py) exercises the whole
 inference API and has an offline tiny-component mode:
 
 ```bash

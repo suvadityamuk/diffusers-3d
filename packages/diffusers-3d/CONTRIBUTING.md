@@ -15,17 +15,33 @@ A family lives in `src/diffusers_3d/families/<family>/` and includes:
 - tiny real-class tests and `save_pretrained`/`from_pretrained` round trips;
 - a README naming the upstream repository and commit, plus `LICENSE`/`NOTICE` files for ported code.
 
+Reuse before porting. Image and text encoders from Transformers (DINOv2, DINOv3, CLIP) must be stock pipeline
+components, loaded and saved with Transformers' own `from_pretrained` and `save_pretrained`; never wrap one inside a
+Diffusers model, because Transformers renames its internal parameters between releases and only its own loaders
+translate them. Build on stock Diffusers blocks (`UNet2DConditionModel`, `AutoencoderKL`, `T2IAdapter`, attention
+processors, schedulers) and on the package's shared backends (`mesh_rasterizer`, `texture_baking`,
+`multiview_baking`) rather than porting upstream CUDA extensions.
+
 Registries resolve exact classes. A subclass, structurally similar class, or class from a different revision is not
 loaded automatically.
 
 ### Conversion and parity checklist
 
-1. Map one upstream component at a time and load converted state dictionaries with `strict=True`.
+1. Map one upstream component at a time and load converted state dictionaries with `strict=True`; for Transformers
+   encoders, use `from_pretrained(..., output_loading_info=True)` and reject any missing, unexpected, or mismatched
+   key.
 2. Save and reload through public Diffusers APIs; do not add custom runtime weight fetching.
 3. Compare freshly converted and reference components side by side on deterministic CPU float32 inputs.
 4. Run a tiny real-class pipeline save/load round trip and verify object-native output semantics.
 5. Verify task metadata, coordinate conventions, representation channels, dtype, and device preservation.
 6. Keep conversion tests distinct from normal model and pipeline contract tests.
+
+### Publishing converted checkpoints
+
+Add the release to `scripts/checkpoint_sources.py` and a model card to `scripts/publish_hub_checkpoints.py`, then run
+the script on a machine with access to the source weights. Each repository ships the family's license and notice
+files. Check that the upstream license allows redistribution before publishing, and never upload gated weights
+(declare them in `WITHHELD` so users pass them in at load time).
 
 ## Experimental Hub blocks
 

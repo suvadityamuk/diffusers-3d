@@ -4,12 +4,16 @@ import warnings
 
 import pytest
 import torch
-from transformers import Dinov2Config, Dinov2Model
+from diffusers import AutoencoderKL, UniPCMultistepScheduler
+from transformers import BitImageProcessorPil, Dinov2Config, Dinov2Model
 
 from diffusers_3d import (
     Hunyuan3DDiTModel,
     Hunyuan3DFlowMatchEulerDiscreteScheduler,
     Hunyuan3DImageTo3DPipeline,
+    Hunyuan3DPaintPipeline,
+    Hunyuan3DPaintRRDBNet,
+    Hunyuan3DPaintUNet,
     Hunyuan3DShapeVAE,
 )
 
@@ -44,3 +48,37 @@ def sample_latents(pipeline: Hunyuan3DImageTo3DPipeline, image: torch.Tensor | N
 @pytest.fixture
 def tiny_hunyuan3d_pipeline() -> Hunyuan3DImageTo3DPipeline:
     return make_tiny_hunyuan3d_pipeline()
+
+
+def make_tiny_paint_pipeline(upscaler: bool = True) -> Hunyuan3DPaintPipeline:
+    """Tiny random Paint components: 16 px views (8 px latents) and a 10-dimensional DINOv2."""
+
+    torch.manual_seed(0)
+    unet = Hunyuan3DPaintUNet(**Hunyuan3DPaintUNet.tiny_config())
+    with torch.no_grad():
+        for parameter in unet.parameters():
+            parameter.normal_(std=0.05)
+    components = {
+        "feature_extractor": BitImageProcessorPil(size={"shortest_edge": 32}, crop_size={"height": 28, "width": 28}),
+        "image_encoder": Dinov2Model(
+            Dinov2Config(hidden_size=10, num_hidden_layers=1, num_attention_heads=2, image_size=28, patch_size=14)
+        ),
+        "unet": unet,
+        "vae": AutoencoderKL(
+            block_out_channels=(8, 16),
+            down_block_types=("DownEncoderBlock2D",) * 2,
+            up_block_types=("UpDecoderBlock2D",) * 2,
+            norm_num_groups=8,
+        ),
+        "scheduler": UniPCMultistepScheduler(
+            prediction_type="v_prediction", rescale_betas_zero_snr=True, timestep_spacing="trailing"
+        ),
+        "upscaler": Hunyuan3DPaintRRDBNet(**Hunyuan3DPaintRRDBNet.tiny_config()) if upscaler else None,
+    }
+    with warnings.catch_warnings():
+        warnings.filterwarnings("ignore", message="Hunyuan3D-2.1 weights", category=UserWarning)
+        return Hunyuan3DPaintPipeline(**components)
+
+
+# Small sizes for the tiny components; the released defaults are 512, 2048, and 2048.
+TINY_PAINT_SIZES = {"view_size": 16, "render_size": 32, "texture_size": 16}

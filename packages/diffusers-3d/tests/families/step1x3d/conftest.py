@@ -66,3 +66,79 @@ def sphere_field():
         return (radius - points.norm(dim=-1)).view(1, *([resolution + 1] * 3))
 
     return make
+
+
+def make_tiny_step1x3d_texture_components(tokenizer) -> dict:
+    """SDXL-shaped tiny components: three UNet levels, a two-level VAE, and a matching T2I-Adapter."""
+
+    from diffusers import AutoencoderKL, DDPMScheduler, T2IAdapter, UNet2DConditionModel
+    from transformers import CLIPTextConfig, CLIPTextModel, CLIPTextModelWithProjection
+
+    from diffusers_3d import Step1X3DMultiViewAdapter
+
+    torch.manual_seed(0)
+    unet = UNet2DConditionModel(
+        block_out_channels=(8, 8, 16),
+        layers_per_block=1,
+        sample_size=8,
+        down_block_types=("DownBlock2D", "CrossAttnDownBlock2D", "CrossAttnDownBlock2D"),
+        up_block_types=("CrossAttnUpBlock2D", "CrossAttnUpBlock2D", "UpBlock2D"),
+        attention_head_dim=2,
+        use_linear_projection=True,
+        addition_embed_type="text_time",
+        addition_time_embed_dim=4,
+        projection_class_embeddings_input_dim=6 * 4 + 8,
+        cross_attention_dim=16,
+        norm_num_groups=4,
+    )
+    text = {
+        "vocab_size": 64,
+        "hidden_size": 8,
+        "intermediate_size": 16,
+        "num_hidden_layers": 2,
+        "num_attention_heads": 2,
+        "max_position_embeddings": 8,
+        "bos_token_id": 0,
+        "eos_token_id": 1,
+    }
+    return {
+        "vae": AutoencoderKL(
+            block_out_channels=(4, 4),
+            down_block_types=("DownEncoderBlock2D",) * 2,
+            up_block_types=("UpDecoderBlock2D",) * 2,
+            layers_per_block=1,
+            norm_num_groups=2,
+        ),
+        "text_encoder": CLIPTextModel(CLIPTextConfig(**text)),
+        "text_encoder_2": CLIPTextModelWithProjection(CLIPTextConfig(**text, projection_dim=8)),
+        "tokenizer": tokenizer,
+        "tokenizer_2": tokenizer,
+        "unet": unet,
+        "adapter": T2IAdapter(
+            in_channels=6,
+            channels=(8, 8, 16, 16),
+            num_res_blocks=1,
+            downscale_factor=4,
+            adapter_type="full_adapter_xl",
+        ),
+        "mv_adapter": Step1X3DMultiViewAdapter(hidden_sizes=Step1X3DMultiViewAdapter.hidden_sizes_for(unet)),
+        "scheduler": DDPMScheduler(
+            beta_schedule="scaled_linear", beta_start=0.00085, beta_end=0.012, clip_sample=False
+        ),
+    }
+
+
+@pytest.fixture
+def tiny_step1x3d_texture_pipeline(tiny_clip_tokenizer):
+    from diffusers_3d import Step1X3DMeshTexturePipeline
+
+    return Step1X3DMeshTexturePipeline(**make_tiny_step1x3d_texture_components(tiny_clip_tokenizer))
+
+
+@pytest.fixture
+def icosphere_mesh():
+    trimesh = pytest.importorskip("trimesh")
+    from diffusers_3d import MeshAsset
+
+    sphere = trimesh.creation.icosphere(subdivisions=2, radius=0.8)
+    return MeshAsset(vertices=torch.tensor(sphere.vertices, dtype=torch.float32), faces=torch.tensor(sphere.faces))

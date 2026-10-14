@@ -36,7 +36,7 @@ halved above 42,000 voxels), and the `ScaleShiftInvariant` layout decoding.
 import torch
 from diffusers_3d import AutoPipelineForImageTo3D, ImageCondition
 
-pipeline = AutoPipelineForImageTo3D.from_pretrained("/path/to/converted", torch_dtype=torch.float32).to("cuda")
+pipeline = AutoPipelineForImageTo3D.from_pretrained("suvadityamuk/sam-3d-objects-diffusers-3d").to("cuda")
 condition = ImageCondition(image=rgb, mask=object_mask)  # (3, H, W) in [0, 1] and (1, H, W)
 output = pipeline(condition, pointmap=points, generator=torch.Generator("cuda").manual_seed(42))
 gaussians, mesh = output.objects
@@ -66,6 +66,14 @@ upstream keys onto the Transformers and package modules (torch-hub DINOv2 to `Di
 once after checking that all four copies match, timm window block to `BasicTransformerBlock`, Llama SwiGLU to Diffusers
 `FeedForward`, the mixture-of-transformers streams), and loads every component with strict key checks. It reads `<name>.safetensors` when present and otherwise the released `.ckpt`
 (`torch.load(weights_only=True)`).
+
+## Parity
+
+`tests/families/sam3d_objects/test_reference_parity.py` runs tiny random weights through the pinned upstream code and
+the port on CPU float32. The condition embedders and the SLAT sampler are bitwise equal; preprocessing agrees within
+4.8e-7, the sparse-structure flow within 5.4e-7, and the sparse-structure sampler with layout within 1e-4. By hand on
+an A100 (2026-10-13), the published `suvadityamuk/sam-3d-objects-diffusers-3d`, given the TRELLIS `T.png` example
+and its alpha as the mask, returned Gaussian splats and a 0.58M-face mesh in 37 s (float32, 11.1 GB peak).
 
 ## Not ported
 

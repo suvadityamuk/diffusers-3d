@@ -32,7 +32,7 @@ python -m pip install \
 The minimum-stack CI lane installs `accelerate==1.1.0` and
 `transformers==5.5.0` explicitly, installs the package's test dependencies,
 checks both versions and `pip check`, then runs execution, image
-preprocessing, and both conditioners. The latest-resolved lanes must not
+preprocessing, and the TRELLIS, TRELLIS.2, and Step1X-3D image-encoder tests. The latest-resolved lanes must not
 substitute for this floor check.
 
 Core CPU, including deterministic equations and tiny integration tests:
@@ -80,7 +80,7 @@ expected source paths in that commit.
 
 Generic local runs skip a missing, mismatched, dirty, or dependency-incomplete reference. The dedicated CI lane
 installs the modules the upstream references import (`einops`, OpenCV, `optree`, PyYAML, `scikit-image`, `timm`,
-`tqdm`, `trimesh`, and `natten==0.21.0`, whose CPU Flex backend runs Pixal3D's NAF reference), fetches every exact
+`tqdm`, `trimesh`, `xatlas`, and `natten==0.21.0`, whose CPU Flex backend runs Pixal3D's NAF reference), fetches every exact
 commit, and runs:
 
 ```bash
@@ -89,9 +89,7 @@ DIFFUSERS_3D_REQUIRE_REFERENCE=1 \
 ```
 
 Required mode turns every reference or dependency skip condition into a test failure. CI also parses JUnit output to
-require all 37 cases and zero skips. Scheduler, guidance, objective, target, and timestep equations still run
-require all 37 cases and zero skips. Scheduler, guidance, objective, target, and timestep equations still run
-require all 37 cases and zero skips. Scheduler, guidance, objective, target, and timestep equations still run
+require all 48 cases and zero skips. Scheduler, guidance, objective, target, and timestep equations still run
 deterministically in the ordinary CPU lane without those trees.
 
 ## Static and release checks
@@ -128,8 +126,10 @@ quality. That evidence comes from `scripts/gpu_smoke.py`, which converts the rel
 image and a prompt, and exercises every compiled backend built at its pinned revision by
 `scripts/install_gpu_backends.sh`, asserting only coarse invariants (finite, non-empty, non-blank). The
 `Diffusers 3D GPU smoke` workflow runs it on a Hugging Face Jobs A100 on demand and weekly; it can also be run by hand on
-any CUDA machine with `HF_TOKEN` set. Quality beyond "recognizable" is still not claimed, and `-m accelerated` /
-`-m research_only` tests remain manual.
+any CUDA machine with `HF_TOKEN` set. It covers the TRELLIS and TRELLIS.2 pipelines. TripoSG, Step1X-3D, Hunyuan3D-2.1,
+SAM 3D Objects, and Pixal3D, and both texture stages, were run by hand on Hugging Face Jobs A100s against their
+released checkpoints, and upstream where noted; [compatibility.md](compatibility.md) records those runs. Quality
+beyond "recognizable" is still not claimed, and `-m accelerated` / `-m research_only` tests remain manual.
 
 Shared reviewed-model contracts exercise CPU batching, dtype/device movement,
 tuple output equivalence, component save/load, attention processor/backend

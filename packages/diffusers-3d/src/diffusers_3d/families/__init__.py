@@ -70,12 +70,17 @@ _STEP1X3D_EXPORTS = {
     "STEP1X3D_REFERENCE_REVISION",
     "Step1X3DFlowMatchEulerScheduler",
     "Step1X3DImageTo3DPipeline",
+    "Step1X3DMeshTexturePipeline",
+    "Step1X3DMultiViewAdapter",
+    "Step1X3DMultiViewAttnProcessor",
     "Step1X3DShapeDecoder",
     "Step1X3DShapeDecoderOutput",
     "Step1X3DTransformer1DModel",
     "Step1X3DTransformerOutput",
     "convert_step1x3d_checkpoint",
+    "convert_step1x3d_texture_checkpoint",
     "preprocess_step1x3d_image",
+    "preprocess_step1x3d_reference_image",
 }
 
 
@@ -95,9 +100,13 @@ _HUNYUAN3D_EXPORTS = {
     "Hunyuan3DDiTOutput",
     "Hunyuan3DFlowMatchEulerDiscreteScheduler",
     "Hunyuan3DImageTo3DPipeline",
+    "Hunyuan3DPaintPipeline",
+    "Hunyuan3DPaintRRDBNet",
+    "Hunyuan3DPaintUNet",
     "Hunyuan3DShapeVAE",
     "Hunyuan3DShapeVAEOutput",
     "convert_hunyuan3d_checkpoint",
+    "convert_hunyuan3d_paint_checkpoint",
 }
 
 
