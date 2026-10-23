@@ -8,14 +8,7 @@ from verify_wheel import LICENSE_FILES, _distribution_metadata, _entry_points
 
 
 def _required_source_files(package_root: Path) -> set[str]:
-    required = {
-        "COMPATIBILITY.md",
-        "CONTRIBUTING.md",
-        "LICENSE-APACHE-2.0",
-        "MANIFEST.in",
-        "README.md",
-        "pyproject.toml",
-    }
+    required = {"CONTRIBUTING.md", "LICENSE-APACHE-2.0", "MANIFEST.in", "README.md", "pyproject.toml"}
     patterns = {
         "docs": ("*.md",),
         "requirements": ("*.md", "*.txt"),

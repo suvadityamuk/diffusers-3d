@@ -1,142 +1,80 @@
-# Testing diffusers-3d
+# Testing
 
-Run commands from the repository root. The ordinary CPU suite never needs CUDA or a compiled backend. Tests that
-need optional portable packages, real accelerated backends, restricted research dependencies, or pinned source
-checkouts have explicit markers.
+Run commands from the repository root. The default suite needs no GPU, compiled backend, or checkpoint download.
 
-## Marker policy
+## Setup
 
-| Marker | Meaning | Ordinary CPU lane |
+```bash
+pip install -e .
+pip install -e "packages/diffusers-3d[test,portable]"
+```
+
+## Markers
+
+Pytest runs with `--strict-markers`, so an unknown marker is an error.
+
+| Marker | Needs | In CI |
 |---|---|---|
-| `portable` | Uses an installed CPU geometry package from the `portable` extra | Separate portable lane |
-| `accelerated` | Requires an actual GPU or compiled accelerated backend | Excluded |
-| `research_only` | Requires an explicitly accepted research-only dependency/license | Excluded |
-| `reference_parity` | Imports an identity-, origin-, tree-, and cleanliness-verified checkout | Separate required-reference lane |
-| `integration` | Crosses model, pipeline, or conversion subsystem boundaries | Included |
-| `release` | Checks release metadata or a built distribution | Separate release lane |
+| `portable` | the `portable` extra | own job |
+| `reference_parity` | pinned upstream checkouts | own job |
+| `release` | built-distribution checks | own job |
+| `integration` | nothing extra; crosses subsystems | core job |
+| `accelerated` | a GPU or compiled backend | manual only |
+| `research_only` | a research-licensed backend | manual only |
 
-Unknown markers are errors because pytest runs with `--strict-markers`. CPU fakes that verify an accelerated API or
-research-license gate remain ordinary CPU tests: the markers describe runtime requirements, not the backend category
-being simulated.
+Tests that use a fake of an accelerated API are ordinary CPU tests. Markers describe what a test needs to run.
 
-## Setup and exact commands
+## Commands
 
 ```bash
-python -m pip install -e .
-python -m pip install -e "packages/diffusers-3d[test]" --no-deps
-python -m pip install \
-  "accelerate>=1.1.0" build huggingface-hub numpy Pillow pytest pytest-cov ruff safetensors \
-  "transformers>=5.5.0"
-```
-
-The minimum-stack CI lane installs `accelerate==1.1.0` and
-`transformers==5.5.0` explicitly, installs the package's test dependencies,
-checks both versions and `pip check`, then runs execution, image
-preprocessing, and the TRELLIS, TRELLIS.2, and Step1X-3D image-encoder tests. The latest-resolved lanes must not
-substitute for this floor check.
-
-Core CPU, including deterministic equations and tiny integration tests:
-
-```bash
+python -m pytest packages/diffusers-3d/tests                       # everything available locally
 python -m pytest packages/diffusers-3d/tests \
-  -m "not portable and not accelerated and not research_only and not reference_parity and not release"
-```
-
-Portable CPU backends:
-
-```bash
-python -m pip install -e "packages/diffusers-3d[portable]" --no-deps
+  -m "not portable and not accelerated and not research_only and not reference_parity and not release"  # core CPU
 python -m pytest packages/diffusers-3d/tests -m portable
-```
-
-Useful focused lanes:
-
-```bash
-python -m pytest packages/diffusers-3d/tests -m "integration and not portable"
-python -m pytest packages/diffusers-3d/tests -m reference_parity
 python -m pytest packages/diffusers-3d/tests -m release
-```
-
-The full locally available suite is:
-
-```bash
-python -m pytest packages/diffusers-3d/tests
-```
-
-Reference parity defaults to these pinned source trees:
-
-- `/tmp/TRELLIS` at `442aa1e1afb9014e80681d3bf604e8d728a86ee7`
-- `/tmp/TRELLIS.2` at `75fbf0183001ed9876c8dbb35de6b68552ee08bd`
-- `/tmp/TripoSG` at `fc5c40990181e2a756c4e0b1c2f4d6b5202faf8c`
-- `/tmp/sam-3d-objects` at `f91db411c50efee93d8db7aeb323885650f6f722`
-- `/tmp/Step1X-3D` at `cb5ac944709c6c913109070c7b90c3447f57f3d4`
-- `/tmp/Pixal3D` at `f7cf38429b0bd264f1995f0f8743a88b1c728b94`, with `/tmp/NAF` at `37f2dfc180f2de53d98bd601109c0da0dd6b0f43`
-- `/tmp/Hunyuan3D-2.1` at `82920d643c0dc2f7bfd7255f45f62d386edfe60c`
-
-The roots can be overridden with `DIFFUSERS_3D_<FAMILY>_REFERENCE_ROOT` (`TRELLIS`, `TRELLIS2`, `TRIPOSG`, `SAM3D`,
-`STEP1X3D`, `PIXAL3D`, `NAF`, `HUNYUAN3D`). Each value must name the repository root. Before any upstream module is
-imported, tests use Git to require the exact commit, expected `origin` URL, a clean tracked/untracked worktree, and the
-expected source paths in that commit.
-
-Generic local runs skip a missing, mismatched, dirty, or dependency-incomplete reference. The dedicated CI lane
-installs the modules the upstream references import (`einops`, OpenCV, `optree`, PyYAML, `scikit-image`, `timm`,
-`tqdm`, `trimesh`, `xatlas`, and `natten==0.21.0`, whose CPU Flex backend runs Pixal3D's NAF reference), fetches every exact
-commit, and runs:
-
-```bash
-DIFFUSERS_3D_REQUIRE_REFERENCE=1 \
-  python -m pytest packages/diffusers-3d/tests -m reference_parity
-```
-
-Required mode turns every reference or dependency skip condition into a test failure. CI also parses JUnit output to
-require all 48 cases and zero skips. Scheduler, guidance, objective, target, and timestep equations still run
-deterministically in the ordinary CPU lane without those trees.
-
-## Static and release checks
-
-```bash
 python -m ruff check packages/diffusers-3d/src packages/diffusers-3d/tests packages/diffusers-3d/tools
 python utils/check_ai.py
 ```
 
-Build and inspect both distribution formats:
+## Reference parity
+
+These tests import the upstream code at a pinned commit and compare it with the port using tiny random weights.
+Default checkout locations:
+
+| Family | Path | Commit |
+|---|---|---|
+| TRELLIS | `/tmp/TRELLIS` (with its FlexiCubes submodule) | `442aa1e1afb9014e80681d3bf604e8d728a86ee7` |
+| TRELLIS.2 | `/tmp/TRELLIS.2` | `75fbf0183001ed9876c8dbb35de6b68552ee08bd` |
+| TripoSG | `/tmp/TripoSG` | `fc5c40990181e2a756c4e0b1c2f4d6b5202faf8c` |
+| SAM 3D Objects | `/tmp/sam-3d-objects` | `f91db411c50efee93d8db7aeb323885650f6f722` |
+| Step1X-3D | `/tmp/Step1X-3D` | `cb5ac944709c6c913109070c7b90c3447f57f3d4` |
+| Pixal3D | `/tmp/Pixal3D` | `f7cf38429b0bd264f1995f0f8743a88b1c728b94` |
+| NAF (for Pixal3D) | `/tmp/NAF` | `37f2dfc180f2de53d98bd601109c0da0dd6b0f43` |
+| Hunyuan3D-2.1 | `/tmp/Hunyuan3D-2.1` | `82920d643c0dc2f7bfd7255f45f62d386edfe60c` |
+
+Override a path with `DIFFUSERS_3D_<NAME>_REFERENCE_ROOT`, where `<NAME>` is `TRELLIS`, `TRELLIS2`, `TRIPOSG`,
+`SAM3D`, `STEP1X3D`, `PIXAL3D`, `NAF`, or `HUNYUAN3D`. Before importing anything, the tests check the commit, the
+`origin` URL, and that the worktree is clean. Install the `reference-test` extra plus OpenCV, PyYAML, tqdm, and trimesh,
+which the upstream modules import.
+
+A missing or mismatched checkout is skipped locally. `DIFFUSERS_3D_REQUIRE_REFERENCE=1` turns those skips into
+failures, which is how CI runs them. CI also requires exactly 48 parity cases.
+
+## Distributions
 
 ```bash
-REPOSITORY_ROOT="$(pwd)"
-python -m build --outdir /tmp/diffusers3d-dist packages/diffusers-3d
-python packages/diffusers-3d/tools/verify_wheel.py /tmp/diffusers3d-dist/diffusers_3d-*.whl
-python packages/diffusers-3d/tools/verify_sdist.py /tmp/diffusers3d-dist/diffusers_3d-*.tar.gz
-python -m venv /tmp/diffusers3d-wheel-venv
-/tmp/diffusers3d-wheel-venv/bin/python -m pip install -e .
-/tmp/diffusers3d-wheel-venv/bin/python -m pip install \
-  "accelerate>=1.1.0" safetensors "transformers>=5.5.0"
-/tmp/diffusers3d-wheel-venv/bin/python -m pip install --no-deps /tmp/diffusers3d-dist/diffusers_3d-*.whl
-/tmp/diffusers3d-wheel-venv/bin/python -m pip check
-cd /tmp
-/tmp/diffusers3d-wheel-venv/bin/python -I -c \
-  "import diffusers_3d; print(diffusers_3d.__version__)"
-/tmp/diffusers3d-wheel-venv/bin/diffusers-3d-report
-cd "$REPOSITORY_ROOT"
+python -m build --outdir /tmp/dist packages/diffusers-3d
+python packages/diffusers-3d/tools/verify_wheel.py /tmp/dist/diffusers_3d-*.whl
+python packages/diffusers-3d/tools/verify_sdist.py /tmp/dist/diffusers_3d-*.tar.gz
 ```
 
-## GPU and research verification
+## GPU runs
 
-No hosted GitHub CPU job is evidence of CUDA, ROCm, compiled-extension, real-checkpoint, rendering, or production
-quality. That evidence comes from `scripts/gpu_smoke.py`, which converts the released checkpoints, generates from an
-image and a prompt, and exercises every compiled backend built at its pinned revision by
-`scripts/install_gpu_backends.sh`, asserting only coarse invariants (finite, non-empty, non-blank). The
-`Diffusers 3D GPU smoke` workflow runs it on a Hugging Face Jobs A100 on demand and weekly; it can also be run by hand on
-any CUDA machine with `HF_TOKEN` set. It covers the TRELLIS and TRELLIS.2 pipelines. TripoSG, Step1X-3D, Hunyuan3D-2.1,
-SAM 3D Objects, and Pixal3D, and both texture stages, were run by hand on Hugging Face Jobs A100s against their
-released checkpoints, and upstream where noted; [compatibility.md](compatibility.md) records those runs. Quality
-beyond "recognizable" is still not claimed, and `-m accelerated` / `-m research_only` tests remain manual.
+GitHub CPU jobs cannot test CUDA backends or the released weights. `scripts/gpu_smoke.py` does: it converts the
+TRELLIS and TRELLIS.2 releases, generates from an image and a prompt, and exercises every compiled backend built by
+`scripts/install_gpu_backends.sh`. It checks coarse invariants only (finite, non-empty, not blank). Run it on any CUDA
+machine with `HF_TOKEN` set, or trigger the `Diffusers 3D GPU smoke` workflow by hand, which runs it on a Hugging Face
+Jobs A100 and needs an `HF_TOKEN` repository secret.
 
-Shared reviewed-model contracts exercise CPU batching, dtype/device movement,
-tuple output equivalence, component save/load, attention processor/backend
-hooks, deterministic gradient-checkpointed forward/backward equivalence where
-implemented, and `torch.compile` with the eager backend and `fullgraph=True`.
-Shared reviewed-pipeline contracts additionally exercise
-batching and tuple output equivalence.
-Sequential CPU offload, model CPU offload, and group offload are meaningful
-only with an accelerator execution device for these pipelines; they remain
-part of the manual GPU lane rather than being simulated on CPU.
+The other families were run by hand on the same hardware. [compatibility.md](compatibility.md) records every run.
+Offloading (sequential, model, and group) only makes sense with an accelerator, so it is tested manually too.

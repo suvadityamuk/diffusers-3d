@@ -44,12 +44,7 @@ def tiny_trellis_components():
             sparse_structure_decoder.out_layer[-1].bias.fill_(1.0)
         sparse_structure_scheduler = TrellisFlowEulerScheduler()
         if not include_slat:
-            return (
-                image_encoder,
-                sparse_structure_flow_model,
-                sparse_structure_decoder,
-                sparse_structure_scheduler,
-            )
+            return (image_encoder, sparse_structure_flow_model, sparse_structure_decoder, sparse_structure_scheduler)
         torch.manual_seed(3)
         slat_flow_model = TrellisSLatFlowModel(**TrellisSLatFlowModel.tiny_config())
         slat_scheduler = TrellisFlowEulerScheduler()

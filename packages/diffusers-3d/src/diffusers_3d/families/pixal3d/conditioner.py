@@ -198,7 +198,10 @@ def front_view_camera(distance: torch.Tensor) -> torch.Tensor:
 
 
 def camera_distance_from_fov(camera_angle_x: float, mesh_scale: float = 1.0) -> float:
-    """Upstream ``distance_from_fov``: the front-view distance at which the scaled unit cube spans the image width."""
+    """Upstream ``distance_from_fov``: the front-view distance at which the scaled unit cube spans the image width.
+
+    Computed with upstream's float32 steps so the distance matches exactly.
+    """
 
     focal_pixels = float(16.0 / torch.tan(torch.tensor(camera_angle_x / 2.0)) * 512 / 32.0)
     edge = float(torch.tensor(-1.0) / mesh_scale / 2)

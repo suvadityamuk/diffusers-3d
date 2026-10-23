@@ -96,11 +96,11 @@ def _projection(input_dim: int, output_dim: int, multiplier: float) -> nn.Sequen
 
 
 class Sam3DConditionEmbedder(Object3DModel):
-    """SAM 3D Objects condition fuser: projects DINOv2 tokens of the image and of its mask into one context.
+    """SAM 3D Objects condition fuser: projects DINOv2 tokens of the image and its mask, for both the object crop and
+    the full frame, into one context.
 
-    Both come for the object crop and the full frame. The sparse-structure embedder adds a pointmap encoder and takes
-    DINOv2's normed class and patch tokens; the structured-latent embedder takes its pre-norm tokens with an
-    unparameterized layer norm (``prenorm_features``).
+    The sparse-structure embedder adds a pointmap encoder and takes DINOv2's normed class and patch tokens; the
+    structured-latent embedder takes its pre-norm tokens under an unparameterized layer norm (``prenorm_features``).
     """
 
     family_id = "sam3d_objects"

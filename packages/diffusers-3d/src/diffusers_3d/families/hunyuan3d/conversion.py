@@ -35,7 +35,12 @@ _TRANSFORMER_FIXED = {
     "use_attention_pooling": False,
     "use_pos_emb": False,
 }
-_TRANSFORMER_MAPPED = {"in_channels", "hidden_size", "context_dim", "depth", "num_heads"} | {
+_TRANSFORMER_MAPPED = {
+    "in_channels",
+    "hidden_size",
+    "context_dim",
+    "depth",
+    "num_heads",
     "num_moe_layers",
     "num_experts",
     "moe_top_k",

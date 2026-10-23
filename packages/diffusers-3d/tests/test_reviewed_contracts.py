@@ -102,18 +102,6 @@ def _output_tensor(output: Any, *, return_dict: bool) -> torch.Tensor:
     return output.embeddings
 
 
-def _invoke_conditioner(model: torch.nn.Module, batch_size: int, return_dict: bool) -> torch.Tensor:
-    device, dtype = _parameter_properties(model)
-    images = torch.linspace(
-        0.0,
-        1.0,
-        batch_size * 3 * 8 * 8,
-        device=device,
-        dtype=dtype,
-    ).reshape(batch_size, 3, 8, 8)
-    return _output_tensor(model(images, return_dict=return_dict), return_dict=return_dict)
-
-
 def _invoke_trellis_flow(model: torch.nn.Module, batch_size: int, return_dict: bool) -> torch.Tensor:
     device, dtype = _parameter_properties(model)
     resolution = model.config.resolution

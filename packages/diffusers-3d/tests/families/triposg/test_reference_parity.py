@@ -5,13 +5,11 @@ import os
 import sys
 import types
 import typing
-from dataclasses import dataclass
 from pathlib import Path
 
 import pytest
 import torch
 from diffusers import FlowMatchEulerDiscreteScheduler
-from diffusers.utils import BaseOutput
 
 from diffusers_3d import (
     TRIPOSG_REFERENCE_REVISION,
@@ -78,26 +76,9 @@ def _load_reference() -> types.SimpleNamespace:
 
     source_root = REFERENCE_ROOT / "triposg"
     # Upstream modules keep their own references to the stubs, so the global names are restored afterwards.
-    stubbed = (
-        "diso",
-        "trimesh",
-        "triposg.utils.typing",
-        "diffusers.models.autoencoders",
-        "diffusers.models.autoencoders.vae",
-    )
+    stubbed = ("diso", "trimesh", "triposg.utils.typing")
     saved = {name: sys.modules.get(name) for name in stubbed}
     try:
-        try:
-            importlib.import_module("diffusers.models.autoencoders.vae")
-        except ImportError:
-            # This repository's trimmed Diffusers has no autoencoders; upstream only imports its output dataclass.
-            @dataclass
-            class DecoderOutput(BaseOutput):
-                sample: torch.Tensor
-                commit_loss: torch.Tensor | None = None
-
-            _module("diffusers.models.autoencoders", __path__=[])
-            _module("diffusers.models.autoencoders.vae", DecoderOutput=DecoderOutput)
         _module("diso", DiffDMC=None)
         _module("trimesh", Trimesh=lambda vertices, faces: (vertices, faces))
         _module("triposg", __path__=[str(source_root)])

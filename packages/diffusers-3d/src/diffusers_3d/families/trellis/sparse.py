@@ -17,10 +17,7 @@ from ...objects.base import TensorDataMixin
 
 
 def trellis_grid_transform(
-    resolution: int,
-    *,
-    device: torch.device | str | None = None,
-    dtype: torch.dtype = torch.float32,
+    resolution: int, *, device: torch.device | str | None = None, dtype: torch.dtype = torch.float32
 ) -> torch.Tensor:
     """Map integer TRELLIS grid coordinates to native ``[-0.5, 0.5]`` cell centers."""
 
@@ -58,9 +55,7 @@ class TrellisSparseTensor(TensorDataMixin):
         batch_indices = self.coordinates[:, 0]
         unique_batches = torch.unique(batch_indices, sorted=True)
         expected_batches = torch.arange(
-            int(batch_indices.max().item()) + 1,
-            device=batch_indices.device,
-            dtype=batch_indices.dtype,
+            int(batch_indices.max().item()) + 1, device=batch_indices.device, dtype=batch_indices.dtype
         )
         if not torch.equal(unique_batches, expected_batches):
             raise ValueError("batch indices must be contiguous and start at zero")
@@ -110,31 +105,31 @@ class TrellisSparseTensor(TensorDataMixin):
             source_assets = tuple(asset.to(device=features.device) for asset in self.source_assets)
         return TrellisSparseTensor(coordinates, features, source_assets)
 
-    def _aligned_value(self, value: torch.Tensor | float) -> torch.Tensor | float:
-        if not isinstance(value, torch.Tensor):
-            return value
-        if value.ndim == 2 and value.shape[0] == self.batch_size and value.shape[1] in (1, self.channels):
+    def _aligned_value(self, value: torch.Tensor | float | TrellisSparseTensor) -> torch.Tensor | float:
+        """Operand for elementwise arithmetic; ``(batch, 1 | channels)`` tensors broadcast per batch item."""
+
+        if isinstance(value, TrellisSparseTensor):
+            if not torch.equal(self.coordinates, value.coordinates):
+                raise ValueError("sparse tensor arithmetic requires identical coordinates")
+            return value.features
+        if (
+            isinstance(value, torch.Tensor)
+            and value.ndim == 2
+            and value.shape[0] == self.batch_size
+            and value.shape[1] in (1, self.channels)
+        ):
             return value[self.coordinates[:, 0].to(dtype=torch.int64)]
         return value
 
     def __add__(self, value: torch.Tensor | float | TrellisSparseTensor) -> TrellisSparseTensor:
-        if isinstance(value, TrellisSparseTensor):
-            if not torch.equal(self.coordinates, value.coordinates):
-                raise ValueError("sparse tensor arithmetic requires identical coordinates")
-            value = value.features
         return self.replace(self.features + self._aligned_value(value))
 
     def __mul__(self, value: torch.Tensor | float | TrellisSparseTensor) -> TrellisSparseTensor:
-        if isinstance(value, TrellisSparseTensor):
-            if not torch.equal(self.coordinates, value.coordinates):
-                raise ValueError("sparse tensor arithmetic requires identical coordinates")
-            value = value.features
         return self.replace(self.features * self._aligned_value(value))
 
     @classmethod
     def from_sparse_voxel_assets(
-        cls,
-        assets: tuple[SparseVoxelAsset, ...] | list[SparseVoxelAsset],
+        cls, assets: tuple[SparseVoxelAsset, ...] | list[SparseVoxelAsset]
     ) -> TrellisSparseTensor:
         assets = tuple(assets)
         if not assets or any(type(asset) is not SparseVoxelAsset for asset in assets):
@@ -148,10 +143,7 @@ class TrellisSparseTensor(TensorDataMixin):
         for batch_index, asset in enumerate(assets):
             asset.validate(expensive=True)
             batch_column = torch.full(
-                (asset.coordinates.shape[0], 1),
-                batch_index,
-                device=device,
-                dtype=asset.coordinates.dtype,
+                (asset.coordinates.shape[0], 1), batch_index, device=device, dtype=asset.coordinates.dtype
             )
             coordinates.append(torch.cat([batch_column, asset.coordinates], dim=1))
             features.append(asset.features)
@@ -186,9 +178,7 @@ class TrellisSparseTensor(TensorDataMixin):
                         coordinates=coordinates,
                         features=features,
                         grid_transform=trellis_grid_transform(
-                            resolution,
-                            device=features.device,
-                            dtype=features.dtype,
+                            resolution, device=features.device, dtype=features.dtype
                         ),
                         coordinate_system=CoordinateSystem.RIGHT_HANDED_Z_UP,
                         metadata={"family": "trellis", "resolution": resolution},
@@ -196,18 +186,19 @@ class TrellisSparseTensor(TensorDataMixin):
                 )
         return tuple(assets)
 
-    def normalize(self, mean: torch.Tensor, std: torch.Tensor) -> TrellisSparseTensor:
+    def _channel_stats(self, mean: torch.Tensor, std: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         mean = torch.as_tensor(mean, device=self.device, dtype=self.dtype).reshape(1, -1)
         std = torch.as_tensor(std, device=self.device, dtype=self.dtype).reshape(1, -1)
         if mean.shape[1] != self.channels or std.shape[1] != self.channels or bool((std <= 0).any()):
             raise ValueError("mean and positive std must contain one value per feature channel")
+        return mean, std
+
+    def normalize(self, mean: torch.Tensor, std: torch.Tensor) -> TrellisSparseTensor:
+        mean, std = self._channel_stats(mean, std)
         return self.replace((self.features - mean) / std)
 
     def denormalize(self, mean: torch.Tensor, std: torch.Tensor) -> TrellisSparseTensor:
-        mean = torch.as_tensor(mean, device=self.device, dtype=self.dtype).reshape(1, -1)
-        std = torch.as_tensor(std, device=self.device, dtype=self.dtype).reshape(1, -1)
-        if mean.shape[1] != self.channels or std.shape[1] != self.channels or bool((std <= 0).any()):
-            raise ValueError("mean and positive std must contain one value per feature channel")
+        mean, std = self._channel_stats(mean, std)
         return self.replace(self.features * std + mean)
 
 

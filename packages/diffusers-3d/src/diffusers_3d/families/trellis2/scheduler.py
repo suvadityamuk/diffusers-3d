@@ -29,18 +29,12 @@ def _features(value: torch.Tensor | TrellisSparseTensor) -> torch.Tensor:
     return value.features if isinstance(value, TrellisSparseTensor) else value
 
 
-def _replace(
-    reference: torch.Tensor | TrellisSparseTensor,
-    value: torch.Tensor,
-) -> torch.Tensor | TrellisSparseTensor:
+def _replace(reference: torch.Tensor | TrellisSparseTensor, value: torch.Tensor) -> torch.Tensor | TrellisSparseTensor:
     return reference.replace(value) if isinstance(reference, TrellisSparseTensor) else value
 
 
 def _validate_pair(
-    left: torch.Tensor | TrellisSparseTensor,
-    right: torch.Tensor | TrellisSparseTensor,
-    *,
-    names: str,
+    left: torch.Tensor | TrellisSparseTensor, right: torch.Tensor | TrellisSparseTensor, *, names: str
 ) -> None:
     if isinstance(left, TrellisSparseTensor) != isinstance(right, TrellisSparseTensor):
         raise TypeError(f"{names} must both be dense tensors or both be TrellisSparseTensor values")
@@ -107,19 +101,13 @@ class Trellis2FlowEulerScheduler(SchedulerMixin, ConfigMixin):
         self._step_index = 0
 
     def scale_model_input(
-        self,
-        sample: torch.Tensor | TrellisSparseTensor,
-        timestep: torch.Tensor | float | None = None,
+        self, sample: torch.Tensor | TrellisSparseTensor, timestep: torch.Tensor | float | None = None
     ) -> torch.Tensor | TrellisSparseTensor:
         del timestep
         return sample
 
     def model_timestep(
-        self,
-        timestep: torch.Tensor | float,
-        batch_size: int,
-        *,
-        device: torch.device | str,
+        self, timestep: torch.Tensor | float, batch_size: int, *, device: torch.device | str
     ) -> torch.Tensor:
         value = torch.as_tensor(timestep, dtype=torch.float32, device=device)
         return (value * self.config.num_train_timesteps).expand(batch_size)
@@ -232,8 +220,7 @@ class Trellis2FlowEulerScheduler(SchedulerMixin, ConfigMixin):
         if not torch.allclose(supplied, current):
             raise ValueError("timestep does not match the scheduler's current step")
         previous = self._next_timesteps[self._step_index].to(
-            device=sample_features.device,
-            dtype=sample_features.dtype,
+            device=sample_features.device, dtype=sample_features.dtype
         )
         previous_sample = sample_features - (current - previous) * output_features
         original_sample = _features(self.velocity_to_original(sample, model_output, current))
@@ -242,17 +229,9 @@ class Trellis2FlowEulerScheduler(SchedulerMixin, ConfigMixin):
         original_output = _replace(sample, original_sample)
         if not return_dict:
             return (previous_output,)
-        return Trellis2FlowEulerSchedulerOutput(
-            prev_sample=previous_output,
-            pred_original_sample=original_output,
-        )
+        return Trellis2FlowEulerSchedulerOutput(prev_sample=previous_output, pred_original_sample=original_output)
 
-    def add_noise(
-        self,
-        original_samples: torch.Tensor,
-        noise: torch.Tensor,
-        timesteps: torch.Tensor,
-    ) -> torch.Tensor:
+    def add_noise(self, original_samples: torch.Tensor, noise: torch.Tensor, timesteps: torch.Tensor) -> torch.Tensor:
         if original_samples.shape != noise.shape:
             raise ValueError("original_samples and noise must have identical shapes")
         timesteps = timesteps.to(device=original_samples.device, dtype=original_samples.dtype)

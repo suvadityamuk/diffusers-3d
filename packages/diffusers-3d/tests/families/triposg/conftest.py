@@ -8,14 +8,6 @@ from transformers import BitImageProcessorPil, Dinov2Config, Dinov2Model
 from diffusers_3d import ImageCondition, TripoSGImageTo3DPipeline, TripoSGTransformerModel, TripoSGVAEDecoder
 
 
-def make_tiny_vae_decoder() -> TripoSGVAEDecoder:
-    vae = TripoSGVAEDecoder(**TripoSGVAEDecoder.tiny_config())
-    with torch.no_grad():
-        # Spread the untrained field across its zero level so marching cubes finds a surface.
-        vae.proj_out.weight.mul_(50)
-    return vae
-
-
 @pytest.fixture
 def tiny_triposg_components():
     torch.manual_seed(0)
@@ -32,7 +24,10 @@ def tiny_triposg_components():
     torch.manual_seed(1)
     transformer = TripoSGTransformerModel(**TripoSGTransformerModel.tiny_config())
     torch.manual_seed(2)
-    vae = make_tiny_vae_decoder()
+    vae = TripoSGVAEDecoder(**TripoSGVAEDecoder.tiny_config())
+    with torch.no_grad():
+        # Spread the untrained field across its zero level so marching cubes finds a surface.
+        vae.proj_out.weight.mul_(50)
     return {
         "feature_extractor": BitImageProcessorPil(
             size={"shortest_edge": 32},

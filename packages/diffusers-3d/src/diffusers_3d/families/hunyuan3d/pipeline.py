@@ -79,8 +79,8 @@ def resize_like_opencv(image: np.ndarray, height: int, width: int, interpolation
     """``cv2.resize`` of a uint8 ``(height, width, channels)`` image with ``"area"`` or ``"cubic"`` interpolation.
 
     Shrinking ``INTER_AREA`` is a float box filter; enlarging ``INTER_AREA`` and ``INTER_CUBIC`` follow OpenCV's
-    11-bit fixed-point separable passes and its vectorized rounding, which reproduces OpenCV exactly except for
-    rare one-level differences in ``INTER_CUBIC``.
+    11-bit fixed-point separable passes and its vectorized rounding. Results match OpenCV to within one level;
+    how many values differ depends on OpenCV's platform-specific SIMD path.
     """
 
     if interpolation == "area" and height <= image.shape[0] and width <= image.shape[1]:

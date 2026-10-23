@@ -14,7 +14,7 @@ from .types import BackendCapability
 
 
 def diagnostic_build_identity(module: ModuleType) -> str | None:
-    """Return optional upstream version/build text without treating it as trust evidence."""
+    """Return the module's self-reported version or build string, for diagnostics only."""
 
     for name in ("__build_id__", "__version__", "version"):
         value = getattr(module, name, None)
@@ -30,7 +30,7 @@ def validate_accelerated_runtime(
     dtype: torch.dtype,
     require_triton: bool = False,
 ) -> None:
-    """Validate the active Torch/device/toolchain surface after registry selection."""
+    """Check the torch version, dtype, device, and (optionally) Triton before using an accelerated backend."""
 
     try:
         torch_version = Version(torch.__version__.split("+", maxsplit=1)[0])
@@ -71,22 +71,11 @@ def load_selected_backend(
     *,
     registry: BackendRegistry = BACKEND_REGISTRY,
 ) -> ModuleType:
-    """Select every required capability before importing an optional module."""
+    """Select a portable CPU backend for every capability, then import it."""
 
-    for capability in capabilities:
-        registry.select(
-            capability,
-            name=name,
-            device="cpu",
-            differentiable=False,
-        )
-
-    try:
-        return importlib.import_module(import_name)
-    except ImportError as error:
-        raise RuntimeError(
-            f"Backend {name!r} passed registry discovery but importing {import_name!r} failed: {error}"
-        ) from error
+    return load_explicit_backend(
+        name, import_name, capabilities, device="cpu", dtype=None, differentiable=False, registry=registry
+    )
 
 
 def load_explicit_backend(
@@ -99,7 +88,7 @@ def load_explicit_backend(
     differentiable: bool,
     registry: BackendRegistry = BACKEND_REGISTRY,
 ) -> ModuleType:
-    """Select an accelerated backend for an explicit runtime before importing it."""
+    """Select ``name`` for every capability on the given runtime, then import ``import_name``."""
 
     for capability in capabilities:
         registry.select(

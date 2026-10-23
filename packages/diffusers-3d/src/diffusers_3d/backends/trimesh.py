@@ -84,10 +84,9 @@ def _texture_tensor(image: Any) -> torch.Tensor:
 
 
 class TrimeshBackend:
-    """Portable CPU mesh conversion, file I/O, and conservative processing.
+    """CPU mesh conversion, GLB/OBJ/PLY/STL I/O, and geometry processing through ``trimesh``.
 
-    Conversion crosses through NumPy and is intentionally non-differentiable.
-    Optional ``trimesh`` imports happen only after explicit registry selection.
+    Conversion goes through NumPy, so it is not differentiable, and raises rather than silently drop a channel.
     """
 
     def __init__(self, *, registry: BackendRegistry = BACKEND_REGISTRY) -> None:

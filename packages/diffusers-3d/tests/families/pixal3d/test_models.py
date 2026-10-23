@@ -13,7 +13,7 @@ from diffusers_3d import (
 
 # Read from the safetensors headers of TencentARC/Pixal3D@b0cb2e1b794cab9aa0ac38a95d794a4d9337437f (single-view and
 # ``_mv`` flows share the layout): 700 tensors per flow, plus ``rope_phases`` in the dense flow, which the converter
-# checks and drops. The NAF release holds 37 tensors, ``image_encoder.rope.periods`` among them.
+# checks and drops. The NAF release holds 37 tensors; the converter checks and drops ``image_encoder.rope.periods``.
 RELEASED_FLOW_TENSORS = 700
 RELEASED_PROJECTION_SHAPES = {"sparse_structure": (1536, 1024), "slat": (1536, 2048)}
 RELEASED_NAF_TENSORS = 36

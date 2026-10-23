@@ -49,9 +49,7 @@ def _linear_interp(edge_weights: torch.Tensor, edge_values: torch.Tensor) -> tor
 
 
 def _resolve_case_ids(
-    occupancy: torch.Tensor,
-    cube_coordinates: torch.Tensor,
-    check_table: torch.Tensor,
+    occupancy: torch.Tensor, cube_coordinates: torch.Tensor, check_table: torch.Tensor
 ) -> torch.Tensor:
     """Dual-marching-cubes case per surface cube, with the C16/C19 ambiguous-face inversion (suppl. sec. 1.3)."""
 
@@ -204,11 +202,7 @@ def flexicubes_extract(
 
 
 def sparse_cubes_to_mesh(
-    coordinates: torch.Tensor,
-    features: torch.Tensor,
-    resolution: int,
-    *,
-    use_color: bool,
+    coordinates: torch.Tensor, features: torch.Tensor, resolution: int, *, use_color: bool
 ) -> FlexiCubesResult:
     """TRELLIS ``SparseFeatures2Mesh``: per-voxel cube features -> FlexiCubes mesh in the centred unit cube.
 

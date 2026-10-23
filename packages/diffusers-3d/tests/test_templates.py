@@ -20,11 +20,13 @@ def test_template_python_skeletons_compile():
 def test_reviewed_family_template_imports_and_builds_exact_registrations():
     template = TEMPLATES / "reviewed-model-family"
     source = (
-        "from reviewed_family.registrations import "
-        "REVIEWED_MODEL_REGISTRATION, REVIEWED_PIPELINE_REGISTRATION; "
-        "metadata = REVIEWED_PIPELINE_REGISTRATION.metadata; "
+        "from diffusers_3d import Object3DModelRegistration, Object3DPipelineRegistration; "
+        "from reviewed_family.registrations import reviewed_family_execution_registrations; "
+        "(model,), (pipeline,) = reviewed_family_execution_registrations("
+        "Object3DModelRegistration, Object3DPipelineRegistration); "
+        "metadata = pipeline.metadata; "
         "assert metadata.components[0].name == 'denoiser'; "
-        "assert REVIEWED_MODEL_REGISTRATION.metadata.family_id == metadata.family_id"
+        "assert model.metadata.family_id == metadata.family_id"
     )
     environment = dict(os.environ)
     environment["PYTHONPATH"] = os.pathsep.join(

@@ -1,10 +1,8 @@
 """Pure-PyTorch volume renderer for :class:`RadianceFieldAsset`.
 
-This is an independent implementation of the tri-vector radiance field's definition (see the asset docstring):
-rays are marched through the active voxels at ``samples_per_cell`` samples per trivec cell, the field is evaluated
-by linear interpolation, and colours are alpha-composited front to back. It does not derive from the restricted
-CUDA rasterizer TRELLIS uses and makes no claim of pixel parity with it; it exists so the asset can be inspected on
-any device.
+An independent implementation of the tri-vector field (see the asset docstring): rays are marched through the
+active voxels at ``samples_per_cell`` samples per trivec cell and alpha-composited front to back. It does not derive
+from the restricted CUDA rasterizer TRELLIS uses and is not pixel-identical to it.
 """
 
 from __future__ import annotations
@@ -60,8 +58,8 @@ def render_radiance_field(
     """Volume-render every camera; returns ``color`` ``(N, 3, H, W)``, ``depth`` and ``alpha`` ``(N, 1, H, W)``.
 
     ``depth`` is the expected camera-space z of the surface (alpha-weighted mean, zero where nothing was hit).
-    ``jitter`` in ``[0, 1)`` offsets the sample positions along
-    every ray by that fraction of a step (the released renderer draws it at random; ``0.5`` is deterministic).
+    ``jitter`` in ``[0, 1)`` offsets every ray's samples by that fraction of a step (the released renderer draws it
+    at random; ``0.5`` is deterministic).
     """
 
     if type(asset) is not RadianceFieldAsset or type(cameras) is not CameraRig:

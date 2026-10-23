@@ -45,8 +45,7 @@ def test_sparse_tensor_asset_roundtrip_and_normalization_are_lossless():
     sparse = TrellisSparseTensor.from_sparse_voxel_assets((first, second))
     assert torch.equal(sparse.coordinates[:, 0], torch.tensor([0, 0, 1]))
     restored = sparse.normalize(torch.tensor([1.0, 2.0]), torch.tensor([2.0, 4.0])).denormalize(
-        torch.tensor([1.0, 2.0]),
-        torch.tensor([2.0, 4.0]),
+        torch.tensor([1.0, 2.0]), torch.tensor([2.0, 4.0])
     )
     outputs = restored.to_sparse_voxel_assets()
     assert len(outputs) == 2

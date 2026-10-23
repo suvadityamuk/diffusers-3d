@@ -7,7 +7,6 @@
 
 from __future__ import annotations
 
-import math
 from dataclasses import dataclass
 from typing import Any
 
@@ -17,7 +16,9 @@ from diffusers import ModelMixin  # noqa: F401 - required by external-component 
 from diffusers.configuration_utils import register_to_config
 from diffusers.models.attention import AttentionModuleMixin
 from diffusers.models.attention_dispatch import dispatch_attention_fn
+from diffusers.models.embeddings import get_timestep_embedding
 from diffusers.models.modeling_utils import get_parameter_dtype
+from diffusers.models.normalization import FP32LayerNorm
 from diffusers.utils import BaseOutput
 from torch import nn
 
@@ -43,13 +44,8 @@ class TrellisSLatFlowOutput(BaseOutput):
     sample: TrellisSparseTensor
 
 
-class TrellisLayerNorm32(nn.LayerNorm):
-    def forward(self, hidden_states: torch.Tensor) -> torch.Tensor:
-        weight = None if self.weight is None else self.weight.float()
-        bias = None if self.bias is None else self.bias.float()
-        return F.layer_norm(hidden_states.float(), self.normalized_shape, weight, bias, self.eps).to(
-            dtype=hidden_states.dtype
-        )
+class TrellisLayerNorm32(FP32LayerNorm):
+    """Upstream ``LayerNorm32``: layer norm computed in float32."""
 
 
 class TrellisTimestepEmbedder(nn.Module):
@@ -63,14 +59,9 @@ class TrellisTimestepEmbedder(nn.Module):
         self.frequency_embedding_size = frequency_embedding_size
 
     def forward(self, timestep: torch.Tensor) -> torch.Tensor:
-        half = self.frequency_embedding_size // 2
-        frequencies = torch.exp(
-            -math.log(10000) * torch.arange(half, dtype=torch.float32, device=timestep.device) / half
+        embedding = get_timestep_embedding(
+            timestep, self.frequency_embedding_size, flip_sin_to_cos=True, downscale_freq_shift=0
         )
-        arguments = timestep[:, None].float() * frequencies[None]
-        embedding = torch.cat([torch.cos(arguments), torch.sin(arguments)], dim=-1)
-        if self.frequency_embedding_size % 2:
-            embedding = torch.cat([embedding, torch.zeros_like(embedding[:, :1])], dim=-1)
         return self.mlp(embedding.to(dtype=get_parameter_dtype(self.mlp)))
 
 
@@ -91,20 +82,7 @@ class TrellisAbsolutePositionEmbedder(nn.Module):
         embedding = torch.outer(coordinates.reshape(-1), frequencies)
         embedding = torch.cat([torch.sin(embedding), torch.cos(embedding)], dim=-1)
         embedding = embedding.reshape(coordinates.shape[0], -1)
-        if embedding.shape[1] < self.channels:
-            embedding = torch.cat(
-                [
-                    embedding,
-                    torch.zeros(
-                        embedding.shape[0],
-                        self.channels - embedding.shape[1],
-                        device=embedding.device,
-                        dtype=embedding.dtype,
-                    ),
-                ],
-                dim=-1,
-            )
-        return embedding
+        return F.pad(embedding, (0, self.channels - embedding.shape[1]))
 
 
 class TrellisRotaryPositionEmbedder(nn.Module):
@@ -120,10 +98,7 @@ class TrellisRotaryPositionEmbedder(nn.Module):
         )
 
     def forward(
-        self,
-        query: torch.Tensor,
-        key: torch.Tensor,
-        indices: torch.Tensor | None = None,
+        self, query: torch.Tensor, key: torch.Tensor, indices: torch.Tensor | None = None
     ) -> tuple[torch.Tensor, torch.Tensor]:
         if indices is None:
             indices = torch.arange(query.shape[1], device=query.device).reshape(1, -1, 1)
@@ -134,21 +109,9 @@ class TrellisRotaryPositionEmbedder(nn.Module):
         phases = torch.outer(indices.reshape(-1).float(), frequencies)
         phases = torch.polar(torch.ones_like(phases), phases)
         phases = phases.reshape(*indices.shape[:-1], -1)
-        target_width = query.shape[-1] // 2
-        if phases.shape[-1] < target_width:
-            phases = torch.cat(
-                [
-                    phases,
-                    torch.ones(
-                        *phases.shape[:-1],
-                        target_width - phases.shape[-1],
-                        device=phases.device,
-                        dtype=phases.dtype,
-                    ),
-                ],
-                dim=-1,
-            )
-        phases = phases.unsqueeze(2)
+        # Head channels left over after splitting by axis are not rotated.
+        padding = phases.new_ones(*phases.shape[:-1], query.shape[-1] // 2 - phases.shape[-1])
+        phases = torch.cat([phases, padding], dim=-1).unsqueeze(2)
         query_complex = torch.view_as_complex(query.float().reshape(*query.shape[:-1], -1, 2))
         key_complex = torch.view_as_complex(key.float().reshape(*key.shape[:-1], -1, 2))
         query = torch.view_as_real(query_complex * phases).reshape_as(query).to(dtype=query.dtype)
@@ -182,11 +145,7 @@ class TrellisAttnProcessor:
         batch_size, sequence_length, _ = hidden_states.shape
         if attn._type == "self":
             query_key_value = attn.to_qkv(hidden_states).reshape(
-                batch_size,
-                sequence_length,
-                3,
-                attn.num_heads,
-                attn.head_dim,
+                batch_size, sequence_length, 3, attn.num_heads, attn.head_dim
             )
             query, key, value = query_key_value.unbind(dim=2)
             if attn.use_rope:
@@ -195,19 +154,8 @@ class TrellisAttnProcessor:
             if context is None:
                 raise ValueError("context is required for cross-attention")
             context_length = context.shape[1]
-            query = attn.to_q(hidden_states).reshape(
-                batch_size,
-                sequence_length,
-                attn.num_heads,
-                attn.head_dim,
-            )
-            key_value = attn.to_kv(context).reshape(
-                batch_size,
-                context_length,
-                2,
-                attn.num_heads,
-                attn.head_dim,
-            )
+            query = attn.to_q(hidden_states).reshape(batch_size, sequence_length, attn.num_heads, attn.head_dim)
+            key_value = attn.to_kv(context).reshape(batch_size, context_length, 2, attn.num_heads, attn.head_dim)
             key, value = key_value.unbind(dim=2)
         if attn.qk_rms_norm:
             query = attn.q_rms_norm(query)
@@ -305,11 +253,7 @@ class TrellisModulatedTransformerCrossBlock(nn.Module):
         self.norm2 = TrellisLayerNorm32(channels, elementwise_affine=True, eps=1e-6)
         self.norm3 = TrellisLayerNorm32(channels, elementwise_affine=False, eps=1e-6)
         self.self_attn = TrellisAttention(
-            channels,
-            num_heads,
-            attention_type="self",
-            use_rope=use_rope,
-            qk_rms_norm=qk_rms_norm,
+            channels, num_heads, attention_type="self", use_rope=use_rope, qk_rms_norm=qk_rms_norm
         )
         self.cross_attn = TrellisAttention(
             channels,
@@ -320,10 +264,7 @@ class TrellisModulatedTransformerCrossBlock(nn.Module):
         )
         self.mlp = TrellisFeedForwardNet(channels, mlp_ratio)
         if not share_mod:
-            self.adaLN_modulation = nn.Sequential(
-                nn.SiLU(),
-                nn.Linear(channels, 6 * channels, bias=True),
-            )
+            self.adaLN_modulation = nn.Sequential(nn.SiLU(), nn.Linear(channels, 6 * channels, bias=True))
 
     def forward(
         self,
@@ -370,11 +311,7 @@ class TrellisSparseConv3d(nn.Module):
         self.conv = SparseConv3d(in_channels, out_channels, kernel_size)
 
     def forward(
-        self,
-        coordinates: torch.Tensor,
-        features: torch.Tensor,
-        *,
-        neighbors: torch.Tensor | None = None,
+        self, coordinates: torch.Tensor, features: torch.Tensor, *, neighbors: torch.Tensor | None = None
     ) -> torch.Tensor:
         return self.conv(coordinates, features, neighbors=neighbors)
 
@@ -444,38 +381,43 @@ def _patchify_3d(hidden_states: torch.Tensor, patch_size: int) -> torch.Tensor:
     )
     hidden_states = hidden_states.permute(0, 1, 3, 5, 7, 2, 4, 6)
     return hidden_states.reshape(
-        batch_size,
-        channels * patch_size**3,
-        depth // patch_size,
-        height // patch_size,
-        width // patch_size,
+        batch_size, channels * patch_size**3, depth // patch_size, height // patch_size, width // patch_size
     )
 
 
 def _unpatchify_3d(hidden_states: torch.Tensor, patch_size: int) -> torch.Tensor:
     batch_size, channels, depth, height, width = hidden_states.shape
     hidden_states = hidden_states.reshape(
-        batch_size,
-        channels // patch_size**3,
-        patch_size,
-        patch_size,
-        patch_size,
-        depth,
-        height,
-        width,
+        batch_size, channels // patch_size**3, patch_size, patch_size, patch_size, depth, height, width
     )
     hidden_states = hidden_states.permute(0, 1, 5, 2, 6, 3, 7, 4)
     return hidden_states.reshape(
-        batch_size,
-        channels // patch_size**3,
-        depth * patch_size,
-        height * patch_size,
-        width * patch_size,
+        batch_size, channels // patch_size**3, depth * patch_size, height * patch_size, width * patch_size
     )
 
 
+def _initialize_flow_weights(model: nn.Module) -> None:
+    """Upstream ``initialize_weights``: xavier linears, small timestep MLP, zero-init modulation and output."""
+
+    def initialize(module: nn.Module) -> None:
+        if isinstance(module, nn.Linear):
+            nn.init.xavier_uniform_(module.weight)
+            if module.bias is not None:
+                nn.init.constant_(module.bias, 0)
+
+    model.apply(initialize)
+    nn.init.normal_(model.t_embedder.mlp[0].weight, std=0.02)
+    nn.init.normal_(model.t_embedder.mlp[2].weight, std=0.02)
+    modulations = [model.adaLN_modulation] if model.share_mod else [block.adaLN_modulation for block in model.blocks]
+    for modulation in modulations:
+        nn.init.constant_(modulation[-1].weight, 0)
+        nn.init.constant_(modulation[-1].bias, 0)
+    nn.init.constant_(model.out_layer.weight, 0)
+    nn.init.constant_(model.out_layer.bias, 0)
+
+
 class TrellisSparseStructureFlowModel(Object3DModel, Object3DPeftAdapterMixin):
-    """Production-name-compatible dense TRELLIS sparse-structure flow model."""
+    """TRELLIS sparse-structure flow transformer over the dense occupancy latent (``SparseStructureFlowModel``)."""
 
     family_id = "trellis"
     component_role = "sparse_structure_flow_model"
@@ -538,17 +480,11 @@ class TrellisSparseStructureFlowModel(Object3DModel, Object3DPeftAdapterMixin):
 
         self.t_embedder = TrellisTimestepEmbedder(model_channels)
         if share_mod:
-            self.adaLN_modulation = nn.Sequential(
-                nn.SiLU(),
-                nn.Linear(model_channels, 6 * model_channels, bias=True),
-            )
+            self.adaLN_modulation = nn.Sequential(nn.SiLU(), nn.Linear(model_channels, 6 * model_channels, bias=True))
         if pe_mode == "ape":
             position_embedder = TrellisAbsolutePositionEmbedder(model_channels, 3)
             grid_resolution = resolution // patch_size
-            coordinates = torch.meshgrid(
-                *[torch.arange(grid_resolution) for _ in range(3)],
-                indexing="ij",
-            )
+            coordinates = torch.meshgrid(*[torch.arange(grid_resolution) for _ in range(3)], indexing="ij")
             coordinates = torch.stack(coordinates, dim=-1).reshape(-1, 3)
             self.register_buffer("pos_emb", position_embedder(coordinates))
 
@@ -569,7 +505,7 @@ class TrellisSparseStructureFlowModel(Object3DModel, Object3DPeftAdapterMixin):
             ]
         )
         self.out_layer = nn.Linear(model_channels, out_channels * patch_size**3)
-        self._initialize_weights()
+        _initialize_flow_weights(self)
         if use_fp16:
             self.blocks.to(dtype=torch.float16)
 
@@ -607,26 +543,6 @@ class TrellisSparseStructureFlowModel(Object3DModel, Object3DPeftAdapterMixin):
             "use_fp16": False,
         }
 
-    def _initialize_weights(self) -> None:
-        def initialize(module: nn.Module) -> None:
-            if isinstance(module, nn.Linear):
-                nn.init.xavier_uniform_(module.weight)
-                if module.bias is not None:
-                    nn.init.constant_(module.bias, 0)
-
-        self.apply(initialize)
-        nn.init.normal_(self.t_embedder.mlp[0].weight, std=0.02)
-        nn.init.normal_(self.t_embedder.mlp[2].weight, std=0.02)
-        if self.share_mod:
-            nn.init.constant_(self.adaLN_modulation[-1].weight, 0)
-            nn.init.constant_(self.adaLN_modulation[-1].bias, 0)
-        else:
-            for block in self.blocks:
-                nn.init.constant_(block.adaLN_modulation[-1].weight, 0)
-                nn.init.constant_(block.adaLN_modulation[-1].bias, 0)
-        nn.init.constant_(self.out_layer.weight, 0)
-        nn.init.constant_(self.out_layer.bias, 0)
-
     def forward(
         self,
         hidden_states: torch.Tensor,
@@ -635,13 +551,7 @@ class TrellisSparseStructureFlowModel(Object3DModel, Object3DPeftAdapterMixin):
         *,
         return_dict: bool = True,
     ) -> TrellisSparseStructureFlowOutput | tuple[torch.Tensor]:
-        expected_shape = (
-            hidden_states.shape[0],
-            self.in_channels,
-            self.resolution,
-            self.resolution,
-            self.resolution,
-        )
+        expected_shape = (hidden_states.shape[0], self.in_channels, self.resolution, self.resolution, self.resolution)
         if tuple(hidden_states.shape) != expected_shape:
             raise ValueError(f"hidden_states must have shape {expected_shape}")
         batch_size = hidden_states.shape[0]
@@ -671,10 +581,7 @@ class TrellisSparseStructureFlowModel(Object3DModel, Object3DPeftAdapterMixin):
         for block in self.blocks:
             if torch.is_grad_enabled() and self.gradient_checkpointing:
                 hidden_states = self._gradient_checkpointing_func(
-                    block,
-                    hidden_states,
-                    modulation,
-                    encoder_hidden_states,
+                    block, hidden_states, modulation, encoder_hidden_states
                 )
             else:
                 hidden_states = block(hidden_states, modulation, encoder_hidden_states)
@@ -682,11 +589,7 @@ class TrellisSparseStructureFlowModel(Object3DModel, Object3DPeftAdapterMixin):
         hidden_states = self.out_layer(hidden_states)
         grid_resolution = self.resolution // self.patch_size
         hidden_states = hidden_states.permute(0, 2, 1).reshape(
-            batch_size,
-            self.out_channels * self.patch_size**3,
-            grid_resolution,
-            grid_resolution,
-            grid_resolution,
+            batch_size, self.out_channels * self.patch_size**3, grid_resolution, grid_resolution, grid_resolution
         )
         hidden_states = _unpatchify_3d(hidden_states, self.patch_size).contiguous()
         if not return_dict:
@@ -697,11 +600,10 @@ class TrellisSparseStructureFlowModel(Object3DModel, Object3DPeftAdapterMixin):
 class TrellisSLatFlowModel(Object3DModel, Object3DPeftAdapterMixin):
     """TRELLIS structured-latent flow transformer with its sparse-convolution IO stages.
 
-    Matches the released ``SLatFlowModel`` layout: a linear input layer, ``num_io_res_blocks`` residual
-    blocks per ``io_block_channels`` stage (the last one average-pools by two), full-attention DiT blocks
-    at the pooled resolution, and mirrored upsampling blocks with skip connections. The sparse operators
-    are pure PyTorch, so the model runs on any device; ``io_block_channels=None`` gives the IO-free core
-    used by the tiny tests.
+    Released ``SLatFlowModel`` layout: a linear input layer, ``num_io_res_blocks`` residual blocks per
+    ``io_block_channels`` stage (the last one average-pools by two), full-attention DiT blocks at the pooled
+    resolution, and mirrored upsampling blocks with skip connections. ``io_block_channels=None`` gives the
+    IO-free core used by the tiny tests.
     """
 
     family_id = "trellis"
@@ -769,10 +671,7 @@ class TrellisSLatFlowModel(Object3DModel, Object3DPeftAdapterMixin):
 
         self.t_embedder = TrellisTimestepEmbedder(model_channels)
         if share_mod:
-            self.adaLN_modulation = nn.Sequential(
-                nn.SiLU(),
-                nn.Linear(model_channels, 6 * model_channels, bias=True),
-            )
+            self.adaLN_modulation = nn.Sequential(nn.SiLU(), nn.Linear(model_channels, 6 * model_channels, bias=True))
         if pe_mode == "ape":
             self.pos_embedder = TrellisAbsolutePositionEmbedder(model_channels)
         io_width = model_channels if io_channels is None else io_channels[0]
@@ -814,7 +713,7 @@ class TrellisSLatFlowModel(Object3DModel, Object3DPeftAdapterMixin):
             ]
         )
         self.out_layer = nn.Linear(io_width, out_channels)
-        self._initialize_weights()
+        _initialize_flow_weights(self)
         if use_fp16:
             self.input_blocks.to(dtype=torch.float16)
             self.blocks.to(dtype=torch.float16)
@@ -870,26 +769,6 @@ class TrellisSLatFlowModel(Object3DModel, Object3DPeftAdapterMixin):
             "qk_rms_norm": True,
             "use_fp16": False,
         }
-
-    def _initialize_weights(self) -> None:
-        def initialize(module: nn.Module) -> None:
-            if isinstance(module, nn.Linear):
-                nn.init.xavier_uniform_(module.weight)
-                if module.bias is not None:
-                    nn.init.constant_(module.bias, 0)
-
-        self.apply(initialize)
-        nn.init.normal_(self.t_embedder.mlp[0].weight, std=0.02)
-        nn.init.normal_(self.t_embedder.mlp[2].weight, std=0.02)
-        if self.share_mod:
-            nn.init.constant_(self.adaLN_modulation[-1].weight, 0)
-            nn.init.constant_(self.adaLN_modulation[-1].bias, 0)
-        else:
-            for block in self.blocks:
-                nn.init.constant_(block.adaLN_modulation[-1].weight, 0)
-                nn.init.constant_(block.adaLN_modulation[-1].bias, 0)
-        nn.init.constant_(self.out_layer.weight, 0)
-        nn.init.constant_(self.out_layer.bias, 0)
 
     def forward(
         self,
@@ -948,21 +827,10 @@ class TrellisSLatFlowModel(Object3DModel, Object3DPeftAdapterMixin):
         for block in self.blocks:
             if torch.is_grad_enabled() and self.gradient_checkpointing:
                 features = self._gradient_checkpointing_func(
-                    block,
-                    features,
-                    modulation,
-                    encoder_hidden_states,
-                    batch_indices,
-                    spatial_coordinates,
+                    block, features, modulation, encoder_hidden_states, batch_indices, spatial_coordinates
                 )
             else:
-                features = block(
-                    features,
-                    modulation,
-                    encoder_hidden_states,
-                    batch_indices,
-                    spatial_coordinates,
-                )
+                features = block(features, modulation, encoder_hidden_states, batch_indices, spatial_coordinates)
 
         for block, skip in zip(self.out_blocks, reversed(skips)):
             if self.use_skip_connection:

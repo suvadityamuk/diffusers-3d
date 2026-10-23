@@ -21,10 +21,7 @@ def test_batch_conditioning_uses_pinned_trellis_preprocessing(tiny_trellis_pipel
     rgba = torch.zeros(4, 10, 12)
     rgba[:3] = 1
     rgba[3, 2:8, :5] = 1
-    conditions = (
-        ImageCondition(rgba),
-        ImageCondition(rgba[:3], mask=rgba[3:4]),
-    )
+    conditions = (ImageCondition(rgba), ImageCondition(rgba[:3], mask=rgba[3:4]))
 
     images = tiny_trellis_pipeline.preprocess(conditions)
     expected = torch.stack(
@@ -40,14 +37,10 @@ def test_portable_sparse_structure_pipeline_is_deterministic(tiny_trellis_pipeli
     image = torch.linspace(0.0, 1.0, 3 * 8 * 8).reshape(3, 8, 8)
     latents = torch.linspace(-1.0, 1.0, 2 * 4 * 4 * 4).reshape(1, 2, 4, 4, 4)
     first = tiny_trellis_pipeline(
-        image,
-        sparse_structure_latents=latents.clone(),
-        sparse_structure_num_inference_steps=2,
+        image, sparse_structure_latents=latents.clone(), sparse_structure_num_inference_steps=2
     )
     second = tiny_trellis_pipeline(
-        image,
-        sparse_structure_latents=latents.clone(),
-        sparse_structure_num_inference_steps=2,
+        image, sparse_structure_latents=latents.clone(), sparse_structure_num_inference_steps=2
     )
     assert type(first) is Object3DPipelineOutput
     assert len(first.objects) == 1
@@ -83,11 +76,7 @@ def test_portable_full_attention_slat_and_gaussian_paths(tiny_trellis_full_pipel
         sparse_structure_latents=sparse_structure_latents,
         generator=torch.Generator().manual_seed(5),
     )
-    assert [type(value) for value in output.objects] == [
-        SparseVoxelAsset,
-        SparseVoxelAsset,
-        GaussianSplatAsset,
-    ]
+    assert [type(value) for value in output.objects] == [SparseVoxelAsset, SparseVoxelAsset, GaussianSplatAsset]
     assert output.objects[1].features.shape == (8**3, 4)
     assert output.objects[2].means.shape == (8**3 * 2, 3)
 

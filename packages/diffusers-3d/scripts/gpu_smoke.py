@@ -1,10 +1,9 @@
-"""GPU smoke test: run both TRELLIS families on the released weights and exercise every compiled backend.
+"""On-demand GPU smoke test for TRELLIS and TRELLIS.2 on the released weights.
 
-This is the manual/scheduled counterpart of the CPU test suite (see ``.github/workflows/diffusers_3d_gpu_smoke.yml``
-for how it runs on Hugging Face Jobs). It converts the official checkpoints (or loads the published
-conversions with ``--hub-namespace``), generates from one image and one prompt, pushes the outputs through gsplat, CuMesh, the PBR facade, the texture baker, and the radiance-field
-renderer, checks a few invariants (finite tensors, non-empty geometry, non-blank renders), and
-writes ``report.json`` plus preview PNGs and GLBs to ``--output``. It exits non-zero when any stage fails.
+Converts the official checkpoints (or loads the published conversions with ``--hub-namespace``), generates from one
+image and one prompt, runs the outputs through gsplat, CuMesh, the PBR facade, the texture baker, and the
+radiance-field renderer, and checks a few invariants (finite tensors, non-empty geometry, non-blank renders). Writes
+``report.json`` plus preview PNGs and GLBs to ``--output`` and exits non-zero if any stage fails.
 
     python scripts/gpu_smoke.py --work /tmp/smoke --output /tmp/smoke/out
 
@@ -19,6 +18,7 @@ import json
 import sys
 import time
 import traceback
+from contextlib import contextmanager
 from dataclasses import replace
 from pathlib import Path
 
@@ -38,24 +38,21 @@ def log(message: str) -> None:
     print(f"[{time.strftime('%H:%M:%S')}] {message}", flush=True)
 
 
+@contextmanager
 def timed(record: dict, name: str):
-    """Context manager recording wall time and peak CUDA memory under ``record[name]``."""
+    """Record wall time and peak CUDA memory under ``record[name]``."""
 
-    class _Timer:
-        def __enter__(self):
-            torch.cuda.synchronize()
-            torch.cuda.reset_peak_memory_stats()
-            self.start = time.perf_counter()
-            return self
-
-        def __exit__(self, *exc):
-            torch.cuda.synchronize()
-            record[name] = {
-                "seconds": round(time.perf_counter() - self.start, 3),
-                "peak_gb": round(torch.cuda.max_memory_allocated() / 2**30, 3),
-            }
-
-    return _Timer()
+    torch.cuda.synchronize()
+    torch.cuda.reset_peak_memory_stats()
+    start = time.perf_counter()
+    try:
+        yield
+    finally:
+        torch.cuda.synchronize()
+        record[name] = {
+            "seconds": round(time.perf_counter() - start, 3),
+            "peak_gb": round(torch.cuda.max_memory_allocated() / 2**30, 3),
+        }
 
 
 def save_png(image: torch.Tensor, path: Path) -> None:

@@ -74,7 +74,7 @@ class Step1X3DAttnProcessor:
 
 
 class Step1X3DSingleTransformerBlock(nn.Module):
-    """Flux single-stream block (parallel attention and MLP), absent from this Diffusers build."""
+    """Flux single-stream block (parallel attention and MLP) over the already joined condition and latent tokens."""
 
     def __init__(self, dim: int, num_attention_heads: int, attention_head_dim: int, mlp_ratio: float = 4.0) -> None:
         super().__init__()

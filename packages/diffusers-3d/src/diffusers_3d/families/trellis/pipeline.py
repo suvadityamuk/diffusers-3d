@@ -17,12 +17,7 @@ from transformers.image_utils import IMAGENET_DEFAULT_MEAN, IMAGENET_DEFAULT_STD
 
 from ...data import ImageCondition, TextCondition, preprocess_image_condition
 from ...execution.lora import Object3DLoraLoaderMixin
-from ...execution.metadata import (
-    ContributionStatus,
-    Object3DComponentSpec,
-    ReviewStatus,
-    fully_qualified_class_name,
-)
+from ...execution.metadata import ContributionStatus, Object3DComponentSpec, ReviewStatus, fully_qualified_class_name
 from ...execution.pipelines import Object3DPipeline
 from ...objects import (
     GaussianSplatAsset,
@@ -45,12 +40,12 @@ from .scheduler import TrellisFlowEulerScheduler
 from .sparse import TrellisSparseTensor
 
 
-def _component_spec(name: str, component_type: type) -> Object3DComponentSpec:
+def _component_spec(name: str, component_type: type, *, optional: bool = False) -> Object3DComponentSpec:
     return Object3DComponentSpec(
         name=name,
         expected_class=fully_qualified_class_name(component_type),
         subfolder=name,
-        optional=False,
+        optional=optional,
         review_status=ReviewStatus.REVIEWED,
         loading_eligible=True,
     )
@@ -77,70 +72,14 @@ class _TrellisTwoStagePipeline(Object3DPipeline, Object3DLoraLoaderMixin):
     contribution_status = ContributionStatus.REVIEWED_PACKAGE
     review_status = ReviewStatus.REVIEWED
     _shared_component_specs = (
-        Object3DComponentSpec(
-            name="sparse_structure_flow_model",
-            expected_class=fully_qualified_class_name(TrellisSparseStructureFlowModel),
-            subfolder="sparse_structure_flow_model",
-            optional=False,
-            review_status=ReviewStatus.REVIEWED,
-            loading_eligible=True,
-        ),
-        Object3DComponentSpec(
-            name="sparse_structure_decoder",
-            expected_class=fully_qualified_class_name(TrellisSparseStructureDecoder),
-            subfolder="sparse_structure_decoder",
-            optional=False,
-            review_status=ReviewStatus.REVIEWED,
-            loading_eligible=True,
-        ),
-        Object3DComponentSpec(
-            name="sparse_structure_scheduler",
-            expected_class=fully_qualified_class_name(TrellisFlowEulerScheduler),
-            subfolder="sparse_structure_scheduler",
-            optional=False,
-            review_status=ReviewStatus.REVIEWED,
-            loading_eligible=True,
-        ),
-        Object3DComponentSpec(
-            name="slat_flow_model",
-            expected_class=fully_qualified_class_name(TrellisSLatFlowModel),
-            subfolder="slat_flow_model",
-            optional=True,
-            review_status=ReviewStatus.REVIEWED,
-            loading_eligible=True,
-        ),
-        Object3DComponentSpec(
-            name="slat_scheduler",
-            expected_class=fully_qualified_class_name(TrellisFlowEulerScheduler),
-            subfolder="slat_scheduler",
-            optional=True,
-            review_status=ReviewStatus.REVIEWED,
-            loading_eligible=True,
-        ),
-        Object3DComponentSpec(
-            name="gaussian_decoder",
-            expected_class=fully_qualified_class_name(TrellisSLatGaussianDecoder),
-            subfolder="gaussian_decoder",
-            optional=True,
-            review_status=ReviewStatus.REVIEWED,
-            loading_eligible=True,
-        ),
-        Object3DComponentSpec(
-            name="mesh_decoder",
-            expected_class=fully_qualified_class_name(TrellisSLatMeshDecoder),
-            subfolder="mesh_decoder",
-            optional=True,
-            review_status=ReviewStatus.REVIEWED,
-            loading_eligible=True,
-        ),
-        Object3DComponentSpec(
-            name="radiance_field_decoder",
-            expected_class=fully_qualified_class_name(TrellisSLatRadianceFieldDecoder),
-            subfolder="radiance_field_decoder",
-            optional=True,
-            review_status=ReviewStatus.REVIEWED,
-            loading_eligible=True,
-        ),
+        _component_spec("sparse_structure_flow_model", TrellisSparseStructureFlowModel),
+        _component_spec("sparse_structure_decoder", TrellisSparseStructureDecoder),
+        _component_spec("sparse_structure_scheduler", TrellisFlowEulerScheduler),
+        _component_spec("slat_flow_model", TrellisSLatFlowModel, optional=True),
+        _component_spec("slat_scheduler", TrellisFlowEulerScheduler, optional=True),
+        _component_spec("gaussian_decoder", TrellisSLatGaussianDecoder, optional=True),
+        _component_spec("mesh_decoder", TrellisSLatMeshDecoder, optional=True),
+        _component_spec("radiance_field_decoder", TrellisSLatRadianceFieldDecoder, optional=True),
     )
     _model_cpu_offload_seq = (
         "sparse_structure_flow_model->sparse_structure_decoder->slat_flow_model"
@@ -235,15 +174,38 @@ class _TrellisTwoStagePipeline(Object3DPipeline, Object3DLoraLoaderMixin):
         if isinstance(generator, list) and len(generator) != batch_size:
             raise ValueError("a generator list must contain one generator per batch item")
         if latents is None:
-            return randn_tensor(
-                shape,
-                generator=generator,
-                device=self._execution_device,
-                dtype=parameter.dtype,
-            )
+            return randn_tensor(shape, generator=generator, device=self._execution_device, dtype=parameter.dtype)
         if not isinstance(latents, torch.Tensor) or tuple(latents.shape) != shape:
             raise ValueError(f"sparse-structure latents must have shape {shape}")
         return latents.to(device=self._execution_device, dtype=parameter.dtype)
+
+    @staticmethod
+    def _sample_flow(
+        model: TrellisSparseStructureFlowModel | TrellisSLatFlowModel,
+        scheduler: TrellisFlowEulerScheduler,
+        latents: torch.Tensor | TrellisSparseTensor,
+        conditional: torch.Tensor,
+        unconditional: torch.Tensor,
+        *,
+        num_inference_steps: int,
+        guidance_scale: float,
+        guidance_interval: tuple[float, float],
+        rescale_t: float,
+    ) -> torch.Tensor | TrellisSparseTensor:
+        """Euler sampling with CFG applied only inside ``guidance_interval``, as released."""
+
+        if len(guidance_interval) != 2 or not 0 <= guidance_interval[0] <= guidance_interval[1] <= 1:
+            raise ValueError("guidance_interval must be an increasing pair within [0, 1]")
+        batch_size = latents.batch_size if isinstance(latents, TrellisSparseTensor) else latents.shape[0]
+        scheduler.set_timesteps(num_inference_steps, device=latents.device, rescale_t=rescale_t)
+        for timestep in scheduler.timesteps:
+            model_timestep = scheduler.model_timestep(timestep, batch_size, device=latents.device)
+            velocity = model(latents, model_timestep, conditional).sample
+            if guidance_interval[0] <= float(timestep) <= guidance_interval[1]:
+                unconditional_velocity = model(latents, model_timestep, unconditional).sample
+                velocity = scheduler.apply_guidance(velocity, unconditional_velocity, guidance_scale)
+            latents = scheduler.step(velocity, timestep, latents).prev_sample
+        return latents
 
     def sample_sparse_structure(
         self,
@@ -258,40 +220,17 @@ class _TrellisTwoStagePipeline(Object3DPipeline, Object3DLoraLoaderMixin):
     ) -> torch.Tensor:
         """Sample dense sparse-structure latents with released TRELLIS CFG semantics."""
 
-        if len(guidance_interval) != 2 or not 0 <= guidance_interval[0] <= guidance_interval[1] <= 1:
-            raise ValueError("guidance_interval must be an increasing pair within [0, 1]")
-        scheduler = self.sparse_structure_scheduler
-        scheduler.set_timesteps(
-            num_inference_steps,
-            device=latents.device,
+        return self._sample_flow(
+            self.sparse_structure_flow_model,
+            self.sparse_structure_scheduler,
+            latents,
+            conditional,
+            unconditional,
+            num_inference_steps=num_inference_steps,
+            guidance_scale=guidance_scale,
+            guidance_interval=guidance_interval,
             rescale_t=rescale_t,
         )
-        for timestep in scheduler.timesteps:
-            model_timestep = scheduler.model_timestep(
-                timestep,
-                latents.shape[0],
-                device=latents.device,
-            )
-            conditional_velocity = self.sparse_structure_flow_model(
-                latents,
-                model_timestep,
-                conditional,
-            ).sample
-            if guidance_interval[0] <= float(timestep) <= guidance_interval[1]:
-                unconditional_velocity = self.sparse_structure_flow_model(
-                    latents,
-                    model_timestep,
-                    unconditional,
-                ).sample
-                velocity = scheduler.apply_guidance(
-                    conditional_velocity,
-                    unconditional_velocity,
-                    guidance_scale,
-                )
-            else:
-                velocity = conditional_velocity
-            latents = scheduler.step(velocity, timestep, latents).prev_sample
-        return latents
 
     def extract_sparse_structure(self, latents: torch.Tensor) -> tuple[SparseVoxelAsset, ...]:
         return self.sparse_structure_decoder.decode_to_sparse_voxels(latents)
@@ -350,48 +289,22 @@ class _TrellisTwoStagePipeline(Object3DPipeline, Object3DLoraLoaderMixin):
 
         if self.slat_flow_model is None or self.slat_scheduler is None:
             raise RuntimeError("SLAT sampling requires slat_flow_model and slat_scheduler")
-        if len(guidance_interval) != 2 or not 0 <= guidance_interval[0] <= guidance_interval[1] <= 1:
-            raise ValueError("guidance_interval must be an increasing pair within [0, 1]")
-        self.slat_scheduler.set_timesteps(
-            num_inference_steps,
-            device=latents.device,
+        latents = self._sample_flow(
+            self.slat_flow_model,
+            self.slat_scheduler,
+            latents,
+            conditional,
+            unconditional,
+            num_inference_steps=num_inference_steps,
+            guidance_scale=guidance_scale,
+            guidance_interval=guidance_interval,
             rescale_t=rescale_t,
         )
-        for timestep in self.slat_scheduler.timesteps:
-            model_timestep = self.slat_scheduler.model_timestep(
-                timestep,
-                latents.batch_size,
-                device=latents.device,
-            )
-            conditional_velocity = self.slat_flow_model(
-                latents,
-                model_timestep,
-                conditional,
-            ).sample
-            if guidance_interval[0] <= float(timestep) <= guidance_interval[1]:
-                unconditional_velocity = self.slat_flow_model(
-                    latents,
-                    model_timestep,
-                    unconditional,
-                ).sample
-                velocity = self.slat_scheduler.apply_guidance(
-                    conditional_velocity,
-                    unconditional_velocity,
-                    guidance_scale,
-                )
-            else:
-                velocity = conditional_velocity
-            latents = self.slat_scheduler.step(velocity, timestep, latents).prev_sample
         mean = latents.features.new_tensor(self.config.slat_mean)
         std = latents.features.new_tensor(self.config.slat_std)
         return latents.denormalize(mean, std)
 
-    def decode_slat(
-        self,
-        slat: TrellisSparseTensor,
-        *,
-        formats: tuple[str, ...],
-    ) -> tuple[Object3D, ...]:
+    def decode_slat(self, slat: TrellisSparseTensor, *, formats: tuple[str, ...]) -> tuple[Object3D, ...]:
         objects: list[Object3D] = []
         if "slat" in formats:
             objects.extend(slat.to_sparse_voxel_assets(resolution=self.slat_flow_model.config.resolution))
@@ -443,15 +356,14 @@ class _TrellisTwoStagePipeline(Object3DPipeline, Object3DLoraLoaderMixin):
         allowed_formats = {"sparse_structure", "slat", *decoders}
         if not formats or len(set(formats)) != len(formats) or set(formats).difference(allowed_formats):
             raise ValueError(f"formats must contain unique values from {sorted(allowed_formats)}")
-        if any(name in formats for name in ("slat", *decoders)) and self.slat_flow_model is None:
+        requires_slat = any(name in formats for name in ("slat", *decoders))
+        if requires_slat and self.slat_flow_model is None:
             raise RuntimeError("formats requiring SLAT need slat_flow_model and slat_scheduler")
         for name, decoder in decoders.items():
             if name in formats and decoder is None:
                 raise RuntimeError(f"format '{name}' requires {name}_decoder")
         sparse_structure_latents = self.prepare_sparse_structure_latents(
-            conditional.shape[0],
-            generator=generator,
-            latents=sparse_structure_latents,
+            conditional.shape[0], generator=generator, latents=sparse_structure_latents
         )
         sparse_structure_latents = self.sample_sparse_structure(
             sparse_structure_latents,
@@ -467,13 +379,8 @@ class _TrellisTwoStagePipeline(Object3DPipeline, Object3DLoraLoaderMixin):
         if "sparse_structure" in formats:
             objects.extend(sparse_structures)
 
-        requires_slat = any(name in formats for name in ("slat", *decoders))
         if requires_slat:
-            slat_latents = self.prepare_slat_latents(
-                sparse_structures,
-                generator=generator,
-                latents=slat_latents,
-            )
+            slat_latents = self.prepare_slat_latents(sparse_structures, generator=generator, latents=slat_latents)
             slat = self.sample_slat(
                 slat_latents,
                 conditional,
@@ -486,8 +393,7 @@ class _TrellisTwoStagePipeline(Object3DPipeline, Object3DLoraLoaderMixin):
             objects.extend(self.decode_slat(slat, formats=formats))
         latent_output = (
             Latent3DOutput(
-                latents=sparse_structure_latents,
-                metadata={"family": self.family_id, "stage": "sparse_structure"},
+                latents=sparse_structure_latents, metadata={"family": self.family_id, "stage": "sparse_structure"}
             )
             if return_latents
             else None
@@ -537,10 +443,7 @@ class TrellisImageTo3DPipeline(_TrellisTwoStagePipeline):
         )
         self.register_modules(image_encoder=image_encoder)
 
-    def preprocess(
-        self,
-        image: ImageCondition | Sequence[ImageCondition] | torch.Tensor,
-    ) -> torch.Tensor:
+    def preprocess(self, image: ImageCondition | Sequence[ImageCondition] | torch.Tensor) -> torch.Tensor:
         """Apply pinned foreground recentering without implicit background removal."""
 
         if isinstance(image, torch.Tensor):
@@ -561,18 +464,13 @@ class TrellisImageTo3DPipeline(_TrellisTwoStagePipeline):
 
         processed = [
             preprocess_image_condition(
-                condition,
-                image_size=self.image_encoder.config.image_size,
-                foreground_scale=1.2,
+                condition, image_size=self.image_encoder.config.image_size, foreground_scale=1.2
             ).image
             for condition in conditions
         ]
         return torch.stack(processed).to(device=self._execution_device, dtype=self.image_encoder.dtype)
 
-    def encode_conditioning(
-        self,
-        images: torch.Tensor,
-    ) -> tuple[torch.Tensor, torch.Tensor]:
+    def encode_conditioning(self, images: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         """Encode ``[0, 1]`` images to layer-normed DINOv2 tokens and the released all-zero unconditional branch."""
 
         size = self.image_encoder.config.image_size

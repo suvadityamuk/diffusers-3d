@@ -14,6 +14,7 @@ from .metadata import (
     OBJECT3D_MODEL_INDEX_NAME,
     Object3DComponentSpec,
     Object3DModelIndex,
+    _is_explicit_local_reference,
     _normalize_subfolder,
     fully_qualified_class_name,
 )
@@ -24,15 +25,7 @@ IMAGE_TO_3D_TASK = "image-to-3d"
 TEXT_TO_3D_TASK = "text-to-3d"
 
 
-def _is_explicit_local_reference(reference: str | os.PathLike[str]) -> bool:
-    path = Path(reference)
-    return isinstance(reference, os.PathLike) or path.exists() or path.is_absolute() or str(reference).startswith(".")
-
-
-def _pipeline_directory(
-    reference: str | os.PathLike[str],
-    subfolder: str | None,
-) -> Path:
+def _pipeline_directory(reference: str | os.PathLike[str], subfolder: str | None) -> Path:
     path = Path(reference)
     if path.is_file():
         raise Object3DLoadingError("AutoPipelineFor3D requires a pipeline directory, not a metadata file")
@@ -47,20 +40,11 @@ def _snapshot_allow_patterns(
     metadata: Object3DModelIndex, subfolder: str | None, *, skip: Collection[str] = ()
 ) -> list[str]:
     prefix = "" if subfolder is None else f"{subfolder}/"
-    patterns = [
-        f"{prefix}{DiffusionPipeline.config_name}",
-        f"{prefix}{OBJECT3D_MODEL_INDEX_NAME}",
-    ]
+    patterns = [f"{prefix}{DiffusionPipeline.config_name}", f"{prefix}{OBJECT3D_MODEL_INDEX_NAME}"]
     for component in metadata.components:
         if component.loading_eligible and component.name not in skip:
             folder = f"{prefix}{component.subfolder}"
-            patterns.extend(
-                (
-                    f"{folder}/*.json",
-                    f"{folder}/*.safetensors",
-                    f"{folder}/*.flashpack",
-                )
-            )
+            patterns.extend((f"{folder}/*.json", f"{folder}/*.safetensors", f"{folder}/*.flashpack"))
     return patterns
 
 
@@ -187,25 +171,26 @@ class AutoPipelineFor3D:
 
         pipeline_class = cls._registry.resolve(metadata, selected_task)
         provided_components = {component.name for component in metadata.components if component.name in kwargs}
-        for name in provided_components:
-            expected_type = _expected_component_type(next(c for c in metadata.components if c.name == name))
-            if type(kwargs[name]) is not expected_type:
+        for component in metadata.components:
+            if component.name not in provided_components:
+                continue
+            expected_type = _expected_component_type(component)
+            if type(kwargs[component.name]) is not expected_type:
                 raise Object3DLoadingError(
-                    f"Provided component {name!r} has type {fully_qualified_class_name(type(kwargs[name]))!r}; "
+                    f"Provided component {component.name!r} has type "
+                    f"{fully_qualified_class_name(type(kwargs[component.name]))!r}; "
                     f"expected exact reviewed class {fully_qualified_class_name(expected_type)!r}"
                 )
-        forbidden_delegate_options = {"custom_pipeline", "custom_revision", "dduf_file", "load_connected_pipeline"}
-        supplied_forbidden_options = sorted(forbidden_delegate_options.intersection(kwargs))
-        if supplied_forbidden_options:
+        forbidden_options = sorted(
+            {"custom_pipeline", "custom_revision", "dduf_file", "load_connected_pipeline"}.intersection(kwargs)
+        )
+        if forbidden_options:
             raise Object3DLoadingError(
-                f"Object-3D auto pipelines do not accept code-loading options: {supplied_forbidden_options}"
+                f"Object-3D auto pipelines do not accept code-loading options: {forbidden_options}"
             )
 
         if _is_explicit_local_reference(pretrained_model_name_or_path):
-            local_pipeline_directory = _pipeline_directory(
-                pretrained_model_name_or_path,
-                normalized_subfolder,
-            )
+            local_pipeline_directory = _pipeline_directory(pretrained_model_name_or_path, normalized_subfolder)
         else:
             try:
                 snapshot_path = huggingface_hub.snapshot_download(
@@ -232,14 +217,9 @@ class AutoPipelineFor3D:
             pipeline_class_name=pipeline_class.__name__,
             provided_components=provided_components,
         )
-        delegate_kwargs = dict(kwargs)
-        delegate_kwargs["local_files_only"] = True
-        delegate_kwargs["trust_remote_code"] = False
-
         try:
             pipeline = pipeline_class.from_pretrained(
-                local_pipeline_directory,
-                **delegate_kwargs,
+                local_pipeline_directory, **{**kwargs, "local_files_only": True, "trust_remote_code": False}
             )
         except Exception as error:
             raise Object3DLoadingError(

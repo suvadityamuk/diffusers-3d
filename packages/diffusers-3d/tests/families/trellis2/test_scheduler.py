@@ -21,14 +21,7 @@ def test_released_rescaled_schedule_cfg_rescale_interval_timestep_and_euler_equa
     guided = scheduler.apply_guidance(conditional, negative, 7.5)
     torch.testing.assert_close(guided, 7.5 * conditional + (1 - 7.5) * negative, atol=0.0, rtol=0.0)
 
-    rescaled = scheduler.apply_guidance(
-        conditional,
-        negative,
-        7.5,
-        sample=sample,
-        timestep=0.75,
-        guidance_rescale=0.7,
-    )
+    rescaled = scheduler.apply_guidance(conditional, negative, 7.5, sample=sample, timestep=0.75, guidance_rescale=0.7)
     positive_x0 = scheduler.velocity_to_original(sample, conditional, 0.75)
     guided_x0 = scheduler.velocity_to_original(sample, guided, 0.75)
     expected_rescaled_x0 = guided_x0 * (
@@ -43,10 +36,7 @@ def test_released_rescaled_schedule_cfg_rescale_interval_timestep_and_euler_equa
     expected_previous = sample - (expected_schedule[0] - expected_schedule[1]) * guided
     torch.testing.assert_close(output.prev_sample, expected_previous, atol=0.0, rtol=0.0)
     torch.testing.assert_close(
-        output.pred_original_sample,
-        scheduler.velocity_to_original(sample, guided, current),
-        atol=0.0,
-        rtol=0.0,
+        output.pred_original_sample, scheduler.velocity_to_original(sample, guided, current), atol=0.0, rtol=0.0
     )
 
     scheduler.save_pretrained(tmp_path)
@@ -78,10 +68,7 @@ def test_guidance_endpoints_return_exact_predictions_without_rescaling():
     assert scheduler.apply_guidance(conditional, negative, 1.0, guidance_rescale=1.0) is conditional
     assert scheduler.apply_guidance(conditional, negative, 0.0, guidance_rescale=1.0) is negative
 
-    sparse_conditional = TrellisSparseTensor(
-        torch.tensor([[0, 0, 0, 0]], dtype=torch.int64),
-        torch.ones(1, 2),
-    )
+    sparse_conditional = TrellisSparseTensor(torch.tensor([[0, 0, 0, 0]], dtype=torch.int64), torch.ones(1, 2))
     sparse_negative = sparse_conditional.replace(torch.zeros(1, 2))
     assert (
         scheduler.apply_guidance(sparse_conditional, sparse_negative, 1.0, guidance_rescale=0.5) is sparse_conditional

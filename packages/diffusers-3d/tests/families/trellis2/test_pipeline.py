@@ -28,19 +28,13 @@ def test_batch_conditioning_uses_pinned_trellis2_preprocessing(tiny_trellis2_pip
     rgba = torch.zeros(4, 10, 12)
     rgba[:3] = 1
     rgba[3, 2:8, :5] = 1
-    conditions = (
-        ImageCondition(rgba),
-        ImageCondition(rgba[:3], mask=rgba[3:4]),
-    )
+    conditions = (ImageCondition(rgba), ImageCondition(rgba[:3], mask=rgba[3:4]))
 
     images = tiny_trellis2_pipeline.preprocess(conditions)
     expected = torch.stack(
         [
             preprocess_image_condition(
-                condition,
-                image_size=8,
-                foreground_scale=1.0,
-                premultiply_before_resize=True,
+                condition, image_size=8, foreground_scale=1.0, premultiply_before_resize=True
             ).image
             for condition in conditions
         ]
@@ -52,8 +46,7 @@ def test_batch_conditioning_uses_pinned_trellis2_preprocessing(tiny_trellis2_pip
 
 
 def test_reviewed_sparse_structure_pipeline_is_deterministic_and_uses_released_defaults(
-    tiny_trellis2_pipeline,
-    monkeypatch,
+    tiny_trellis2_pipeline, monkeypatch
 ):
     pipeline = tiny_trellis2_pipeline
     defaults = pipeline.config.sparse_structure_sampler_defaults
@@ -66,16 +59,8 @@ def test_reviewed_sparse_structure_pipeline_is_deterministic_and_uses_released_d
     }
     image = torch.linspace(0.0, 1.0, 3 * 8 * 8).reshape(3, 8, 8)
     latents = torch.linspace(-1.0, 1.0, 2 * 2 * 2 * 2).reshape(1, 2, 2, 2, 2)
-    first = pipeline(
-        image,
-        sparse_structure_latents=latents.clone(),
-        sparse_structure_sampler_params={"steps": 2},
-    )
-    second = pipeline(
-        image,
-        sparse_structure_latents=latents.clone(),
-        sparse_structure_sampler_params={"steps": 2},
-    )
+    first = pipeline(image, sparse_structure_latents=latents.clone(), sparse_structure_sampler_params={"steps": 2})
+    second = pipeline(image, sparse_structure_latents=latents.clone(), sparse_structure_sampler_params={"steps": 2})
     assert type(first) is Object3DPipelineOutput
     assert len(first.objects) == 1
     assert type(first.objects[0]) is SparseVoxelAsset
@@ -105,10 +90,7 @@ def test_reviewed_sparse_structure_pipeline_is_deterministic_and_uses_released_d
     assert pooled.metadata["resolution"] == 32
     torch.testing.assert_close(pooled.grid_transform, trellis_grid_transform(32))
     full = pipeline(
-        image,
-        sparse_structure_latents=latents,
-        sparse_structure_sampler_params={"steps": 1},
-        pipeline_type="1024",
+        image, sparse_structure_latents=latents, sparse_structure_sampler_params={"steps": 1}, pipeline_type="1024"
     ).objects[0]
     assert torch.equal(full.coordinates, torch.argwhere(logits[0, 0] > 0))
     assert full.metadata["resolution"] == 64
@@ -297,11 +279,7 @@ def test_slat_and_ovoxel_assets_preserve_centered_grid_and_world_transform(tiny_
 
 def test_missing_slat_components_fail_explicitly(tiny_trellis2_pipeline):
     with pytest.raises(RuntimeError, match="shape SLAT"):
-        tiny_trellis2_pipeline(
-            torch.zeros(3, 8, 8),
-            formats=("shape_slat",),
-            pipeline_type="512",
-        )
+        tiny_trellis2_pipeline(torch.zeros(3, 8, 8), formats=("shape_slat",), pipeline_type="512")
     with pytest.raises(ValueError, match="max_num_tokens"):
         tiny_trellis2_pipeline(torch.zeros(3, 8, 8), max_num_tokens=0)
 
@@ -309,11 +287,7 @@ def test_missing_slat_components_fail_explicitly(tiny_trellis2_pipeline):
 @pytest.mark.parametrize("pipeline_type", ("unknown", "", 1024))
 def test_pipeline_type_is_validated_for_sparse_only_calls(tiny_trellis2_pipeline, pipeline_type):
     with pytest.raises(ValueError, match="pipeline_type must be one of"):
-        tiny_trellis2_pipeline(
-            torch.zeros(3, 8, 8),
-            formats=("sparse_structure",),
-            pipeline_type=pipeline_type,
-        )
+        tiny_trellis2_pipeline(torch.zeros(3, 8, 8), formats=("sparse_structure",), pipeline_type=pipeline_type)
 
 
 def test_mesh_format_runs_on_cpu_and_textured_mesh_is_an_explicit_postprocess(

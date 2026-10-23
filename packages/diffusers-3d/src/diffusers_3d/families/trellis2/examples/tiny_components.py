@@ -1,8 +1,6 @@
-"""Randomly initialised tiny TRELLIS.2 components for running the examples without a checkpoint.
+"""Randomly initialised tiny TRELLIS.2 components so the examples run on CPU in seconds without a checkpoint.
 
-This is test scaffolding, not part of the normal user path. With a converted checkpoint you load the
-pipeline with ``Trellis2ImageTo3DPipeline.from_pretrained(path)`` and never construct components by
-hand. The tiny pipeline exists so the examples and docs can be executed on CPU in seconds.
+Real use loads a converted checkpoint with ``Trellis2ImageTo3DPipeline.from_pretrained(path)`` instead.
 """
 
 from __future__ import annotations
@@ -22,12 +20,7 @@ from diffusers_3d import (
 
 
 def build_tiny_pipeline(*, include_slat: bool = False) -> Trellis2ImageTo3DPipeline:
-    """Assemble a TRELLIS.2 pipeline from ``tiny_config()`` components with random weights.
-
-    Component keyword names are the pipeline's constructor arguments and match the subfolders of a
-    saved checkpoint. ``include_slat=True`` adds the shape SLAT, texture SLAT, and O-Voxel decoder
-    stages so the full pipeline runs end to end.
-    """
+    """A TRELLIS.2 pipeline of random ``tiny_config()`` components; ``include_slat`` adds the SLAT stages."""
 
     torch.manual_seed(0)
     components: dict[str, object] = {

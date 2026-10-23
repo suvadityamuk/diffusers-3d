@@ -1,28 +1,16 @@
-# Backend constraints
+# Backend source records
 
-This directory records audited source revisions and build constraints for dependencies that cannot be represented by
-portable PyPI extras.
+Each `.txt` file pins one optional backend that has no usable PyPI wheel to an immutable upstream commit. Its
+comment header names the package and import, the license, and how to build it. No externally hosted wheel is
+approved, and mutable branches are not allowed.
 
-Every source-identity pin must include:
+These records fix source identity only. They are not a tested build matrix: record the Python, PyTorch, CUDA/HIP,
+compiler, operating system, and GPU architecture of any build you rely on.
 
-- the immutable source commit;
-- package and import names;
-- license classification;
-- build-isolation requirements;
-- a checksum for any externally hosted wheel.
+## TRELLIS.2 native backends
 
-Source pins do not establish a supported build matrix. A full compatibility
-record additionally includes the tested Python, PyTorch, CUDA/HIP, compiler,
-operating-system, and GPU architecture combination plus the package report from
-the manual accelerated lane.
-
-Do not add mutable branches or unverified third-party wheels.
-
-The three TRELLIS.2 native records are intentionally separate because the
-`o_voxel` source metadata names FlexGEMM and CuMesh without immutable
-revisions. Install the two pinned dependencies first, then install O-Voxel
-with dependency resolution disabled so its mutable transitive Git
-requirements cannot replace those pins:
+`o_voxel` names FlexGEMM and CuMesh as unpinned Git dependencies. Install the two pinned records first, then
+O-Voxel without dependency resolution so those pins are not replaced:
 
 ```bash
 python -m pip install \
@@ -32,13 +20,12 @@ python -m pip install --no-deps --no-build-isolation \
   -r packages/diffusers-3d/requirements/backends/o-voxel.txt
 ```
 
-These records establish source identity only. They do not claim a completed
-GPU compatibility run; record the Python, PyTorch, accelerator runtime,
-compiler, operating system, GPU architecture, and package report in the
-manual accelerated lane before treating a build as supported.
+CuMesh bundles cubvh under NVIDIA's non-commercial Source Code License.
 
-Restricted research backends are pinned separately and require explicit
-license review before installation:
+## Research-only backends
+
+nvdiffrast, diffoctreerast, and the mip-splatting Gaussian rasterizer carry non-commercial research licenses.
+Review those licenses before installing them:
 
 ```bash
 python -m pip install --no-build-isolation \
@@ -47,6 +34,6 @@ python -m pip install --no-build-isolation \
   -r packages/diffusers-3d/requirements/backends/mip-splatting.txt
 ```
 
-The pinned nvdiffrec tree has no Python build metadata. Its source-only record
-is `requirements/backends/nvdiffrec.txt`; the registry rejects it unless an
-audited package exposes matching PEP 610 direct-URL provenance.
+`nvdiffrec.txt` is a source-only record: the pinned tree has no Python build metadata, so it cannot be installed
+with pip. The registry reports `nvdiffrec_render` as unavailable unless an audited package records PEP 610
+direct-URL provenance for that exact commit.

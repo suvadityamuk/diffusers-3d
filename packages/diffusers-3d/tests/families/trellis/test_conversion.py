@@ -22,8 +22,7 @@ pytestmark = pytest.mark.integration
 
 def _write_component(root, stem, upstream_name, model):
     (root / f"{stem}.json").write_text(
-        json.dumps({"name": upstream_name, "args": dict(model.config)}),
-        encoding="utf-8",
+        json.dumps({"name": upstream_name, "args": dict(model.config)}), encoding="utf-8"
     )
     save_file(
         {key: value.detach().contiguous() for key, value in model.state_dict().items()}, root / f"{stem}.safetensors"
@@ -34,12 +33,7 @@ def _pipeline_config(*, normalization_channels: int = 4):
     sampler = {
         "name": "FlowEulerGuidanceIntervalSampler",
         "args": {"sigma_min": 1e-5},
-        "params": {
-            "steps": 25,
-            "cfg_strength": 5.0,
-            "cfg_interval": [0.5, 1.0],
-            "rescale_t": 3.0,
-        },
+        "params": {"steps": 25, "cfg_strength": 5.0, "cfg_interval": [0.5, 1.0], "rescale_t": 3.0},
     }
     return {
         "name": "TrellisImageTo3DPipeline",
@@ -53,10 +47,7 @@ def _pipeline_config(*, normalization_channels: int = 4):
                 "slat_decoder_mesh": "slat_mesh",
                 "slat_decoder_rf": "slat_rf",
             },
-            "slat_normalization": {
-                "mean": [0.0] * normalization_channels,
-                "std": [1.0] * normalization_channels,
-            },
+            "slat_normalization": {"mean": [0.0] * normalization_channels, "std": [1.0] * normalization_channels},
             "slat_sampler": sampler,
             "sparse_structure_sampler": sampler,
         },
@@ -79,11 +70,7 @@ def test_synthetic_conversion_converts_slat_components_and_auto_loads(tmp_path, 
     # The released ``dinov2_vitl14_reg`` lives on the Hub as a Transformers ``Dinov2WithRegistersModel``.
     dinov2.save_pretrained(tmp_path / "dinov2")
 
-    output = convert_trellis_checkpoint(
-        source,
-        tmp_path / "converted",
-        encoder_path=tmp_path / "dinov2",
-    )
+    output = convert_trellis_checkpoint(source, tmp_path / "converted", encoder_path=tmp_path / "dinov2")
     report = json.loads((output / "trellis_conversion.json").read_text(encoding="utf-8"))
     model_index = json.loads((output / "model_index.json").read_text(encoding="utf-8"))
     sidecar = json.loads((output / "object3d_model_index.json").read_text(encoding="utf-8"))
@@ -145,11 +132,7 @@ def test_converter_requires_every_referenced_component_pair(tmp_path, tiny_trell
     image_encoder.save_pretrained(tmp_path / "dinov2")
 
     with pytest.raises(FileNotFoundError, match="slat_flow"):
-        convert_trellis_checkpoint(
-            source,
-            tmp_path / "converted",
-            encoder_path=tmp_path / "dinov2",
-        )
+        convert_trellis_checkpoint(source, tmp_path / "converted", encoder_path=tmp_path / "dinov2")
 
 
 def test_converter_strictly_rejects_pipeline_component_drift(tmp_path):
@@ -159,8 +142,4 @@ def test_converter_strictly_rejects_pipeline_component_drift(tmp_path):
     del config["args"]["models"]["slat_decoder_rf"]
     (source / "pipeline.json").write_text(json.dumps(config), encoding="utf-8")
     with pytest.raises(ValueError, match="missing=.*slat_decoder_rf"):
-        convert_trellis_checkpoint(
-            source,
-            tmp_path / "converted",
-            encoder_path=tmp_path / "dinov2",
-        )
+        convert_trellis_checkpoint(source, tmp_path / "converted", encoder_path=tmp_path / "dinov2")

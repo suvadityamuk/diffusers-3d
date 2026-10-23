@@ -14,9 +14,7 @@ TensorDataT = TypeVar("TensorDataT", bound="TensorDataMixin")
 def _iter_tensors(value: Any, prefix: str) -> list[tuple[str, torch.Tensor]]:
     if isinstance(value, torch.Tensor):
         return [(prefix, value)]
-    if isinstance(value, TensorDataMixin):
-        return [(f"{prefix}.{name}" if prefix else name, tensor) for name, tensor in value.tensor_items()]
-    if isinstance(value, Object3D):
+    if isinstance(value, (TensorDataMixin, Object3D)):
         return [(f"{prefix}.{name}" if prefix else name, tensor) for name, tensor in value.tensor_items()]
     if isinstance(value, Mapping):
         tensors = []
@@ -43,9 +41,7 @@ def _move_value(
     if isinstance(value, torch.Tensor):
         target_dtype = dtype if value.is_floating_point() or value.is_complex() else None
         return value.to(device=device, dtype=target_dtype, non_blocking=non_blocking)
-    if isinstance(value, TensorDataMixin):
-        return value.to(device=device, dtype=dtype, non_blocking=non_blocking)
-    if isinstance(value, Object3D):
+    if isinstance(value, (TensorDataMixin, Object3D)):
         return value.to(device=device, dtype=dtype, non_blocking=non_blocking)
     if isinstance(value, Mapping):
         return {

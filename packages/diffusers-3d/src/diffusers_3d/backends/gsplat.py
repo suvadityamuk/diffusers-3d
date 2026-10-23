@@ -12,10 +12,9 @@ from .types import BackendCapability
 
 
 class GsplatBackend:
-    """Explicit adapter from package-owned Gaussian and camera conventions to ``gsplat``.
+    """Rasterize package Gaussians and cameras with gsplat's documented ``rasterization`` API.
 
-    The adapter uses gsplat's documented rasterization API directly. It does not
-    contain or import Graphdeco rasterizer code.
+    It neither contains nor imports Graphdeco rasterizer code.
     """
 
     def __init__(

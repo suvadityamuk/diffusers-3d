@@ -121,8 +121,7 @@ DEFAULT_BACKEND_SPECS = (
         capabilities=frozenset({BackendCapability.SPARSE_COMPUTE}),
         support_level=BackendSupportLevel.ACCELERATED,
         license_class=BackendLicenseClass.PERMISSIVE,
-        # PyTorch exposes HIP devices through the "cuda" device type. A
-        # separate "rocm" torch.device string is invalid and is not selectable.
+        # PyTorch exposes ROCm/HIP devices as "cuda"; there is no "rocm" device type.
         devices=frozenset({"cuda"}),
         dtypes=frozenset({"float16", "bfloat16", "float32"}),
         differentiable=True,
@@ -297,7 +296,7 @@ DEFAULT_BACKEND_SPECS = (
 
 
 def create_default_backend_registry() -> BackendRegistry:
-    """Create an independent mutable registry populated with planned backends."""
+    """Return a new, mutable registry holding :data:`DEFAULT_BACKEND_SPECS`."""
 
     return BackendRegistry(DEFAULT_BACKEND_SPECS)
 

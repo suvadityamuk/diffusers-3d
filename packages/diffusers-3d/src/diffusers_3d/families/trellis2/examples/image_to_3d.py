@@ -67,17 +67,11 @@ ALL_STAGE_FORMATS = ("sparse_structure", "shape_slat", "texture_slat", "o_voxel"
 def load_pipeline(
     model: str, *, device: str, dtype: torch.dtype, image_encoder_repo: str | None
 ) -> Trellis2ImageTo3DPipeline:
-    """A converted checkpoint loads like any Diffusers pipeline.
+    """Load a converted checkpoint (local directory or Hub ID) like any Diffusers pipeline.
 
-    ``model`` is a local directory or a Hub repository ID. ``AutoPipelineForImageTo3D`` reads the
-    ``object3d_model_index.json`` sidecar, verifies each component's class before downloading, and
-    returns the concrete pipeline. If you already know the family, the concrete class works too::
-
-        Trellis2ImageTo3DPipeline.from_pretrained(model)
-
-    The published repository leaves out the DINOv3 image encoder because its weights are gated under
-    Meta's license; ``image_encoder_repo`` names the gated Hub repository to load it from, and passing
-    the object to ``from_pretrained`` uses it instead of an ``image_encoder/`` subfolder.
+    ``AutoPipelineForImageTo3D`` reads the ``object3d_model_index.json`` sidecar and returns the concrete
+    pipeline; ``Trellis2ImageTo3DPipeline.from_pretrained(model)`` works too. The published repository leaves
+    out the gated DINOv3 image encoder, so ``image_encoder_repo`` loads it separately and passes it in.
     """
 
     components = {}
@@ -268,12 +262,7 @@ def main(argv: Sequence[str] | None = None) -> None:
 
     conditions = [load_image_condition(path) for path in args.image] or [synthetic_image_condition()]
     output = generate(
-        pipeline,
-        conditions,
-        formats=formats,
-        steps=steps,
-        guidance_strength=args.guidance_strength,
-        seed=args.seed,
+        pipeline, conditions, formats=formats, steps=steps, guidance_strength=args.guidance_strength, seed=args.seed
     )
 
     args.output.mkdir(parents=True, exist_ok=True)

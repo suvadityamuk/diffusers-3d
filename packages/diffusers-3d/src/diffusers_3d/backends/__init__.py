@@ -1,4 +1,4 @@
-"""Optional backend contracts, discovery, policy, and selection.
+"""Optional 3D backends (registry, discovery, adapters) and the plain-PyTorch rasterizer and texture bakers.
 
 Importing this module never imports an optional third-party backend.
 """

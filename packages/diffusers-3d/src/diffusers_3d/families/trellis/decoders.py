@@ -36,6 +36,7 @@ from .models import (
     TrellisFeedForwardNet,
     TrellisLayerNorm32,
     TrellisSparseConv3d,
+    _unpatchify_3d,
 )
 from .sparse import TrellisSparseTensor, trellis_grid_transform
 from .sparse_ops import SparseWindowPartition, sparse_subdivide, sparse_window_partition, submanifold_neighbors
@@ -109,45 +110,20 @@ class TrellisResBlock3d(nn.Module):
 
 
 class TrellisUpsampleBlock3d(nn.Module):
-    def __init__(self, in_channels: int, out_channels: int, mode: str = "conv") -> None:
+    """Upstream ``UpsampleBlock3d`` in its released ``"conv"`` mode: conv to 8x channels, then pixel-shuffle by 2."""
+
+    def __init__(self, in_channels: int, out_channels: int) -> None:
         super().__init__()
-        if mode not in {"conv", "nearest"}:
-            raise ValueError("upsample mode must be 'conv' or 'nearest'")
-        if mode == "nearest" and in_channels != out_channels:
-            raise ValueError("nearest upsampling requires matching channel counts")
         self.in_channels = in_channels
         self.out_channels = out_channels
-        self.mode = mode
-        if mode == "conv":
-            self.conv = nn.Conv3d(in_channels, out_channels * 8, 3, padding=1)
+        self.conv = nn.Conv3d(in_channels, out_channels * 8, 3, padding=1)
 
     def forward(self, hidden_states: torch.Tensor) -> torch.Tensor:
-        if self.mode == "nearest":
-            return F.interpolate(hidden_states, scale_factor=2, mode="nearest")
-        hidden_states = self.conv(hidden_states)
-        batch_size, channels, depth, height, width = hidden_states.shape
-        hidden_states = hidden_states.reshape(
-            batch_size,
-            channels // 8,
-            2,
-            2,
-            2,
-            depth,
-            height,
-            width,
-        )
-        hidden_states = hidden_states.permute(0, 1, 5, 2, 6, 3, 7, 4)
-        return hidden_states.reshape(
-            batch_size,
-            channels // 8,
-            depth * 2,
-            height * 2,
-            width * 2,
-        )
+        return _unpatchify_3d(self.conv(hidden_states), 2)
 
 
 class TrellisSparseStructureDecoder(Object3DModel):
-    """Faithful dense TRELLIS sparse-structure occupancy decoder."""
+    """TRELLIS dense sparse-structure decoder: latent grid -> occupancy logits (``SparseStructureDecoder``)."""
 
     family_id = "trellis"
     component_role = "sparse_structure_decoder"
@@ -191,9 +167,7 @@ class TrellisSparseStructureDecoder(Object3DModel):
                 blocks.append(TrellisUpsampleBlock3d(channel_count, channels[index + 1]))
         self.blocks = nn.ModuleList(blocks)
         self.out_layer = nn.Sequential(
-            _decoder_norm(norm_type, channels[-1]),
-            nn.SiLU(),
-            nn.Conv3d(channels[-1], out_channels, 3, padding=1),
+            _decoder_norm(norm_type, channels[-1]), nn.SiLU(), nn.Conv3d(channels[-1], out_channels, 3, padding=1)
         )
         if use_fp16:
             self.middle_block.to(dtype=torch.float16)
@@ -224,10 +198,7 @@ class TrellisSparseStructureDecoder(Object3DModel):
         }
 
     def forward(
-        self,
-        hidden_states: torch.Tensor,
-        *,
-        return_dict: bool = True,
+        self, hidden_states: torch.Tensor, *, return_dict: bool = True
     ) -> TrellisSparseStructureDecoderOutput | tuple[torch.Tensor]:
         if hidden_states.ndim != 5 or hidden_states.shape[1] != self.latent_channels:
             raise ValueError(f"hidden_states must have shape (batch, {self.latent_channels}, depth, height, width)")
@@ -262,11 +233,7 @@ class TrellisSparseStructureDecoder(Object3DModel):
                 SparseVoxelAsset(
                     coordinates=coordinates,
                     features=features,
-                    grid_transform=trellis_grid_transform(
-                        resolution,
-                        device=logits.device,
-                        dtype=logits.dtype,
-                    ),
+                    grid_transform=trellis_grid_transform(resolution, device=logits.device, dtype=logits.dtype),
                     coordinate_system=CoordinateSystem.RIGHT_HANDED_Z_UP,
                     metadata={
                         "family": "trellis",
@@ -308,12 +275,7 @@ class TrellisSparseTransformerBlock(nn.Module):
         self.shift_window = shift_window
         self.norm1 = TrellisLayerNorm32(channels, elementwise_affine=False, eps=1e-6)
         self.norm2 = TrellisLayerNorm32(channels, elementwise_affine=False, eps=1e-6)
-        self.attn = TrellisAttention(
-            channels,
-            num_heads,
-            use_rope=use_rope,
-            qk_rms_norm=qk_rms_norm,
-        )
+        self.attn = TrellisAttention(channels, num_heads, use_rope=use_rope, qk_rms_norm=qk_rms_norm)
         self.mlp = TrellisFeedForwardNet(channels, mlp_ratio)
 
     def forward(
@@ -341,10 +303,7 @@ class TrellisSparseTransformerBlock(nn.Module):
             positions = torch.nonzero(batch_indices == batch_index, as_tuple=False).reshape(-1)
             batch_states = hidden_states[positions].unsqueeze(0)
             batch_coordinates = coordinates[positions].unsqueeze(0)
-            batch_states = batch_states + self.attn(
-                self.norm1(batch_states),
-                indices=batch_coordinates,
-            )
+            batch_states = batch_states + self.attn(self.norm1(batch_states), indices=batch_coordinates)
             batch_states = batch_states + self.mlp(self.norm2(batch_states))
             output = output.index_copy(0, positions, batch_states.squeeze(0))
         return output
@@ -474,12 +433,7 @@ class _TrellisSLatDecoderBase(Object3DModel):
             partition = partitions.get(block.shift_window)
             if torch.is_grad_enabled() and self.gradient_checkpointing:
                 features = self._gradient_checkpointing_func(
-                    block,
-                    features,
-                    batch_indices,
-                    coordinates,
-                    hidden_states.batch_size,
-                    partition,
+                    block, features, batch_indices, coordinates, hidden_states.batch_size, partition
                 )
             else:
                 features = block(features, batch_indices, coordinates, hidden_states.batch_size, partition)
@@ -549,8 +503,7 @@ class TrellisSLatGaussianDecoder(_TrellisSLatDecoderBase):
         self.out_channels = num_gaussians * 14
         self.out_layer = nn.Linear(model_channels, self.out_channels)
         perturbation = torch.tensor(
-            [_hammersley_3d(index, num_gaussians) for index in range(num_gaussians)],
-            dtype=torch.float32,
+            [_hammersley_3d(index, num_gaussians) for index in range(num_gaussians)], dtype=torch.float32
         )
         perturbation = (perturbation * 2 - 1) / float(representation_config["voxel_size"])
         self.register_buffer("offset_perturbation", torch.atanh(perturbation))
@@ -561,13 +514,7 @@ class TrellisSLatGaussianDecoder(_TrellisSLatDecoderBase):
     @staticmethod
     def production_representation_config() -> dict[str, Any]:
         return {
-            "lr": {
-                "_xyz": 1.0,
-                "_features_dc": 1.0,
-                "_opacity": 1.0,
-                "_scaling": 1.0,
-                "_rotation": 0.1,
-            },
+            "lr": {"_xyz": 1.0, "_features_dc": 1.0, "_opacity": 1.0, "_scaling": 1.0, "_rotation": 0.1},
             "perturb_offset": True,
             "voxel_size": 1.5,
             "num_gaussians": 32,
@@ -612,9 +559,7 @@ class TrellisSLatGaussianDecoder(_TrellisSLatDecoderBase):
         }
 
     def _to_assets(
-        self,
-        hidden_states: TrellisSparseTensor,
-        parameters: torch.Tensor,
+        self, hidden_states: TrellisSparseTensor, parameters: torch.Tensor
     ) -> tuple[GaussianSplatAsset, ...]:
         count = int(self.rep_config["num_gaussians"])
         learning_rates = self.rep_config["lr"]
@@ -685,10 +630,7 @@ class TrellisSLatGaussianDecoder(_TrellisSLatDecoderBase):
         return tuple(assets)
 
     def forward(
-        self,
-        hidden_states: TrellisSparseTensor,
-        *,
-        return_dict: bool = True,
+        self, hidden_states: TrellisSparseTensor, *, return_dict: bool = True
     ) -> TrellisGaussianDecoderOutput | tuple[tuple[GaussianSplatAsset, ...]]:
         self._check_input(hidden_states)
         features = self._run_torso(hidden_states)
@@ -896,10 +838,7 @@ class TrellisSLatMeshDecoder(_TrellisSLatDecoderBase):
         return tuple(assets)
 
     def forward(
-        self,
-        hidden_states: TrellisSparseTensor,
-        *,
-        return_dict: bool = True,
+        self, hidden_states: TrellisSparseTensor, *, return_dict: bool = True
     ) -> TrellisMeshDecoderOutput | tuple[tuple[MeshAsset, ...]]:
         self._check_input(hidden_states)
         features = self._run_torso(hidden_states)
@@ -1035,10 +974,7 @@ class TrellisSLatRadianceFieldDecoder(_TrellisSLatDecoderBase):
         return tuple(assets)
 
     def forward(
-        self,
-        hidden_states: TrellisSparseTensor,
-        *,
-        return_dict: bool = True,
+        self, hidden_states: TrellisSparseTensor, *, return_dict: bool = True
     ) -> TrellisRadianceFieldDecoderOutput | tuple[tuple[RadianceFieldAsset, ...]]:
         self._check_input(hidden_states)
         features = self._run_torso(hidden_states)

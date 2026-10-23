@@ -21,12 +21,7 @@ from transformers.image_utils import IMAGENET_DEFAULT_MEAN, IMAGENET_DEFAULT_STD
 from ...backends import Trellis2PBRPostprocessFacade, ovoxel_to_mesh
 from ...data import ImageCondition, preprocess_image_condition
 from ...execution.lora import Object3DLoraLoaderMixin
-from ...execution.metadata import (
-    ContributionStatus,
-    Object3DComponentSpec,
-    ReviewStatus,
-    fully_qualified_class_name,
-)
+from ...execution.metadata import ContributionStatus, Object3DComponentSpec, ReviewStatus, fully_qualified_class_name
 from ...execution.pipelines import Object3DPipeline
 from ...objects import (
     Latent3DOutput,
@@ -63,19 +58,16 @@ _TEXTURE_SAMPLER_DEFAULTS = {
     "guidance_interval": [0.6, 0.9],
     "rescale_t": 3.0,
 }
-_CAPABILITY_LIMITATIONS = {
-    "official_full_checkpoint_parity": False,
-    "production_gpu_quality_verified": False,
-}
+_CAPABILITY_LIMITATIONS = {"official_full_checkpoint_parity": False, "production_gpu_quality_verified": False}
 
 
 @dataclass(frozen=True)
 class _PipelineType:
-    """One released preset, expressed relative to the components so tiny and production layouts both work.
+    """One released preset, relative to the components so tiny and production layouts both work.
 
-    ``sparse_structure_pooling`` max-pools the decoded occupancy grid before the first SLAT stage; ``stages``
-    names the flow models to run (``"512"`` or ``"1024"``); ``cascade_scale`` is the second stage's latent grid
-    relative to the first (2 for 1024, 3 for 1536), or ``None`` for a single stage.
+    ``sparse_structure_pooling`` max-pools the decoded occupancy before the first SLAT stage; ``stages`` names the
+    flow models to run; ``cascade_scale`` is the second stage's latent grid relative to the first (2 for 1024,
+    3 for 1536), or ``None`` for a single stage.
     """
 
     sparse_structure_pooling: int
@@ -92,7 +84,17 @@ _PIPELINE_TYPES = {
 # The 1024 stages condition on a 1024x1024 image, twice the 512 side (``get_cond(image, 1024)`` upstream).
 _STAGE_IMAGE_SCALE = {"512": 1, "1024": 2}
 _UPSTREAM_CASCADE_STEP = 128
-_UPSTREAM_CASCADE_FLOOR = 1024
+
+
+def _component_spec(name: str, component_type: type, *, optional: bool = False) -> Object3DComponentSpec:
+    return Object3DComponentSpec(
+        name=name,
+        expected_class=fully_qualified_class_name(component_type),
+        subfolder=name,
+        optional=optional,
+        review_status=ReviewStatus.REVIEWED,
+        loading_eligible=True,
+    )
 
 
 def _sampler_parameters(defaults: Mapping[str, Any], overrides: Mapping[str, Any] | None) -> dict[str, Any]:
@@ -124,12 +126,10 @@ def _sampler_parameters(defaults: Mapping[str, Any], overrides: Mapping[str, Any
 class Trellis2ImageTo3DPipeline(Object3DPipeline, Object3DLoraLoaderMixin):
     """TRELLIS.2 image-to-3D: sparse structure -> shape SLAT -> texture SLAT -> O-Voxels, all in plain PyTorch.
 
-    The four released presets are ``pipeline_type`` values. ``"512"`` and ``"1024"`` run one shape and one
-    texture flow model; the cascades sample the 512 shape model first, grow its coordinates with the shape
-    decoder, and sample the 1024 models on the grown grid. Component names follow the released
-    ``pipeline.json``: ``shape_slat_flow_model`` / ``texture_slat_flow_model`` are the 512 models, the
-    ``*_1024`` components are the 1024 models. Everything runs in plain PyTorch on any device; only the
-    textured-mesh postprocess needs CuMesh.
+    ``pipeline_type`` picks a released preset. ``"512"`` and ``"1024"`` run one shape and one texture flow model;
+    the cascades sample the 512 shape model, grow its coordinates with the shape decoder, and sample the 1024
+    models on the grown grid. ``shape_slat_flow_model`` / ``texture_slat_flow_model`` are the 512 models and the
+    ``*_1024`` components the 1024 ones. Only the textured-mesh postprocess needs CuMesh.
     """
 
     family_id = "trellis2"
@@ -141,102 +141,18 @@ class Trellis2ImageTo3DPipeline(Object3DPipeline, Object3DLoraLoaderMixin):
     contribution_status = ContributionStatus.REVIEWED_PACKAGE
     review_status = ReviewStatus.REVIEWED
     component_specs = (
-        Object3DComponentSpec(
-            name="image_encoder",
-            expected_class=fully_qualified_class_name(DINOv3ViTModel),
-            subfolder="image_encoder",
-            optional=False,
-            review_status=ReviewStatus.REVIEWED,
-            loading_eligible=True,
-        ),
-        Object3DComponentSpec(
-            name="sparse_structure_flow_model",
-            expected_class=fully_qualified_class_name(Trellis2SparseStructureFlowModel),
-            subfolder="sparse_structure_flow_model",
-            optional=False,
-            review_status=ReviewStatus.REVIEWED,
-            loading_eligible=True,
-        ),
-        Object3DComponentSpec(
-            name="sparse_structure_decoder",
-            expected_class=fully_qualified_class_name(Trellis2SparseStructureDecoder),
-            subfolder="sparse_structure_decoder",
-            optional=False,
-            review_status=ReviewStatus.REVIEWED,
-            loading_eligible=True,
-        ),
-        Object3DComponentSpec(
-            name="sparse_structure_scheduler",
-            expected_class=fully_qualified_class_name(Trellis2FlowEulerScheduler),
-            subfolder="sparse_structure_scheduler",
-            optional=False,
-            review_status=ReviewStatus.REVIEWED,
-            loading_eligible=True,
-        ),
-        Object3DComponentSpec(
-            name="shape_slat_flow_model",
-            expected_class=fully_qualified_class_name(Trellis2SLatFlowModel),
-            subfolder="shape_slat_flow_model",
-            optional=True,
-            review_status=ReviewStatus.REVIEWED,
-            loading_eligible=True,
-        ),
-        Object3DComponentSpec(
-            name="shape_slat_flow_model_1024",
-            expected_class=fully_qualified_class_name(Trellis2SLatFlowModel),
-            subfolder="shape_slat_flow_model_1024",
-            optional=True,
-            review_status=ReviewStatus.REVIEWED,
-            loading_eligible=True,
-        ),
-        Object3DComponentSpec(
-            name="shape_slat_scheduler",
-            expected_class=fully_qualified_class_name(Trellis2FlowEulerScheduler),
-            subfolder="shape_slat_scheduler",
-            optional=True,
-            review_status=ReviewStatus.REVIEWED,
-            loading_eligible=True,
-        ),
-        Object3DComponentSpec(
-            name="shape_slat_decoder",
-            expected_class=fully_qualified_class_name(Trellis2ShapeDualGridDecoder),
-            subfolder="shape_slat_decoder",
-            optional=True,
-            review_status=ReviewStatus.REVIEWED,
-            loading_eligible=True,
-        ),
-        Object3DComponentSpec(
-            name="texture_slat_flow_model",
-            expected_class=fully_qualified_class_name(Trellis2SLatFlowModel),
-            subfolder="texture_slat_flow_model",
-            optional=True,
-            review_status=ReviewStatus.REVIEWED,
-            loading_eligible=True,
-        ),
-        Object3DComponentSpec(
-            name="texture_slat_flow_model_1024",
-            expected_class=fully_qualified_class_name(Trellis2SLatFlowModel),
-            subfolder="texture_slat_flow_model_1024",
-            optional=True,
-            review_status=ReviewStatus.REVIEWED,
-            loading_eligible=True,
-        ),
-        Object3DComponentSpec(
-            name="texture_slat_scheduler",
-            expected_class=fully_qualified_class_name(Trellis2FlowEulerScheduler),
-            subfolder="texture_slat_scheduler",
-            optional=True,
-            review_status=ReviewStatus.REVIEWED,
-            loading_eligible=True,
-        ),
-        Object3DComponentSpec(
-            name="pbr_decoder",
-            expected_class=fully_qualified_class_name(Trellis2PBRSparseDecoder),
-            subfolder="pbr_decoder",
-            optional=True,
-            review_status=ReviewStatus.REVIEWED,
-            loading_eligible=True,
-        ),
+        _component_spec("image_encoder", DINOv3ViTModel),
+        _component_spec("sparse_structure_flow_model", Trellis2SparseStructureFlowModel),
+        _component_spec("sparse_structure_decoder", Trellis2SparseStructureDecoder),
+        _component_spec("sparse_structure_scheduler", Trellis2FlowEulerScheduler),
+        _component_spec("shape_slat_flow_model", Trellis2SLatFlowModel, optional=True),
+        _component_spec("shape_slat_flow_model_1024", Trellis2SLatFlowModel, optional=True),
+        _component_spec("shape_slat_scheduler", Trellis2FlowEulerScheduler, optional=True),
+        _component_spec("shape_slat_decoder", Trellis2ShapeDualGridDecoder, optional=True),
+        _component_spec("texture_slat_flow_model", Trellis2SLatFlowModel, optional=True),
+        _component_spec("texture_slat_flow_model_1024", Trellis2SLatFlowModel, optional=True),
+        _component_spec("texture_slat_scheduler", Trellis2FlowEulerScheduler, optional=True),
+        _component_spec("pbr_decoder", Trellis2PBRSparseDecoder, optional=True),
     )
     model_cpu_offload_seq = (
         "image_encoder->sparse_structure_flow_model->sparse_structure_decoder->"
@@ -332,10 +248,7 @@ class Trellis2ImageTo3DPipeline(Object3DPipeline, Object3DLoraLoaderMixin):
         default_pipeline_type = self._validate_pipeline_type(default_pipeline_type)
 
         def normalization(
-            mean: Sequence[float] | None,
-            std: Sequence[float] | None,
-            channels: int | None,
-            name: str,
+            mean: Sequence[float] | None, std: Sequence[float] | None, channels: int | None, name: str
         ) -> tuple[list[float] | None, list[float] | None]:
             if mean is None and std is None:
                 return None, None
@@ -404,10 +317,7 @@ class Trellis2ImageTo3DPipeline(Object3DPipeline, Object3DLoraLoaderMixin):
         return self.config.image_size * _STAGE_IMAGE_SCALE[stage]
 
     def preprocess(
-        self,
-        image: ImageCondition | Sequence[ImageCondition] | torch.Tensor,
-        *,
-        image_size: int | None = None,
+        self, image: ImageCondition | Sequence[ImageCondition] | torch.Tensor, *, image_size: int | None = None
     ) -> torch.Tensor:
         if isinstance(image, torch.Tensor):
             if image.ndim == 3:
@@ -427,10 +337,7 @@ class Trellis2ImageTo3DPipeline(Object3DPipeline, Object3DLoraLoaderMixin):
         image_size = self.config.image_size if image_size is None else image_size
         processed = [
             preprocess_image_condition(
-                condition,
-                image_size=image_size,
-                foreground_scale=1.0,
-                premultiply_before_resize=True,
+                condition, image_size=image_size, foreground_scale=1.0, premultiply_before_resize=True
             ).image
             for condition in conditions
         ]
@@ -451,10 +358,7 @@ class Trellis2ImageTo3DPipeline(Object3DPipeline, Object3DLoraLoaderMixin):
         return F.layer_norm(output.hidden_states[-1], output.hidden_states[-1].shape[-1:])
 
     def encode_conditioning(
-        self,
-        images: torch.Tensor,
-        *,
-        image_size: int | None = None,
+        self, images: torch.Tensor, *, image_size: int | None = None
     ) -> tuple[torch.Tensor, torch.Tensor]:
         conditional = self.encode_image(images, image_size=image_size)
         return conditional, torch.zeros_like(conditional)
@@ -478,31 +382,16 @@ class Trellis2ImageTo3DPipeline(Object3DPipeline, Object3DLoraLoaderMixin):
         return latents.to(device=self._execution_device, dtype=parameter.dtype)
 
     def _sample_dense(
-        self,
-        latents: torch.Tensor,
-        conditional: torch.Tensor,
-        negative: torch.Tensor,
-        parameters: Mapping[str, Any],
+        self, latents: torch.Tensor, conditional: torch.Tensor, negative: torch.Tensor, parameters: Mapping[str, Any]
     ) -> torch.Tensor:
-        scheduler = self.sparse_structure_scheduler
-        scheduler.set_timesteps(parameters["steps"], device=latents.device, rescale_t=parameters["rescale_t"])
-        for timestep in scheduler.timesteps:
-            model_timestep = scheduler.model_timestep(timestep, latents.shape[0], device=latents.device)
-            positive = self.sparse_structure_flow_model(latents, model_timestep, conditional).sample
-            if scheduler.guidance_is_active(timestep, parameters["guidance_interval"]):
-                negative_prediction = self.sparse_structure_flow_model(latents, model_timestep, negative).sample
-                velocity = scheduler.apply_guidance(
-                    positive,
-                    negative_prediction,
-                    parameters["guidance_strength"],
-                    sample=latents,
-                    timestep=timestep,
-                    guidance_rescale=parameters["guidance_rescale"],
-                )
-            else:
-                velocity = positive
-            latents = scheduler.step(velocity, timestep, latents).prev_sample
-        return latents
+        return self._sample_sparse(
+            self.sparse_structure_flow_model,
+            self.sparse_structure_scheduler,
+            latents,
+            conditional,
+            negative,
+            parameters,
+        )
 
     def prepare_slat_latents(
         self,
@@ -556,12 +445,16 @@ class Trellis2ImageTo3DPipeline(Object3DPipeline, Object3DLoraLoaderMixin):
         *,
         concat_cond: TrellisSparseTensor | None = None,
     ) -> TrellisSparseTensor:
+        """Euler sampling with upstream interval CFG; also drives the dense sparse-structure stage."""
+
+        model_kwargs = {} if concat_cond is None else {"concat_cond": concat_cond}
+        batch_size = latents.batch_size if isinstance(latents, TrellisSparseTensor) else latents.shape[0]
         scheduler.set_timesteps(parameters["steps"], device=latents.device, rescale_t=parameters["rescale_t"])
         for timestep in scheduler.timesteps:
-            model_timestep = scheduler.model_timestep(timestep, latents.batch_size, device=latents.device)
-            positive = model(latents, model_timestep, conditional, concat_cond=concat_cond).sample
+            model_timestep = scheduler.model_timestep(timestep, batch_size, device=latents.device)
+            positive = model(latents, model_timestep, conditional, **model_kwargs).sample
             if scheduler.guidance_is_active(timestep, parameters["guidance_interval"]):
-                negative_prediction = model(latents, model_timestep, negative, concat_cond=concat_cond).sample
+                negative_prediction = model(latents, model_timestep, negative, **model_kwargs).sample
                 velocity = scheduler.apply_guidance(
                     positive,
                     negative_prediction,
@@ -577,9 +470,7 @@ class Trellis2ImageTo3DPipeline(Object3DPipeline, Object3DLoraLoaderMixin):
 
     @staticmethod
     def _denormalize(
-        value: TrellisSparseTensor,
-        mean: Sequence[float] | None,
-        std: Sequence[float] | None,
+        value: TrellisSparseTensor, mean: Sequence[float] | None, std: Sequence[float] | None
     ) -> TrellisSparseTensor:
         if mean is None or std is None:
             return value
@@ -717,11 +608,7 @@ class Trellis2ImageTo3DPipeline(Object3DPipeline, Object3DLoraLoaderMixin):
         return tuple(grown), target
 
     def decode_ovoxel(
-        self,
-        shape_slat: TrellisSparseTensor,
-        texture_slat: TrellisSparseTensor | None = None,
-        *,
-        resolution: int,
+        self, shape_slat: TrellisSparseTensor, texture_slat: TrellisSparseTensor | None = None, *, resolution: int
     ) -> tuple[OVoxelAsset, ...]:
         """Decode shape (and optionally texture) SLATs into O-Voxels on a ``resolution``-cubed grid."""
 

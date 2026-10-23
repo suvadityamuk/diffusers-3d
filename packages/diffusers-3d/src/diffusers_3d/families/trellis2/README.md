@@ -1,153 +1,70 @@
 # TRELLIS.2 image-to-3D
 
-This family integrates the MIT-licensed Microsoft TRELLIS.2 implementation at
-revision `75fbf0183001ed9876c8dbb35de6b68552ee08bd`. It is a distinct
-`trellis2` family. The whole released network stack (sparse-structure stage,
-512/1024 shape and texture SLAT flows, shape and PBR decoders) and mesh
-extraction run in plain PyTorch; the PBR-textured mesh postprocess also needs
-a user-installed CuMesh.
+Microsoft TRELLIS.2, ported from upstream revision `75fbf0183001ed9876c8dbb35de6b68552ee08bd`. A sparse-structure
+stage, shape and texture SLAT flows, and two sparse decoders turn one image into an O-Voxel: a dual-grid surface with
+PBR channels. All networks and mesh extraction run in plain PyTorch on any device. MIT license.
 
-A runnable end-to-end example lives in
-[`examples/image_to_3d.py`](examples/image_to_3d.py); see
-[docs/inference.md](../../../../docs/inference.md) for the usage guide.
+```python
+import torch
+from transformers import DINOv3ViTModel
+from diffusers_3d import AutoPipelineForImageTo3D, ImageCondition
 
-## Reviewed sparse-structure path
+image_encoder = DINOv3ViTModel.from_pretrained("facebook/dinov3-vitl16-pretrain-lvd1689m")
+pipeline = AutoPipelineForImageTo3D.from_pretrained(
+    "suvadityamuk/TRELLIS.2-4B-diffusers-3d", image_encoder=image_encoder, dtype=torch.bfloat16
+).to("cuda")
+ovoxel = pipeline(ImageCondition(image=rgba), generator=torch.Generator("cuda").manual_seed(0)).objects[0]
+mesh = pipeline.postprocess_ovoxel(ovoxel, output_format="mesh")
+```
 
-- `Trellis2SparseStructureFlowModel` preserves the released state layout,
-  RoPE, shared modulation, scaled initialization, and self/cross-attention Q/K
-  RMS norms. Tiny CPU float32 output and selected backward gradients match the
-  pinned implementation with identical state and inputs.
-- `Trellis2SparseStructureDecoder` intentionally subclasses the TRELLIS dense
-  decoder because TRELLIS.2 imports that architecture unchanged. Output
-  metadata records the exact `trellis-image-large` checkpoint semantics.
-- The `image_encoder` is a stock Transformers `DINOv3ViTModel`. The pipeline
-  applies ImageNet normalization, takes the last hidden state before the
-  model's own final norm, and applies the released unparameterized layer
-  normalization. Tiny tests build from configuration without downloads.
-- `Trellis2FlowEulerScheduler` implements the TRELLIS.2
-  `w*conditional + (1-w)*negative` CFG equation, x0 guidance rescale and
-  interval, rational `rescale_t`, `t*1000` model input, and Euler updates.
-- `Trellis2ImageTo3DPipeline` round-trips through standard Diffusers save/load
-  and `AutoPipelineForImageTo3D`. Released defaults are 12 steps with the
-  per-stage strengths, rescale values, intervals, and 1024 cascade
-  configuration serialized in the pipeline config. The upstream sparse target
-  mapping is preserved: `512`, `1024_cascade`, and `1536_cascade` pool decoded
-  occupancy by 2, while `1024` keeps the decoder's native grid.
-- Typed RGBA alpha and separate masks are quantized to uint8 before the pinned
-  `>0.8 * 255` foreground crop. The cropped RGBA image is premultiplied on
-  black before Pillow LANCZOS resizes RGB to the pipeline `image_size`, matching
-  the released ordering. Unmasked RGB is treated as an already
-  background-removed full frame; the pipeline never invokes a background
-  remover silently.
+The published repo omits the DINOv3 encoder because its weights are gated under Meta's DINOv3 License. A runnable
+example is in [`examples/image_to_3d.py`](examples/image_to_3d.py).
 
-## O-Voxel object and codecs
+- `formats` picks from `sparse_structure`, `shape_slat`, `texture_slat`, `o_voxel` (default), and `mesh`.
+- `pipeline_type` is `512`, `1024`, `1024_cascade` (default), or `1536_cascade`. Every stage defaults to 12 steps.
+- Images need RGBA, or RGB with a `mask`. RGB without a mask is treated as an already-cropped full frame.
+- Assets are in the right-handed Z-up frame.
+- `postprocess_ovoxel(asset, output_format="textured_mesh")` bakes a PBR-textured mesh. It needs CuMesh installed.
 
-`OVoxelAsset` retains active XYZ coordinates, fractional dual vertices,
-three-axis intersection flags, split weights, base color, metallic, roughness,
-alpha, signed normals, emissive, the native right-handed Z-up grid transform,
-resolution, and AABB.
+## Components
 
-The package-owned O-Voxel adapter has independent capability surfaces:
+| Component | Class | Notes |
+| --- | --- | --- |
+| `image_encoder` | `transformers.DINOv3ViTModel` | last hidden state before the model's own norm, then an unparameterized layer norm |
+| `sparse_structure_flow_model` | `Trellis2SparseStructureFlowModel` | dense transformer with RoPE and Q/K RMS norms |
+| `sparse_structure_decoder` | `Trellis2SparseStructureDecoder` | the TRELLIS Conv3D decoder, unchanged |
+| `shape_slat_flow_model`, `shape_slat_flow_model_1024` | `Trellis2SLatFlowModel` | sparse transformer, 512 and 1024 stages |
+| `texture_slat_flow_model`, `texture_slat_flow_model_1024` | `Trellis2SLatFlowModel` | same, conditioned on the shape SLAT |
+| `shape_slat_decoder` | `Trellis2ShapeDualGridDecoder` | sparse ConvNeXt U-Net to the dual grid |
+| `pbr_decoder` | `Trellis2PBRSparseDecoder` | reuses the shape decoder's subdivision masks |
+| `*_scheduler` | `Trellis2FlowEulerScheduler` | `w * cond + (1 - w) * uncond` guidance with rescale and interval |
 
-- schema conversion and mixed official packing are pure PyTorch: unit-domain
-  channels use uint8 while out-of-cell dual vertices and unbounded split
-  weights retain float16/float32;
-- `.npz` read/write is pure NumPy/Python and defaults to deterministic
-  lexicographic ordering across the uint16 coordinate domain. Files contain
-  only fields accepted by the official reader; pass resolution and AABB back
-  to the package reader when they cannot be inferred. Explicit 30-bit Morton
-  ordering remains available when every coordinate is at most 1023;
-- `.vxz` read/write delegates unsorted global coordinates to
-  `o_voxel.io.read_vxz`/`write_vxz`, whose official runtime performs
-  chunk-local ordering;
-- dual-grid mesh extraction (`ovoxel_to_mesh`) is a plain-PyTorch port of
-  `o_voxel.convert.flexible_dual_grid_to_mesh` whose vertices and faces match
-  the pinned upstream code bit for bit on every device;
-- voxel rendering delegates to `o_voxel.rasterize.VoxelRenderer`.
+## Differences from upstream
 
-`.vxz` is never advertised as a pure codec. It does not encode the original
-grid resolution, so `OVoxelBackend.read_vxz` requires the caller to supply it.
-VXZ v0 also accepts only uint8 attributes, so assets containing unbounded split
-weights are rejected on write; NPZ is the lossless serialization path.
-The pinned `o_voxel` package eagerly imports its PBR postprocess module, which
-imports nvdiffrast; consequently native loading requires both a compiled,
-provenance-verified O-Voxel build and explicit
-`accept_nvdiffrast_research_license=True`. Pure schema and `.npz` paths never
-import that runtime.
-
-## SLAT flows and O-Voxel decoders
-
-`Trellis2SLatFlowModel` is the released full-attention sparse transformer with
-RoPE over voxel coordinates, shared modulation, and Q/K RMS norms. The texture
-form takes a coordinate-aligned `concat_cond` shape SLAT. The 512 and 1024
-checkpoints load with `strict=True`; the `rope_phases` buffer is derived from
-the config and is not part of the state dict, matching upstream.
-
-`Trellis2ShapeDualGridDecoder` and `Trellis2PBRSparseDecoder` are the released
-sparse UNets: ConvNeXt blocks, channel-to-spatial upsampling, and a
-subdivision head per stage that predicts which children to keep. The PBR
-decoder reuses the shape decoder's subdivision masks so both write the same
-cells of one `OVoxelAsset`. `upsample_coordinates` runs the shape decoder's
-first stages to grow the grid for the cascade presets. Sparse convolution,
-pooling, and subdivision come from `families/trellis/sparse_ops.py` and run
-on any device; tiny outputs match the pinned upstream code with FlexGEMM and
-xformers replaced by dense PyTorch in the test.
-
-`formats` accepts `sparse_structure`, `shape_slat`, `texture_slat`, `o_voxel`,
-and `mesh` (vertex-coloured, on any device). The PBR-textured mesh is not a
-`formats` value: call `postprocess_ovoxel(asset, output_format="textured_mesh")`
-once CuMesh is installed.
-
-## Backend and license boundaries
-
-- `FlexGemmBackend` is limited to released submanifold sparse convolution and
-  3D grid sampling. `CuMeshBackend` is limited to repair, simplify, remesh, UV,
-  and BVH operations. This package pins FlexGEMM at
-  `6dd94a859c26ee8246888502eada3dd8ad85532e`; discovery and runtime loading
-  require matching PEP 610 source provenance followed by runtime API/toolchain
-  checks. CuMesh is accepted from any install (tested at
-  `12289e1062f0603f2f0d0771b02e1395d247f26f`) and only runtime-checked. It
-  bundles cubvh under NVIDIA's non-commercial license, and loading it warns
-  that compliance is on the user.
-- Compiled O-Voxel source is not vendored. `.vxz` and voxel rendering are
-  API-tested with fakes in the CPU test matrix and were run once
-  by hand on an A100 against real outputs (see `docs/compatibility.md`).
-- `Trellis2PBRPostprocessFacade` follows upstream `o_voxel.postprocess.to_glb`
-  step for step on CuMesh (hole filling, simplification or remeshing, cleanup,
-  UV unwrapping, BVH reprojection). The texel rasterization and trilinear
-  attribute baking that upstream runs on nvdiffrast and FlexGEMM are plain
-  PyTorch, so the textured mesh needs neither nvdiffrast nor O-Voxel.
-- Production `facebook/dinov3-vitl16-pretrain-lvd1689m` weights are gated on
-  the Hub and governed by the separate DINOv3 License. The package does not
-  redistribute them.
-- Restricted nvdiffrast/nvdiffrec source is excluded.
+- FlexGEMM and xformers are replaced by plain PyTorch (`families/trellis/sparse_ops.py`).
+- `ovoxel_to_mesh` is a plain-PyTorch port of `o_voxel.convert.flexible_dual_grid_to_mesh`. Its output matches
+  upstream bit for bit.
+- The textured mesh follows `o_voxel.postprocess.to_glb` on CuMesh. Texel rasterization and attribute baking are plain
+  PyTorch instead of nvdiffrast, which is research-only licensed. CuMesh bundles cubvh under NVIDIA's non-commercial
+  license; loading it warns.
+- `.vxz` files and voxel rendering need a compiled `o_voxel`, which imports nvdiffrast. Loading it requires
+  `accept_nvdiffrast_research_license=True`. `.npz` read/write is pure NumPy and is the lossless format.
+- Inputs larger than 1024 px are not shrunk first, as upstream does, so large photos can differ slightly.
+- No background removal. Upstream runs a background remover on images without alpha.
 
 ## Conversion
 
-The converted 4B release is published as
-`suvadityamuk/TRELLIS.2-4B-diffusers-3d`. It contains every component except
-the DINOv3 image encoder, whose weights are gated under Meta's license: load it
-with `DINOv3ViTModel.from_pretrained("facebook/dinov3-vitl16-pretrain-lvd1689m")`
-and pass it as `image_encoder=` to `from_pretrained`, which then neither
-downloads nor requires the `image_encoder/` subfolder.
+```bash
+diffusers-3d-convert-trellis2 source/ output/ --image-encoder-path facebook/dinov3-vitl16-pretrain-lvd1689m
+```
 
-`diffusers-3d-convert-trellis2` consumes an official `pipeline.json`, local
-component JSON/safetensors pairs, and a DINOv3 folder or Hub id
-(`--image-encoder-path`). It converts every released component (DINOv3 image
-encoder, sparse-structure flow and decoder, the 512 and 1024 shape and texture
-SLAT flows, and the shape and PBR decoders); a release that ships only the
-sparse-structure stage is also accepted. `scripts/publish_hub_checkpoints.py` is the conversion behind
-the published repository.
+`source/` holds the upstream `pipeline.json` and component `.json`/`.safetensors` pairs. The converter writes every
+component, including the DINOv3 encoder, and `object3d_model_index.json`.
 
-## Explicit limitations
+## Verification
 
-- No official full 4B checkpoint, production-resolution GPU, CuMesh textured
-  mesh, voxel rendering, or visual quality run is part of this package's CPU
-  test matrix.
-- Parity is measured with tiny weights against the pinned upstream code on
-  CPU, for every network. Released state-dict layouts are checked against the
-  published safetensors headers.
-- Background removal and production DINOv3 checkpoint acquisition are outside
-  the offline CPU contract.
+Tiny-weight CPU tests compare every network and the dual-grid mesh extraction against the pinned upstream code. Set
+`DIFFUSERS_3D_TRELLIS2_REFERENCE_ROOT` to the upstream checkout to run them. GPU runs are in
+[docs/compatibility.md](../../../../docs/compatibility.md).
 
-See `LICENSE-MIT` and `NOTICE` for the source and license terms.
+See [LICENSE-MIT](LICENSE-MIT) and [NOTICE](NOTICE).

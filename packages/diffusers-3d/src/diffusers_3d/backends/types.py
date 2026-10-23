@@ -81,10 +81,8 @@ def _as_string_frozenset(value: object, field_name: str) -> frozenset[str]:
 class BackendSpec:
     """Immutable discovery, compatibility, and policy metadata for a backend.
 
-    Import names and distribution names are intentionally separate. For example,
-    ``scikit-image`` provides ``skimage``. Source-only packages may leave
-    ``distribution_names`` empty when their provenance cannot be established
-    safely from Python distribution metadata.
+    Import and distribution names differ (``scikit-image`` provides ``skimage``). Source-only packages may leave
+    ``distribution_names`` empty, in which case ``source_url`` is required.
     """
 
     name: str

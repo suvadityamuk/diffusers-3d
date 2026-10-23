@@ -18,6 +18,12 @@ from .base import TensorDataMixin
 from .types import CoordinateSystem, Metadata, Object3D, Object3DKind
 
 
+def _validate_latents(latents: torch.Tensor) -> None:
+    validate_tensor("latents", latents, floating=True)
+    if latents.ndim < 2:
+        raise TensorShapeError("latents must have at least batch and feature dimensions")
+
+
 @dataclass
 class Latent3DOutput(BaseOutput, TensorDataMixin):
     """Unmaterialized tensor latents produced by a 3D generation stage."""
@@ -33,9 +39,7 @@ class Latent3DOutput(BaseOutput, TensorDataMixin):
     def validate(self, expensive: bool = False) -> None:
         del expensive
         normalize_metadata(self.metadata)
-        validate_tensor("latents", self.latents, floating=True)
-        if self.latents.ndim < 2:
-            raise TensorShapeError("latents must have at least batch and feature dimensions")
+        _validate_latents(self.latents)
 
 
 @dataclass
@@ -85,9 +89,7 @@ class Object3DPipelineOutput(BaseOutput, TensorDataMixin):
         if isinstance(self.latents, Latent3DOutput):
             self.latents.validate(expensive=expensive)
         elif isinstance(self.latents, torch.Tensor):
-            validate_tensor("latents", self.latents, floating=True)
-            if self.latents.ndim < 2:
-                raise TensorShapeError("latents must have at least batch and feature dimensions")
+            _validate_latents(self.latents)
         elif self.latents is not None:
             raise Object3DValidationError("latents must be a Latent3DOutput, torch.Tensor, or None")
 

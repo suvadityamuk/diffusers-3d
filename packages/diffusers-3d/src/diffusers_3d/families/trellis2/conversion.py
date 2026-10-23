@@ -21,10 +21,7 @@ from .scheduler import Trellis2FlowEulerScheduler
 
 TRELLIS2_REFERENCE_REVISION = "75fbf0183001ed9876c8dbb35de6b68552ee08bd"
 
-_SLAT_FLOW_TYPES = {
-    "SLatFlowModel": Trellis2SLatFlowModel,
-    "ElasticSLatFlowModel": Trellis2SLatFlowModel,
-}
+_SLAT_FLOW_TYPES = {"SLatFlowModel": Trellis2SLatFlowModel, "ElasticSLatFlowModel": Trellis2SLatFlowModel}
 _COMPONENT_TYPES = {
     "sparse_structure_flow_model": {"SparseStructureFlowModel": Trellis2SparseStructureFlowModel},
     "sparse_structure_decoder": {"SparseStructureDecoder": Trellis2SparseStructureDecoder},
@@ -97,11 +94,7 @@ def _component_source(root: Path, reference: str) -> Path:
 
 
 def _save_component(
-    component_key: str,
-    source_stem: Path,
-    destination: Path,
-    *,
-    safe_serialization: bool,
+    component_key: str, source_stem: Path, destination: Path, *, safe_serialization: bool
 ) -> tuple[type[Any], dict[str, Any]]:
     model_name, model_config = _load_component_descriptor(source_stem.with_suffix(".json"))
     model_types = _COMPONENT_TYPES[component_key]
@@ -304,14 +297,10 @@ def convert_trellis2_checkpoint(
         "sparse_structure_sampler_defaults": sampler_values["sparse_structure_sampler"],
         "shape_slat_sampler_defaults": sampler_values["shape_slat_sampler"],
         "texture_slat_sampler_defaults": sampler_values["tex_slat_sampler"],
-        "capability_limitations": {
-            "official_full_checkpoint_parity": False,
-            "production_gpu_quality_verified": False,
-        },
+        "capability_limitations": {"official_full_checkpoint_parity": False, "production_gpu_quality_verified": False},
     }
     (destination / "model_index.json").write_text(
-        json.dumps(model_index, indent=2, sort_keys=True) + "\n",
-        encoding="utf-8",
+        json.dumps(model_index, indent=2, sort_keys=True) + "\n", encoding="utf-8"
     )
     metadata = Trellis2ImageTo3DPipeline.object3d_model_index()
     metadata.validate_diffusers_model_index(
@@ -328,8 +317,7 @@ def convert_trellis2_checkpoint(
         "production_gpu_quality_verified": False,
     }
     (destination / "trellis2_conversion.json").write_text(
-        json.dumps(report, indent=2, sort_keys=True) + "\n",
-        encoding="utf-8",
+        json.dumps(report, indent=2, sort_keys=True) + "\n", encoding="utf-8"
     )
     return destination
 

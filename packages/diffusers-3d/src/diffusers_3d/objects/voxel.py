@@ -218,9 +218,6 @@ class OVoxelAsset(BaseOutput, TensorDataMixin):
             validate_tensor("intersection_data", self.intersection_data)
             if self.intersection_data.ndim < 2 or self.intersection_data.shape[0] != count:
                 raise TensorShapeError("intersection_data must have shape (num_voxels, ...)")
-            if self.intersection_data.dtype is not torch.bool and self.intersection_data.is_floating_point():
-                if not bool(torch.isfinite(self.intersection_data).all()):
-                    raise Object3DValidationError("intersection_data must contain finite values")
 
         if self.split_weights is not None:
             validate_tensor("split_weights", self.split_weights, floating=True)

@@ -1,10 +1,8 @@
-"""Pure-PyTorch texture baking: project multi-view renders of an object onto a UV-unwrapped mesh.
+"""Pure-PyTorch texture baking onto a UV-unwrapped mesh, used by the TRELLIS and TRELLIS.2 ``to_glb`` paths.
 
-This is the portable half of the TRELLIS ``to_glb`` path. Upstream rasterizes the mesh into every view with
-nvdiffrast and scatters observations into texels; here the atlas is rasterized once in UV space, every texel's
-surface point is projected into every view, and observations are averaged where the point is visible. Visibility
-uses the rendered depth and alpha, so any renderer that returns colour, depth, and alpha (gsplat, the voxel
-rasterizer, a mesh renderer) can supply the observations.
+Upstream rasterizes the mesh into every view with nvdiffrast. Here the atlas is rasterized once in UV space, every
+texel's surface point is projected into every view, and observations are averaged where the rendered depth and alpha
+say the point is visible, so any renderer that returns colour, depth, and alpha can supply them.
 """
 
 from __future__ import annotations
@@ -177,10 +175,10 @@ def bake_texture(
 
     ``colors`` ``(N, 3, H, W)``, ``depths`` ``(N, 1, H, W)`` (camera-space z), and ``alphas`` ``(N, 1, H, W)`` are
     the renders for ``cameras``. A view counts when the point projects inside the image onto an opaque pixel
-    (``alpha >= alpha_threshold``) and its depth agrees with the render within ``depth_tolerance``; each
-    observation is weighted by the cosine between the face and the view direction (its magnitude, so a mesh
-    with inverted winding still bakes; the depth test is what rejects occluded points). Texels nobody saw are filled from
-    their neighbours (up to ``fill_iterations`` rings) so seams do not bleed the background colour.
+    (``alpha >= alpha_threshold``) and its depth agrees with the render within ``depth_tolerance``. Each
+    observation is weighted by ``|cos|`` between the face normal and the view direction, so inverted winding still
+    bakes; the depth test rejects occluded points. Unseen texels are filled from their neighbours (up to
+    ``fill_iterations`` rings) so seams do not bleed the background colour.
 
     Returns the ``(texture_size, texture_size, 3)`` texture and a ``(texture_size, texture_size)`` boolean map of
     texels that were actually observed.

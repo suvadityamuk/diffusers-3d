@@ -10,11 +10,10 @@ from .types import BackendCapability, BackendSpec, BackendStatus
 
 @dataclass(frozen=True, slots=True)
 class ResearchOnlyBackendFacade:
-    """Side-effect-free discovery and explicit policy acknowledgement for restricted backends.
+    """Discovery and explicit license opt-in for a research-only backend.
 
-    This facade never imports the backend module and does not implement renderer
-    operations. Calling :meth:`require` only performs registry selection after
-    the caller explicitly opts into research-only policy.
+    It never imports the backend; :meth:`require` only selects it in the registry once the caller passes
+    ``accept_research_license=True``.
     """
 
     name: str

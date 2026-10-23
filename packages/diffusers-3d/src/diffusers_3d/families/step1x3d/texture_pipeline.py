@@ -98,7 +98,7 @@ def step1x3d_orthographic_projection(
 ) -> torch.Tensor:
     """Orthographic projection with image row 0 at the top; depth spans ``distance +- 1``."""
 
-    scale = 2 / (2 * half_extent)
+    scale = 1 / half_extent
     return torch.tensor(
         [[scale, 0.0, 0.0, 0.0], [0.0, -scale, 0.0, 0.0], [0.0, 0.0, -1.0, -distance], [0.0, 0.0, 0.0, 1.0]]
     )
@@ -194,7 +194,6 @@ class Step1X3DMeshTexturePipeline(Object3DPipeline):
     )
     model_cpu_offload_seq = "text_encoder->text_encoder_2->adapter->unet->vae"
     _exclude_from_cpu_offload = ["mv_adapter"]
-    _optional_components = []
 
     def __init__(
         self,

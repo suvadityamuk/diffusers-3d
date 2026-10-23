@@ -98,7 +98,6 @@ class Step1X3DImageTo3DPipeline(Object3DPipeline, Object3DLoraLoaderMixin):
         )
     )
     model_cpu_offload_seq = "image_encoder->transformer->vae"
-    _optional_components = []
     _lora_loadable_modules = ["transformer"]
 
     def __init__(

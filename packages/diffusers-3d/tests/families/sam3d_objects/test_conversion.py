@@ -243,7 +243,13 @@ def test_released_layout_converts_and_reproduces_the_pipeline(tmp_path, tiny_pro
     actual = converted(condition, pointmap=pointmap, generator=torch.Generator().manual_seed(0), **arguments)
     torch.testing.assert_close(actual.objects[0].means, expected.objects[0].means)
     torch.testing.assert_close(actual.objects[1].vertices, expected.objects[1].vertices)
-    assert actual.objects[0].metadata["layout"] == expected.objects[0].metadata["layout"]
+    actual_layout, expected_layout = actual.objects[0].metadata["layout"], expected.objects[0].metadata["layout"]
+    assert actual_layout.keys() == expected_layout.keys()
+    for key, value in expected_layout.items():
+        if isinstance(value, (str, bool)):
+            assert actual_layout[key] == value, key
+        else:  # float poses differ in the last bits across platforms
+            torch.testing.assert_close(torch.tensor(actual_layout[key]), torch.tensor(value), msg=key)
 
 
 def test_unsupported_release_configuration_is_rejected(tmp_path, tiny_production):

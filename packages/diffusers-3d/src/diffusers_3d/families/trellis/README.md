@@ -1,153 +1,70 @@
 # TRELLIS image-to-3D and text-to-3D
 
-This family integrates the MIT-licensed Microsoft TRELLIS implementation at
-revision `442aa1e1afb9014e80681d3bf604e8d728a86ee7`. The sparse-structure
-stage, the SLAT flow, the Gaussian decoder, and the FlexiCubes mesh decoder
-run in plain PyTorch on any device; rendering the resulting splats delegates
-to the optional gsplat backend. `TrellisImageTo3DPipeline` conditions on
-DINOv2 image tokens and `TrellisTextTo3DPipeline` on CLIP text tokens; both
-share the same two flow stages and decoders.
+Microsoft TRELLIS, ported from upstream revision `442aa1e1afb9014e80681d3bf604e8d728a86ee7`. A sparse-structure flow
+picks occupied voxels, a structured-latent (SLAT) flow fills them, and decoders turn the SLAT into Gaussian splats, a
+FlexiCubes mesh, or a radiance field. Everything runs in plain PyTorch on any device. MIT license.
 
-## Reviewed sparse-structure path
+```python
+import torch
+from diffusers_3d import AutoPipelineForImageTo3D, AutoPipelineForTextTo3D, ImageCondition
 
-- `TrellisSparseStructureFlowModel` preserves released parameter names and
-  dense transformer math while using Diffusers attention dispatch. Tiny CPU
-  float32 forward output and selected backward gradients were measured against
-  the pinned upstream implementation with identical weights and inputs.
-- `TrellisSparseStructureDecoder` preserves the released dense Conv3D decoder
-  and thresholds occupancy logits at zero. It returns package-owned
-  `SparseVoxelAsset` objects with TRELLIS `[x, y, z]` coordinates, a native
-  right-handed Z-up transform, and cell centers in `[-0.5, 0.5]`.
-- `image_encoder` is the stock Transformers `Dinov2WithRegistersModel`
-  (`facebook/dinov2-with-registers-large`, the released `dinov2_vitl14_reg`).
-  The pipeline applies ImageNet normalization and conditions on its
-  class/register/patch tokens before the learned output norm (upstream
-  `x_prenorm`), with an unparameterized layer norm and all-zero
-  unconditional tokens.
-- `TrellisTextTo3DPipeline` takes the stock Transformers `CLIPTextModel`
-  `text_encoder` and `CLIPTokenizer` `tokenizer` of
-  `openai/clip-vit-large-patch14`. Prompts are padded and truncated to the
-  encoder's 77 positions and `last_hidden_state` conditions both flows; the
-  unconditional branch encodes the empty prompt.
-- `TrellisFlowEulerScheduler` implements the released `t=1` noise to `t=0`
-  data direction, `sigma_min=1e-5`, rational `rescale_t`, `t*1000` model
-  timesteps, guidance intervals, and `(1+w)*cond-w*uncond`.
-- `TrellisImageTo3DPipeline` always supports
-  `formats=("sparse_structure",)` without CUDA extensions or renderer
-  dependencies. Typed RGBA alpha and separate masks are quantized to uint8
-  before the pinned `>0.8 * 255` foreground crop, then use the 1.2 recenter
-  scale, Pillow LANCZOS RGBA resize, and alpha-premultiplication on black.
-  Unmasked RGB is treated as an already
-  background-removed full frame; the pipeline never invokes `rembg` silently.
-  Defaults are 25 steps per stage, guidance 5, interval 0.5–1, and
-  `rescale_t=3`.
+pipeline = AutoPipelineForImageTo3D.from_pretrained("suvadityamuk/TRELLIS-image-large-diffusers-3d").to("cuda")
+mesh = pipeline(ImageCondition(image=rgba), formats=("mesh",), generator=torch.Generator("cuda").manual_seed(0)).objects[0]
 
-The converter consumes local upstream component `.json`/`.safetensors` pairs
-and `pipeline.json`, then writes ordinary Diffusers component folders and
-object-3D metadata. It converts the sparse-structure components, the SLAT
-flow model, and the Gaussian and mesh decoders. `--encoder-path` is a Hub id
-or folder of the Transformers checkpoint of the released encoder:
-`facebook/dinov2-with-registers-large` for image pipelines, or
-`openai/clip-vit-large-patch14` (text tower and tokenizer) for text pipelines.
-Conversion from the original Torch Hub state layout is not claimed.
-
-## SLAT flow, Gaussian decoder, and mesh decoder
-
-`TrellisSparseTensor` is an immutable package bridge over `[batch, x, y, z]`
-coordinates and features. It losslessly round-trips `SparseVoxelAsset`
-metadata and supports released channelwise SLAT normalization.
-
-`TrellisSLatFlowModel` is the released structured-latent flow: submanifold
-sparse-convolution residual blocks that downsample into the transformer and
-upsample back out with skip connections, around a dense-attention core with
-RoPE. `TrellisSLatGaussianDecoder` is the released decoder with shifted-window
-("swin") sparse attention and the grouped-by-attribute Gaussian parameter
-layout. Sparse convolution, pooling, and window partitioning come from
-[`sparse_ops.py`](sparse_ops.py), which replaces `spconv` and `xformers` with
-plain PyTorch. The pooling reproduces upstream's `scatter_reduce(...,
-include_self=True)` mean, because the released weights were trained with it.
-
-`TrellisSLatMeshDecoder` is the released mesh decoder: the same swin torso,
-two sparse subdivide blocks (64³ to 256³), and per-cube FlexiCubes features
-(`sdf`, `deform`, `weights`, and six colour channels). Iso-surface extraction
-is a pure-PyTorch port of the Apache-2.0 FlexiCubes fork TRELLIS pins
-([`flexicubes.py`](flexicubes.py)); it builds the grid sparsely around the
-active voxels instead of materializing the dense 256³ grid and returns a Z-up
-`MeshAsset` with vertex `colors` and the predicted normal map in
-`extras["normal_map"]`. `formats=("mesh",)` selects it in both pipelines.
-
-`TrellisSLatRadianceFieldDecoder` is the released radiance-field decoder:
-the same torso followed by a projection to the `Strivec` channels (rank-16
-tri-vectors with 8 samples per axis, per-component density and DC colour).
-It returns a `RadianceFieldAsset`, which stores exactly those channels plus
-the grid transform. Rendering is not a model concern:
-`diffusers_3d.backends.radiance_field.render_radiance_field` is an
-independent pure-PyTorch volume renderer written from the representation's
-definition (two samples per trivec cell, `softplus` density, `sigmoid`
-colour, front-to-back compositing). It does not derive from the restricted
-`diffoctreerast` rasterizer and claims no pixel parity with it.
-`formats=("radiance_field",)` selects the decoder in both pipelines.
-
-Tiny outputs of all four models match the pinned upstream code with `spconv`
-and `xformers` shimmed to dense PyTorch (the mesh decoder additionally against
-the pinned FlexiCubes submodule, up to vertex order; the radiance-field
-decoder with the upstream `Strivec` built on CPU), and released state-dict
-layouts are checked against the published safetensors headers.
-
-## Textured GLB
-
-Upstream's `to_glb` textures the mesh from renders of the Gaussians rather
-than from the mesh decoder's vertex colours. `TrellisGlbPostprocessFacade.
-to_textured_mesh(mesh, gaussians)` follows that recipe with permissive
-backends: CuMesh repairs and simplifies the mesh to 5% of its faces, xatlas
-unwraps it, gsplat renders the splats from 100 Hammersley-distributed views,
-and `backends/texture_baking.py` projects every texel onto those renders and
-averages the views that see it (depth- and alpha-tested against the render).
-The result is a `MeshAsset` with `uvs` and a textured `PBRMaterial` that
-`TrimeshBackend.export_mesh` writes as a GLB with a base-colour texture. The
-upstream hole filling and the optimisation-based baking mode are not
-reproduced.
-
-## Backend and license boundaries
-
-- `GsplatBackend` is an explicit Apache-2.0 gsplat adapter for canonical
-  `GaussianSplatAsset` and `CameraRig` values. It contains no Graphdeco code.
-- `SpconvBackend` lazily imports a selected CUDA-matched Apache-2.0 build and
-  preserves TRELLIS batch coordinates and sparse metadata.
-- `KaolinFlexiCubesBackend` accepts only the Apache-2.0 `kaolin.ops`
-  implementation. It rejects legacy `kaolin.non_commercial` implementations.
-- nvdiffrast, diffoctreerast, and mip-splatting rasterization are restricted,
-  research-only dependencies. Their facades perform side-effect-free status
-  checks and require explicit license acknowledgement; they never import or
-  select those renderers silently.
-- The FlexiCubes fork TRELLIS pins (`MaxtirError/FlexiCubes`, revision
-  `815e075a`) is Apache-2.0; its lookup tables and extraction logic are ported
-  into this family with attribution. All restricted renderer source is
-  excluded.
-- `utils3d` is not used by this family. The common registry's optional
-  compatibility entry accepts only the pinned EasternJournalist source and
-  rejects an unverified colliding distribution.
-
-See `LICENSE-MIT` and `NOTICE` for the source and license terms.
-
-## Explicit limitations
-
-- No production-resolution GPU or end-to-end two-stage parity run is part of
-  this package's test matrix; the released checkpoints were run by hand on an
-  A100 (see `docs/compatibility.md`) and render quality is not claimed.
-- Rendering quality, texture quality, pixel parity of the radiance-field
-  renderer with `diffoctreerast`, and background removal are not claimed.
-- CI and conversion tests are offline CPU tests and download no model weights.
-
-The converted releases are published as
-`suvadityamuk/TRELLIS-image-large-diffusers-3d` and
-`suvadityamuk/TRELLIS-text-large-diffusers-3d`, encoders included, and
-load with the auto-loaders directly. To convert a local release yourself:
-
-```bash
-diffusers-3d-convert-trellis source/ output/ \
-  --encoder-path facebook/dinov2-with-registers-large
+text = AutoPipelineForTextTo3D.from_pretrained("suvadityamuk/TRELLIS-text-large-diffusers-3d").to("cuda")
+gaussians = text("a wooden chair", formats=("gaussian",)).objects[0]
 ```
 
-The converter writes the encoder, sparse-structure flow and decoder, SLAT
-flow, and the Gaussian, mesh, and radiance-field decoders.
+- `formats` picks from `sparse_structure`, `slat`, `gaussian`, `mesh`, and `radiance_field`. By default you get every
+  loaded decoder's output, in the order gaussian, mesh, radiance field.
+- Defaults: 25 steps per stage and `rescale_t=3`. The image pipeline uses guidance 5.0 over the interval (0.5, 1.0).
+  The text pipeline uses 7.5 over (0.5, 0.95).
+- Images need RGBA, or RGB with a `mask`. RGB without a mask is treated as an already-cropped full frame.
+- Assets are in TRELLIS' right-handed Z-up frame.
+
+## Components
+
+| Component | Class | Notes |
+| --- | --- | --- |
+| `image_encoder` | `transformers.Dinov2WithRegistersModel` | `facebook/dinov2-with-registers-large`; pre-norm tokens with an unparameterized layer norm, all-zero unconditional tokens |
+| `text_encoder`, `tokenizer` | `transformers.CLIPTextModel`, `CLIPTokenizer` | `openai/clip-vit-large-patch14`; the empty prompt is the unconditional branch |
+| `sparse_structure_flow_model` | `TrellisSparseStructureFlowModel` | dense transformer on Diffusers attention |
+| `sparse_structure_decoder` | `TrellisSparseStructureDecoder` | Conv3D decoder; occupancy logits thresholded at zero |
+| `slat_flow_model` | `TrellisSLatFlowModel` | sparse-conv U-Net around a dense-attention core |
+| `gaussian_decoder` | `TrellisSLatGaussianDecoder` | swin sparse attention to Gaussian splats |
+| `mesh_decoder` | `TrellisSLatMeshDecoder` | FlexiCubes mesh with vertex colours |
+| `radiance_field_decoder` | `TrellisSLatRadianceFieldDecoder` | rank-16 Strivec radiance field |
+| `*_scheduler` | `TrellisFlowEulerScheduler` | upstream's Euler flow sampler and `(1 + w) * cond - w * uncond` guidance |
+
+## Differences from upstream
+
+- `spconv` and `xformers` are replaced by plain PyTorch in [`sparse_ops.py`](sparse_ops.py). Pooling keeps upstream's
+  `scatter_reduce(..., include_self=True)` mean, because the released weights were trained with it.
+- FlexiCubes is a plain-PyTorch port of the Apache-2.0 fork TRELLIS pins ([`flexicubes.py`](flexicubes.py)). It builds
+  the grid only around active voxels, so meshes match upstream up to vertex order.
+- Radiance fields render with `diffusers_3d.backends.radiance_field.render_radiance_field`, a new pure-PyTorch volume
+  renderer. Upstream's `diffoctreerast` is research-only licensed, so there is no pixel parity with it.
+- `TrellisGlbPostprocessFacade.to_textured_mesh(mesh, gaussians)` replaces upstream `to_glb`. It uses CuMesh, xatlas,
+  gsplat, and plain-PyTorch baking instead of nvdiffrast, which is research-only licensed. Hole filling and
+  optimisation-based baking are not ported.
+- No background removal. Upstream runs `rembg` on images without alpha.
+- nvdiffrast, diffoctreerast, and mip-splatting are never imported unless you explicitly accept their research-only
+  licenses.
+
+## Conversion
+
+```bash
+diffusers-3d-convert-trellis source/ output/ --encoder-path facebook/dinov2-with-registers-large
+```
+
+`source/` holds the upstream `pipeline.json` and component `.json`/`.safetensors` pairs. Pass
+`--encoder-path openai/clip-vit-large-patch14` for the text release. The converter writes every component and
+`object3d_model_index.json`.
+
+## Verification
+
+Tiny-weight CPU tests compare every model and FlexiCubes against the pinned upstream code, with `spconv` and
+`xformers` shimmed to dense PyTorch. Set `DIFFUSERS_3D_TRELLIS_REFERENCE_ROOT` to the upstream checkout to run them.
+GPU runs are in [docs/compatibility.md](../../../../docs/compatibility.md).
+
+See [LICENSE-MIT](LICENSE-MIT) and [NOTICE](NOTICE).

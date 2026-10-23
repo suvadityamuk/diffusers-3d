@@ -7,11 +7,10 @@
 
 """Pure-PyTorch sparse voxel primitives shared by the TRELLIS families.
 
-Coordinates are integer ``(N, 4)`` tensors in ``[batch, x, y, z]`` order and features are ``(N, C)``. The
-functions here reproduce what the released checkpoints were trained with (spconv / FlexGEMM submanifold
-convolution, TRELLIS average-pool down/upsampling, TRELLIS.2 channel-to-spatial subdivision, and windowed
-self-attention) using gather/scatter and dense attention, so every stage runs on any device. They trade
-speed for portability: the compiled backends in ``diffusers_3d.backends`` remain the fast path on CUDA.
+Coordinates are integer ``(N, 4)`` tensors in ``[batch, x, y, z]`` order and features are ``(N, C)``. These
+reproduce what the released checkpoints were trained with (spconv / FlexGEMM submanifold convolution, TRELLIS
+average-pool resampling, TRELLIS.2 channel-to-spatial subdivision, windowed attention) with gather/scatter and
+dense attention, trading speed for running on any device.
 """
 
 from __future__ import annotations
@@ -40,11 +39,7 @@ def _linear_codes(coordinates: torch.Tensor, extents: torch.Tensor) -> torch.Ten
 # ---------------------------------------------------------------------------
 
 
-def submanifold_neighbors(
-    coordinates: torch.Tensor,
-    kernel_size: int = 3,
-    dilation: int = 1,
-) -> torch.Tensor:
+def submanifold_neighbors(coordinates: torch.Tensor, kernel_size: int = 3, dilation: int = 1) -> torch.Tensor:
     """Index of the voxel at ``p + offset_k`` for each active voxel ``p`` and kernel tap ``k``.
 
     Returns an ``(N, kernel_size**3)`` int64 tensor with ``-1`` where the neighbour is not active. Taps are
@@ -140,11 +135,7 @@ class SparseConv3d(nn.Module):
         nn.init.kaiming_uniform_(self.weight, a=5**0.5)
 
     def forward(
-        self,
-        coordinates: torch.Tensor,
-        features: torch.Tensor,
-        *,
-        neighbors: torch.Tensor | None = None,
+        self, coordinates: torch.Tensor, features: torch.Tensor, *, neighbors: torch.Tensor | None = None
     ) -> torch.Tensor:
         return sparse_submanifold_conv3d(coordinates, features, self.weight, self.bias, neighbors=neighbors)
 
@@ -155,11 +146,7 @@ class SparseConv3d(nn.Module):
 
 
 def sparse_downsample(
-    coordinates: torch.Tensor,
-    features: torch.Tensor,
-    factor: int = 2,
-    *,
-    count_zero_buffer: bool = False,
+    coordinates: torch.Tensor, features: torch.Tensor, factor: int = 2, *, count_zero_buffer: bool = False
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     """Average-pool active voxels into ``factor``-sized cells (TRELLIS ``SparseDownsample``).
 
@@ -191,9 +178,7 @@ def sparse_upsample(features: torch.Tensor, inverse: torch.Tensor) -> torch.Tens
 
 
 def sparse_subdivide(
-    coordinates: torch.Tensor,
-    subdivision: torch.Tensor,
-    factor: int = 2,
+    coordinates: torch.Tensor, subdivision: torch.Tensor, factor: int = 2
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     """Expand each voxel into the children selected by ``subdivision`` (TRELLIS.2 ``SparseChannel2Spatial``).
 
@@ -214,10 +199,7 @@ def sparse_subdivide(
 
 
 def channel_to_spatial(
-    features: torch.Tensor,
-    parent_index: torch.Tensor,
-    child_index: torch.Tensor,
-    factor: int = 2,
+    features: torch.Tensor, parent_index: torch.Tensor, child_index: torch.Tensor, factor: int = 2
 ) -> torch.Tensor:
     """Hand child ``s`` the ``s``-th channel block of its parent: ``(N, f**3 * C) -> (M, C)``."""
 
@@ -261,11 +243,7 @@ class SparseWindowPartition:
         return output
 
 
-def sparse_window_partition(
-    coordinates: torch.Tensor,
-    window_size: int,
-    shift: int = 0,
-) -> SparseWindowPartition:
+def sparse_window_partition(coordinates: torch.Tensor, window_size: int, shift: int = 0) -> SparseWindowPartition:
     """Partition tokens into ``window_size`` cubes per batch item, optionally shifted (TRELLIS ``swin``)."""
 
     _check_coordinates(coordinates)
@@ -279,11 +257,7 @@ def sparse_window_partition(
     starts = torch.cumsum(counts, dim=0) - counts
     slot = torch.arange(order.shape[0], device=order.device) - starts[window]
     return SparseWindowPartition(
-        order=order,
-        window=window,
-        slot=slot,
-        num_windows=int(counts.shape[0]),
-        max_tokens=int(counts.max().item()),
+        order=order, window=window, slot=slot, num_windows=int(counts.shape[0]), max_tokens=int(counts.max().item())
     )
 
 

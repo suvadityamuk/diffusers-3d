@@ -48,10 +48,7 @@ def test_sparse_structure_decoder_max_pools_occupancy_before_argwhere(monkeypatc
 
 
 def test_shape_and_pbr_decoders_share_subdivision_and_expose_all_material_channels():
-    coordinates = torch.tensor(
-        [[0, 0, 0, 0], [0, 1, 2, 3], [1, 2, 1, 0], [1, 7, 7, 7]],
-        dtype=torch.int64,
-    )
+    coordinates = torch.tensor([[0, 0, 0, 0], [0, 1, 2, 3], [1, 2, 1, 0], [1, 7, 7, 7]], dtype=torch.int64)
     generator = torch.Generator().manual_seed(12)
     shape_slat = TrellisSparseTensor(coordinates, torch.randn(4, 4, generator=generator))
     texture_slat = TrellisSparseTensor(coordinates, torch.randn(4, 4, generator=generator))

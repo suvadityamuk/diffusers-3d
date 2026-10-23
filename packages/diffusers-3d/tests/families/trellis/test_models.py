@@ -3,11 +3,7 @@ from __future__ import annotations
 import pytest
 import torch
 
-from diffusers_3d import (
-    TrellisSLatFlowModel,
-    TrellisSparseStructureFlowModel,
-    TrellisSparseTensor,
-)
+from diffusers_3d import TrellisSLatFlowModel, TrellisSparseStructureFlowModel, TrellisSparseTensor
 
 
 def _dense_inputs(model: TrellisSparseStructureFlowModel):
@@ -27,13 +23,9 @@ def _dense_inputs(model: TrellisSparseStructureFlowModel):
 
 def _sparse_inputs(model: TrellisSLatFlowModel):
     generator = torch.Generator().manual_seed(11)
-    coordinates = torch.tensor(
-        [[0, 0, 0, 0], [0, 1, 2, 3], [1, 2, 1, 0], [1, 7, 7, 7]],
-        dtype=torch.int64,
-    )
+    coordinates = torch.tensor([[0, 0, 0, 0], [0, 1, 2, 3], [1, 2, 1, 0], [1, 7, 7, 7]], dtype=torch.int64)
     hidden_states = TrellisSparseTensor(
-        coordinates=coordinates,
-        features=torch.randn(4, model.config.in_channels, generator=generator),
+        coordinates=coordinates, features=torch.randn(4, model.config.in_channels, generator=generator)
     )
     timesteps = torch.tensor([200.0, 800.0])
     context = torch.randn(2, 7, model.config.cond_channels, generator=generator)

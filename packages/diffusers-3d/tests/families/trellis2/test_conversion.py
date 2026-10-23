@@ -20,12 +20,10 @@ pytestmark = pytest.mark.integration
 
 def _write_component(root, stem, upstream_name, model):
     (root / f"{stem}.json").write_text(
-        json.dumps({"name": upstream_name, "args": dict(model.config)}),
-        encoding="utf-8",
+        json.dumps({"name": upstream_name, "args": dict(model.config)}), encoding="utf-8"
     )
     save_file(
-        {key: value.detach().contiguous() for key, value in model.state_dict().items()},
-        root / f"{stem}.safetensors",
+        {key: value.detach().contiguous() for key, value in model.state_dict().items()}, root / f"{stem}.safetensors"
     )
 
 
@@ -50,10 +48,7 @@ def _pipeline_config():
             "default_pipeline_type": "1024_cascade",
             "image_cond_model": {
                 "name": "DinoV3FeatureExtractor",
-                "args": {
-                    "model_name": "facebook/dinov3-vitl16-pretrain-lvd1689m",
-                    "image_size": 8,
-                },
+                "args": {"model_name": "facebook/dinov3-vitl16-pretrain-lvd1689m", "image_size": 8},
             },
             "models": {
                 "sparse_structure_flow_model": "ss_flow",
@@ -78,18 +73,9 @@ def _pipeline_config():
 def test_synthetic_full_conversion_auto_loads_and_runs_every_stage(tmp_path, tiny_trellis2_components):
     source = tmp_path / "source"
     source.mkdir()
-    (
-        image_encoder,
-        flow,
-        decoder,
-        _,
-        shape_flow,
-        _,
-        shape_decoder,
-        texture_flow,
-        _,
-        pbr_decoder,
-    ) = tiny_trellis2_components(include_slat=True)
+    (image_encoder, flow, decoder, _, shape_flow, _, shape_decoder, texture_flow, _, pbr_decoder) = (
+        tiny_trellis2_components(include_slat=True)
+    )
     torch.manual_seed(7)
     shape_flow_1024 = Trellis2SLatFlowModel(**Trellis2SLatFlowModel.tiny_config())
     torch.manual_seed(8)
@@ -158,8 +144,7 @@ def test_synthetic_full_conversion_auto_loads_and_runs_every_stage(tmp_path, tin
     }
     with torch.no_grad():
         torch.testing.assert_close(
-            loaded.shape_slat_flow_model_1024.out_layer.weight,
-            shape_flow_1024.out_layer.weight,
+            loaded.shape_slat_flow_model_1024.out_layer.weight, shape_flow_1024.out_layer.weight
         )
     result = loaded(
         torch.zeros(3, 8, 8),
@@ -180,10 +165,7 @@ def test_synthetic_sparse_structure_only_conversion_is_allowed(tmp_path, tiny_tr
     _write_component(source, "ss_flow", "SparseStructureFlowModel", flow)
     _write_component(source, "ss_decoder", "SparseStructureDecoder", decoder)
     config = _pipeline_config()
-    config["args"]["models"] = {
-        "sparse_structure_flow_model": "ss_flow",
-        "sparse_structure_decoder": "ss_decoder",
-    }
+    config["args"]["models"] = {"sparse_structure_flow_model": "ss_flow", "sparse_structure_decoder": "ss_decoder"}
     config["args"]["default_pipeline_type"] = "512"
     (source / "pipeline.json").write_text(json.dumps(config), encoding="utf-8")
     image_encoder.save_pretrained(tmp_path / "dinov3")

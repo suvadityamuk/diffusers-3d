@@ -47,6 +47,14 @@ class SpconvBackend:
             raise RuntimeError("the selected spconv build does not expose SparseConvTensor")
         self._spconv = pytorch_module
 
+    def _check_runtime(self, features: torch.Tensor) -> None:
+        if features.device.type != self.device.type or (
+            self.device.index is not None and features.device.index != self.device.index
+        ):
+            raise ValueError(f"SpconvBackend was configured for {self.device}, got {features.device}")
+        if features.dtype is not self.dtype:
+            raise ValueError(f"SpconvBackend was configured for {self.dtype}, got {features.dtype}")
+
     def to_spconv_tensors(
         self,
         features: torch.Tensor,
@@ -70,12 +78,7 @@ class SpconvBackend:
             raise ValueError("features and coordinates must share a non-zero active-voxel count")
         if features.device != coordinates.device:
             raise ValueError("features and coordinates must be on the same device")
-        if features.device.type != self.device.type or (
-            self.device.index is not None and features.device.index != self.device.index
-        ):
-            raise ValueError(f"SpconvBackend was configured for {self.device}, got {features.device}")
-        if features.dtype is not self.dtype:
-            raise ValueError(f"SpconvBackend was configured for {self.dtype}, got {features.dtype}")
+        self._check_runtime(features)
         if bool((coordinates < 0).any()):
             raise ValueError("spconv coordinates must be non-negative")
         spatial_shape = tuple(int(value) for value in spatial_shape)
@@ -180,12 +183,7 @@ class SpconvBackend:
             raise ValueError("spconv batch_size must be a positive integer")
         if features.device != indices.device:
             raise ValueError("spconv features and indices must be on the same device")
-        if features.device.type != self.device.type or (
-            self.device.index is not None and features.device.index != self.device.index
-        ):
-            raise ValueError(f"SpconvBackend was configured for {self.device}, got {features.device}")
-        if features.dtype is not self.dtype:
-            raise ValueError(f"SpconvBackend was configured for {self.dtype}, got {features.dtype}")
+        self._check_runtime(features)
 
         if template is not None:
             if type(template) is not SparseVoxelAsset:

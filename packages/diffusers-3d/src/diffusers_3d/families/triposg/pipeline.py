@@ -212,6 +212,7 @@ class TripoSGImageTo3DPipeline(Object3DPipeline, Object3DLoraLoaderMixin):
         )
         points = torch.stack(torch.meshgrid(axis, axis, axis, indexing="ij"), dim=-1).reshape(-1, 3)
         grid = decode(points).view(size, size, size)
+        offsets = torch.tensor(_CHILD_OFFSETS, device=device)
         for _ in range(hierarchical_octree_depth - dense_octree_depth):
             refined = F.interpolate(grid[None, None], scale_factor=2)[0, 0]
             band = torch.nonzero((torch.sigmoid(grid[1:-1, 1:-1, 1:-1]) * 2 - 1).abs() < 1.0) + 1
@@ -219,7 +220,6 @@ class TripoSGImageTo3DPipeline(Object3DPipeline, Object3DLoraLoaderMixin):
             cells[band[:, 0], band[:, 1], band[:, 2]] = 1
             kernel = 5 if size < 512 else 3
             cells = F.max_pool3d(cells[None, None], kernel, stride=1, padding=kernel // 2)[0, 0]
-            offsets = torch.tensor(_CHILD_OFFSETS, device=device)
             children = (torch.nonzero(cells)[None] * 2 + offsets[:, None]).reshape(-1, 3).to(torch.float16)
             half = size
             size *= 2

@@ -55,16 +55,12 @@ def ovoxel_grid_transform(
 ) -> torch.Tensor:
     """Map native O-Voxel grid corners to its right-handed Z-up object AABB."""
 
-    grid_size = torch.as_tensor(resolution, device=device)
-    if grid_size.ndim == 0:
-        grid_size = grid_size.repeat(3)
-    if grid_size.shape != (3,) or grid_size.is_floating_point() or bool((grid_size <= 0).any()):
-        raise ValueError("resolution must be a positive integer or three positive integers")
+    grid_size = torch.tensor(_resolution_tuple(resolution), device=device, dtype=dtype)
     bounds = torch.as_tensor(aabb, device=device, dtype=dtype)
     if bounds.shape != (2, 3) or not bool(torch.isfinite(bounds).all()) or bool((bounds[1] <= bounds[0]).any()):
         raise ValueError("aabb must contain finite increasing lower and upper 3D bounds")
     transform = torch.eye(4, device=device, dtype=dtype)
-    transform[range(3), range(3)] = (bounds[1] - bounds[0]) / grid_size.to(dtype=dtype)
+    transform[range(3), range(3)] = (bounds[1] - bounds[0]) / grid_size
     transform[:3, 3] = bounds[0]
     return transform
 
@@ -144,21 +140,6 @@ def _resolution_tuple(resolution: int | Sequence[int] | torch.Tensor) -> tuple[i
     return tuple(int(item) for item in values.tolist())
 
 
-def _validate_serializable_coordinates(
-    coordinates: torch.Tensor,
-    resolution: tuple[int, int, int],
-    *,
-    format_name: str,
-) -> None:
-    if bool((coordinates < 0).any()):
-        raise ValueError(f"{format_name} coordinates must be non-negative")
-    if bool((coordinates > torch.iinfo(torch.uint16).max).any()):
-        raise ValueError(f"{format_name} coordinates must fit in uint16")
-    resolution_tensor = coordinates.new_tensor(resolution)
-    if bool((coordinates >= resolution_tensor).any()):
-        raise ValueError(f"{format_name} coordinates must be strictly below the declared resolution")
-
-
 def _serialization_resolution(asset: OVoxelAsset, *, format_name: str) -> tuple[int, int, int]:
     if bool((asset.active_coordinates < 0).any()):
         raise ValueError(f"{format_name} coordinates must be non-negative")
@@ -168,7 +149,8 @@ def _serialization_resolution(asset: OVoxelAsset, *, format_name: str) -> tuple[
     if resolution is None:
         resolution = (asset.active_coordinates.amax(dim=0) + 1).tolist()
     resolution_values = _resolution_tuple(resolution)
-    _validate_serializable_coordinates(asset.active_coordinates, resolution_values, format_name=format_name)
+    if bool((asset.active_coordinates >= asset.active_coordinates.new_tensor(resolution_values)).any()):
+        raise ValueError(f"{format_name} coordinates must be strictly below the declared resolution")
     return resolution_values
 
 
@@ -263,16 +245,13 @@ def ovoxel_asset_from_official(
     emissive = unit("emissive")
     normals = unit("normal")
     if normals is not None:
-        # Official tensors store normals in the same [0, 1] channel domain
-        # before and after uint8 packing. OVoxelAsset stores signed normals.
+        # Official tensors store normals in [0, 1] (packed or not); OVoxelAsset stores signed normals.
         normals = normals * 2 - 1
     split_weights = values.get("split_weight", values.get("split_weights"))
     if split_weights is not None:
         split_weights = _scalar_channel(split_weights, count, "split_weight")
         if packed is not False and split_weights.dtype is torch.uint8:
-            # Read legacy/native VXZ data according to the only value domain
-            # that uint8 can represent. New lossless writes keep this channel
-            # floating point.
+            # Legacy/native VXZ data stores uint8 split weights; new writes keep them floating point.
             split_weights = _unpack_unit(split_weights, "split_weight")
         elif not split_weights.is_floating_point() or not bool(torch.isfinite(split_weights).all()):
             raise ValueError("split_weight must be a finite floating-point tensor")
@@ -414,13 +393,11 @@ def write_ovoxel_npz(
     packed: bool = True,
     morton_order: bool | None = None,
 ) -> None:
-    """Write an NPZ containing only fields accepted as attributes by the official reader.
+    """Write an NPZ holding only fields the official reader accepts as attributes.
 
-    The default deterministic lexicographic order supports the full uint16
-    coordinate domain. Passing ``morton_order=True`` explicitly requests the
-    official 30-bit order and therefore limits every coordinate to 1023.
-    Grid resolution and AABB are not part of the official NPZ format and must
-    be supplied to :func:`read_ovoxel_npz` when they cannot be inferred.
+    Rows are sorted lexicographically by default, which supports any uint16 coordinate; ``morton_order=True`` uses
+    the official 30-bit order instead and limits coordinates to 1023. Resolution and AABB are not stored, so pass
+    them to :func:`read_ovoxel_npz` when they cannot be inferred.
     """
 
     resolution = _serialization_resolution(asset, format_name="official O-Voxel NPZ")
@@ -624,17 +601,20 @@ class OVoxelBackend:
                 break
         return value
 
+    def _select(self) -> None:
+        self.registry.select(
+            BackendCapability.NATIVE_REPRESENTATION,
+            name="o_voxel",
+            device=self.device,
+            dtype=self.dtype,
+            differentiable=False,
+        )
+
     def _supports_native_members(self, required_members: Sequence[str]) -> bool:
         if not self.accept_nvdiffrast_research_license:
             return False
         try:
-            self.registry.select(
-                BackendCapability.NATIVE_REPRESENTATION,
-                name="o_voxel",
-                device=self.device,
-                dtype=self.dtype,
-                differentiable=False,
-            )
+            self._select()
             if self._runtime is None:
                 self._runtime = importlib.import_module("o_voxel")
         except Exception:
@@ -655,13 +635,7 @@ class OVoxelBackend:
                 "do not import it"
             )
         try:
-            self.registry.select(
-                BackendCapability.NATIVE_REPRESENTATION,
-                name="o_voxel",
-                device=self.device,
-                dtype=self.dtype,
-                differentiable=False,
-            )
+            self._select()
         except Exception as error:
             raise OVoxelRuntimeUnavailableError(
                 f"{operation} requires the separately compiled o_voxel runtime; pure support is limited to "
@@ -736,8 +710,7 @@ class OVoxelBackend:
                 "The pinned VXZ v0 runtime accepts only uint8 attributes and has no verified lossless "
                 "split_weights encoding; use write_npz() instead"
             )
-        # The official runtime performs chunk-local ordering internally. Global
-        # Morton sorting here would reject valid uint16-resolution assets.
+        # The runtime orders chunks itself; global Morton sorting would reject valid uint16-resolution assets.
         coordinates, attributes = self.to_official(asset, packed=True, morton_order=False)
         if any(value.dtype is not torch.uint8 for value in attributes.values()):
             raise ValueError(
@@ -820,8 +793,7 @@ class OVoxelBackend:
             dim=1,
         )
         position = (voxel_transform @ position.T).T[:, :3]
-        # The pinned CUDA rasterizer reads every floating input through
-        # data_ptr<float>(), independently of the model/asset dtype.
+        # The pinned CUDA rasterizer reads every floating input as float32 (data_ptr<float>()).
         render_dtype = torch.float32
         normalized_intrinsics = intrinsics.to(device=self.device, dtype=render_dtype).clone()
         normalized_intrinsics[:2] /= image_size

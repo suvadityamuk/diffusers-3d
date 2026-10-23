@@ -30,12 +30,7 @@ from ..trellis.sparse_ops import SparseConv3d, channel_to_spatial, sparse_subdiv
 
 
 class Trellis2SparseStructureDecoder(TrellisSparseStructureDecoder):
-    """Exact TRELLIS/TRELLIS.2 dense sparse-structure decoder architecture.
-
-    TRELLIS.2 references the released TRELLIS image-large decoder unchanged.
-    The inherited state layout is therefore intentional and exact; only family
-    metadata and native output metadata differ.
-    """
+    """The TRELLIS image-large sparse-structure decoder, which TRELLIS.2 reuses unchanged; adds occupancy pooling."""
 
     family_id = "trellis2"
     component_role = "sparse_structure_decoder"
@@ -45,11 +40,7 @@ class Trellis2SparseStructureDecoder(TrellisSparseStructureDecoder):
     review_status = ReviewStatus.REVIEWED
 
     def decode_to_sparse_voxels(
-        self,
-        hidden_states: torch.Tensor,
-        *,
-        target_resolution: int | None = None,
-        pooling: int | None = None,
+        self, hidden_states: torch.Tensor, *, target_resolution: int | None = None, pooling: int | None = None
     ) -> tuple[SparseVoxelAsset, ...]:
         """Decode occupancy; ``target_resolution`` or ``pooling`` (the released ``ratio``) max-pools the grid."""
 
@@ -87,11 +78,7 @@ class Trellis2SparseStructureDecoder(TrellisSparseStructureDecoder):
                 SparseVoxelAsset(
                     coordinates=coordinates,
                     features=features,
-                    grid_transform=trellis_grid_transform(
-                        resolution,
-                        device=logits.device,
-                        dtype=logits.dtype,
-                    ),
+                    grid_transform=trellis_grid_transform(resolution, device=logits.device, dtype=logits.dtype),
                     coordinate_system=CoordinateSystem.RIGHT_HANDED_Z_UP,
                     metadata={
                         "family": "trellis2",
@@ -131,18 +118,13 @@ class Trellis2SparseConvNeXtBlock3d(nn.Module):
         self.norm = TrellisLayerNorm32(channels, elementwise_affine=True, eps=1e-6)
         self.conv = SparseConv3d(channels, channels, 3)
         self.mlp = nn.Sequential(
-            nn.Linear(channels, int(channels * mlp_ratio)),
-            nn.SiLU(),
-            nn.Linear(int(channels * mlp_ratio), channels),
+            nn.Linear(channels, int(channels * mlp_ratio)), nn.SiLU(), nn.Linear(int(channels * mlp_ratio), channels)
         )
         nn.init.zeros_(self.mlp[2].weight)
         nn.init.zeros_(self.mlp[2].bias)
 
     def forward(
-        self,
-        coordinates: torch.Tensor,
-        features: torch.Tensor,
-        neighbors: torch.Tensor | None = None,
+        self, coordinates: torch.Tensor, features: torch.Tensor, neighbors: torch.Tensor | None = None
     ) -> torch.Tensor:
         hidden_states = self.conv(coordinates, features, neighbors=neighbors)
         return features + self.mlp(self.norm(hidden_states))
@@ -321,9 +303,7 @@ class _Trellis2SparseUnetDecoder(Object3DModel):
         return coordinates, features, tuple(subdivisions)
 
     def _run_unet(
-        self,
-        hidden_states: TrellisSparseTensor,
-        guide_subdivisions: Sequence[torch.Tensor] | None,
+        self, hidden_states: TrellisSparseTensor, guide_subdivisions: Sequence[torch.Tensor] | None
     ) -> tuple[torch.Tensor, torch.Tensor, tuple[torch.Tensor, ...]]:
         coordinates, features, subdivisions = self._run_stages(hidden_states, guide_subdivisions)
         features = F.layer_norm(features.to(dtype=hidden_states.dtype), features.shape[-1:])
@@ -421,11 +401,7 @@ class Trellis2ShapeDualGridDecoder(_Trellis2SparseUnetDecoder):
         return coordinates
 
     def forward(
-        self,
-        hidden_states: TrellisSparseTensor,
-        *,
-        resolution: int | None = None,
-        return_dict: bool = True,
+        self, hidden_states: TrellisSparseTensor, *, resolution: int | None = None, return_dict: bool = True
     ) -> Trellis2ShapeDecoderOutput | tuple[tuple[OVoxelAsset, ...], tuple[torch.Tensor, ...]]:
         """Decode; ``resolution`` is the output grid size (latent resolution times ``2 ** num_upsamples``)."""
 

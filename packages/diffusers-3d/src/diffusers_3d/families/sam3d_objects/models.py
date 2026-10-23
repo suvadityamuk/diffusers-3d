@@ -51,8 +51,7 @@ class Sam3DMoTAttnProcessor:
     def __call__(
         self, attn: Sam3DMoTSelfAttention, shape: torch.Tensor, pose: torch.Tensor
     ) -> tuple[torch.Tensor, torch.Tensor]:
-        projected = {}
-        for name, hidden_states in zip(_STREAMS, (shape, pose)):
+        def project(name: str, hidden_states: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
             stream = attn.streams[name]
             batch_size, length, _ = hidden_states.shape
             query, key, value = (
@@ -60,28 +59,19 @@ class Sam3DMoTAttnProcessor:
             )
             if stream.qk_rms_norm:
                 query, key = stream.q_rms_norm(query), stream.k_rms_norm(key)
-            projected[name] = query, key, value
-        (shape_query, shape_key, shape_value), (pose_query, pose_key, pose_value) = projected.values()
-        attended = (
-            dispatch_attention_fn(
-                shape_query,
-                shape_key,
-                shape_value,
-                backend=self._attention_backend,
-                parallel_config=self._parallel_config,
-            ),
-            dispatch_attention_fn(
-                pose_query,
-                torch.cat([pose_key, shape_key], dim=1),
-                torch.cat([pose_value, shape_value], dim=1),
-                backend=self._attention_backend,
-                parallel_config=self._parallel_config,
-            ),
-        )
-        return tuple(
-            attn.streams[name].to_out(hidden_states.flatten(2).to(dtype=query.dtype))
-            for name, hidden_states, (query, _, _) in zip(_STREAMS, attended, projected.values())
-        )
+            return query, key, value
+
+        def attend(query: torch.Tensor, key: torch.Tensor, value: torch.Tensor) -> torch.Tensor:
+            hidden_states = dispatch_attention_fn(
+                query, key, value, backend=self._attention_backend, parallel_config=self._parallel_config
+            )
+            return hidden_states.flatten(2).to(dtype=query.dtype)
+
+        shape_query, shape_key, shape_value = project("shape", shape)
+        pose_query, pose_key, pose_value = project("pose", pose)
+        shape = attend(shape_query, shape_key, shape_value)
+        pose = attend(pose_query, torch.cat([pose_key, shape_key], dim=1), torch.cat([pose_value, shape_value], dim=1))
+        return attn.streams["shape"].to_out(shape), attn.streams["pose"].to_out(pose)
 
 
 class Sam3DMoTSelfAttention(nn.Module, AttentionModuleMixin):

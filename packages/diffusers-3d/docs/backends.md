@@ -1,110 +1,90 @@
-# Backend policy
+# Backends
 
-Backends implement package-owned protocols and are classified as:
+Optional libraries sit behind backends in `diffusers_3d.backends`. None is imported when the package is imported, and
+none is chosen for you when different choices would change the output. Each backend is registered with a
+`BackendSpec` in `BACKEND_REGISTRY` and falls into one of three classes:
 
-- `portable`: CPU-importable, ordinarily installable, and permissively licensed;
-- `accelerated`: optional compiled or JIT GPU implementations with a tested compatibility matrix;
-- `research_only`: exact-reference implementations that are restricted or unsuitable for automatic selection.
+- **portable**: CPU, pip-installable, permissive license.
+- **accelerated**: compiled or JIT GPU code with a tested compatibility range.
+- **research_only**: restricted licenses. Never selected automatically, and loading requires an explicit
+  acknowledgement argument.
 
-The package never imports optional backends at top level. Backend selection is explicit when multiple
-implementations can change numerical or visual output.
+`diffusers-3d-report` prints which backends are available in the current environment.
 
-## Supported portable adapters
+## Built-in plain-PyTorch paths
 
-`TrimeshBackend`, `ScikitImageBackend`, and `XAtlasBackend` implement CPU mesh I/O/processing, marching cubes, and
-UV unwrapping respectively. `TrimeshBackend`'s `simplify_quadric_decimation` operation (used by Hunyuan3D-2.1 Paint's
-optional remesh) needs `fast-simplification`, which the `portable` extra installs. Constructing an adapter explicitly selects its exact entry in `BACKEND_REGISTRY` before
-the optional module is imported. Their NumPy/CPU conversions are non-differentiable.
+These need no optional dependency and run on any device:
 
-`ScikitImageBackend.extract_surface` generically defaults to
-`gradient_direction="ascent"` and `allow_degenerate=False`. Family integrations must pass different upstream
-settings explicitly when required.
+- `mesh_rasterizer`: rasterizes triangles to face index, barycentrics, and depth. With `align_corners=True` it follows
+  the `custom_rasterizer` convention used by the Hunyuan3D-2.1 and Step1X-3D texture bakers.
+- `multiview_baking`: the multi-view texture baker shared by Hunyuan3D-2.1 Paint and Step1X-3D (camera setup, texel
+  rasterization, back-projection, view merging, and inpainting). It replaces upstream's `MeshRender`. The final gap
+  fill uses `texture_baking.fill_texture` instead of `cv2.inpaint`.
+- `texture_baking`: UV-atlas rasterization and per-texel averaging of rendered views.
+- `radiance_field.render_radiance_field`: volume-renders a TRELLIS `RadianceFieldAsset`.
+- `ovoxel_to_mesh`: TRELLIS.2 dual-grid mesh extraction, bit-identical to upstream.
+- O-Voxel schema conversion and `.npz` read/write.
 
-Trimesh I/O supports OBJ, PLY, GLB, and STL. The adapter rejects channels, transforms, or coordinate-system metadata
-that a requested format cannot preserve instead of silently dropping them. XAtlas remaps vertex-aligned channels
-through its returned vertex mapping and rejects alignment-ambiguous custom channels.
+## Portable
 
-## Accelerated and reference adapters
+Install with the `portable` extra.
 
-- Geometry: CuMesh.
-- Surface extraction: permissive Kaolin/FlexiCubes.
-- Sparse compute: spconv and FlexGEMM.
-- Gaussian rendering: gsplat.
-- Native representations: O-Voxel conversion and codecs.
-- Exact reference rendering: nvdiffrast, nvdiffrec render utilities, diffoctreerast, and model-specific rasterizers.
+- `TrimeshBackend`: OBJ, PLY, GLB, and STL I/O, plus quadric decimation through `fast-simplification`. It refuses to
+  write channels or transforms that the target format cannot hold.
+- `ScikitImageBackend`: marching cubes.
+- `XAtlasBackend`: UV unwrapping.
 
-The TRELLIS.2 adapters intentionally expose only reviewed narrow API surfaces:
+## Accelerated
 
-- `FlexGemmBackend` delegates submanifold sparse convolution and 3D grid sampling. `CuMeshBackend` delegates repair,
-  simplify, narrow-band remesh, UV unwrap, BVH construction, and unsigned distance. The package pins FlexGEMM at
-  `6dd94a859c26ee8246888502eada3dd8ad85532e` and CuMesh at
-  `12289e1062f0603f2f0d0771b02e1395d247f26f`. Discovery requires matching `direct_url.json` VCS provenance, and
-  this check completes before import. Runtime loading then validates the required upstream APIs and active
-  Torch/device/dtype/CUDA/Triton surfaces. Raw upstream modules need no custom `__source_revision__` or `__build_id__`
-  attributes; an upstream version/build string is retained only as diagnostic metadata when present. Installable
-  direct source records are in `requirements/backends/flex-gemm.txt` and `requirements/backends/cumesh.txt`.
-- `OVoxelBackend` provides pure tensor schema conversion, unit-domain uint8 packing, lossless float16/float32
-  out-of-cell dual vertices and split weights, and deterministic lexicographic NPZ ordering across the full uint16
-  coordinate domain without loading an extension. NPZ writes contain only fields accepted by the official reader;
-  callers provide resolution and AABB on read when they cannot be inferred. Explicit 30-bit Morton ordering remains
-  available for coordinates at most 1023.
-  `.vxz`, flexible-dual-grid mesh extraction, and voxel rendering are separate
-  native capabilities delegated to the O-Voxel API from pinned TRELLIS.2 revision
-  `75fbf0183001ed9876c8dbb35de6b68552ee08bd`. `.vxz` does not contain grid resolution metadata, so callers must
-  supply it when reading. VXZ writes pass unsorted global coordinates to the official runtime, which performs its
-  own chunk-local ordering. VXZ v0 accepts only uint8 attributes, so assets containing unbounded split weights are
-  rejected rather than omitted or quantized; use NPZ for lossless serialization. Every serializer rejects negative,
-  uint16-overflowing, or out-of-resolution coordinates before writing. The pinned `o-voxel` subdirectory requirement is recorded in
-  `requirements/backends/o-voxel.txt`; first install the pinned FlexGEMM and CuMesh records, then install O-Voxel with
-  `--no-deps --no-build-isolation` so its mutable transitive Git dependencies cannot replace those pins.
-- The pinned `o_voxel` top-level package eagerly imports its nvdiffrast-dependent postprocess module. Native O-Voxel
-  loading (`.vxz`, voxel rendering) therefore requires explicit nvdiffrast license acknowledgement. Mesh extraction
-  (`ovoxel_to_mesh`), schema, and NPZ paths are plain PyTorch and never perform that import.
-- `Trellis2PBRPostprocessFacade.to_textured_mesh` follows upstream `to_glb` on CuMesh alone: texel rasterization and
-  trilinear PBR baking run in plain PyTorch instead of nvdiffrast and FlexGEMM. It never runs during ordinary
-  pipeline output or backend discovery.
+Install these yourself. Each source build is pinned to a commit in `requirements/backends/`, and the backend refuses
+to load an install that does not record that commit.
 
-These native TRELLIS.2 paths are adapter/API tested with CPU fakes in CI and run on an A100 by the GPU smoke workflow
-(`scripts/gpu_smoke.py`, backends built by `scripts/install_gpu_backends.sh` at the registry pins); render or GLB
-quality beyond "recognizable" is not claimed.
+| Backend | Used for | Install |
+|---|---|---|
+| `CuMeshBackend` | mesh repair, simplification, and UV unwrap for textured GLBs from TRELLIS and TRELLIS.2 | `cumesh.txt` |
+| gsplat | rasterizing Gaussian splats, and baking TRELLIS textured GLBs | `gaussian` extra |
+| `OVoxelBackend` (native) | `.vxz` files and voxel rendering | `o-voxel.txt`, see below |
+| `FlexGemmBackend` | sparse convolution; no pipeline needs it any more | `flex-gemm.txt` |
+| spconv | sparse convolution; no pipeline needs it any more | the wheel for your CUDA version |
+| `KaolinFlexiCubesBackend` | FlexiCubes surface extraction from the Apache-2.0 `kaolin.ops` module only | a Kaolin build matching your CUDA |
 
-These rendering and baking paths are plain PyTorch, built on the adapters above where noted:
+```bash
+pip install --no-build-isolation -r packages/diffusers-3d/requirements/backends/cumesh.txt
+```
 
-- `TrellisGlbPostprocessFacade.to_textured_mesh(mesh, gaussians)` reproduces upstream `to_glb`: CuMesh repair and
-  simplify, xatlas unwrap, gsplat renders from Hammersley views, and `texture_baking.py`, which rasterizes the UV atlas
-  and averages the depth- and alpha-tested observations per texel. `TrimeshBackend` exports the textured
-  `PBRMaterial` to GLB.
-- `radiance_field.render_radiance_field(asset, cameras)` volume-renders a `RadianceFieldAsset` on any device. It is an
-  independent implementation of the tri-vector field's definition, not a port of `diffoctreerast`, which stays a
-  research-only registry entry.
-- `mesh_rasterizer.rasterize(clip_positions, faces, image_size)` returns per-pixel face index, perspective-correct
-  barycentrics, and depth on any device, with `interpolate` for vertex attributes and `rasterize_mesh(mesh, cameras)`
-  for pinhole `CameraRig`s. With `align_corners=True` it follows the `custom_rasterizer` semantics used by the
-  Hunyuan3D-2.1 and Step1X-3D texture bakers; it is an independent implementation with no compiled extension.
-- `multiview_baking` is the multi-view texture baker of `MeshRender`, which Hunyuan3D-2.1 Paint and Step1X-3D share,
-  in plain PyTorch:
-  - `look_at_view` and `orthographic_projection` build its cameras.
-  - `rasterize_texels` finds the surface point under every texel of a UV atlas.
-  - `project_view` back-projects a view by sampling it at those points (`back_sample`), and `splat_view` splats a
-    view's pixels into UV space (`linear`). Both weight texels by the view-angle cosine, cut off at 75°. They distrust
-    pixels near the silhouette and near depth edges found by `canny`, which matches `cv2.Canny`.
-  - `merge_views` is `fast_bake_texture`.
-  - `inpaint_texture` propagates colours over the mesh and fills the remaining gaps ring by ring with
-    `texture_baking.fill_texture`. Upstream uses `cv2.inpaint(INPAINT_NS)` for that last step instead.
+CuMesh bundles cubvh, which is under an NVIDIA non-commercial license. Loading it warns.
 
-`utils3d` means the EasternJournalist repository used by TRELLIS, not the unrelated PyPI distribution. It must be
-installed from an audited pinned revision.
+To install the native O-Voxel runtime, install FlexGEMM and CuMesh first. Then install O-Voxel without dependency
+resolution, so its unpinned Git dependencies cannot replace those pins:
 
-Research discovery also requires exact PEP 610 direct-URL provenance for
-nvdiffrast `253ac4fcea7de5f396371124af597e6cc957bfae`,
-diffoctreerast `b09c20b84ec3aace4729e6e18a613112320eca3a`,
-mip-splatting `dda02ab5ecf45d6edb8c540d9bb65c7e451345a9`, and
-nvdiffrec `a3e73909a01887c8a135235ff860dd23a045cc1b`. The
-corresponding records are in `requirements/backends/`. A matching module and
-distribution version without the pinned source record remain unavailable.
+```bash
+pip install -r packages/diffusers-3d/requirements/backends/flex-gemm.txt \
+            -r packages/diffusers-3d/requirements/backends/cumesh.txt
+pip install --no-deps --no-build-isolation -r packages/diffusers-3d/requirements/backends/o-voxel.txt
+```
 
-CUDA-specific spconv distributions cannot be selected with standard Python environment markers. Users must install
-the wheel matching their CUDA environment before selecting the adapter.
+The `o_voxel` package imports nvdiffrast at import time, so native O-Voxel loading also needs the nvdiffrast license
+acknowledgement. `.vxz` does not store the grid resolution, so pass it when reading. VXZ v0 only holds uint8
+attributes, so assets with float split weights are rejected; use `.npz` for lossless files.
 
-nvdiffrast and other reference-only backends require separate license review and are never included by ordinary
-extras.
+## Textured mesh export
+
+- `Trellis2PBRPostprocessFacade.to_textured_mesh` (TRELLIS.2 and Pixal3D) follows upstream `to_glb` with CuMesh. Texel
+  rasterization and PBR baking run in plain PyTorch instead of nvdiffrast and FlexGEMM.
+- `TrellisGlbPostprocessFacade.to_textured_mesh(mesh, gaussians)` (TRELLIS) uses CuMesh, xatlas, and gsplat renders
+  baked with `texture_baking`.
+
+Export the result with `TrimeshBackend` after converting it to `right_handed_y_up`.
+
+## Research only
+
+nvdiffrast, nvdiffrec, diffoctreerast, mip-splatting, and utils3d (the EasternJournalist repository, not the PyPI
+package of the same name) are registered for reference comparisons only. No pipeline uses them. Review their licenses
+before installing:
+
+```bash
+pip install --no-build-isolation \
+  -r packages/diffusers-3d/requirements/backends/nvdiffrast.txt \
+  -r packages/diffusers-3d/requirements/backends/diffoctreerast.txt \
+  -r packages/diffusers-3d/requirements/backends/mip-splatting.txt
+```

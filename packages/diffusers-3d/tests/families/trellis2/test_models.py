@@ -3,11 +3,7 @@ from __future__ import annotations
 import pytest
 import torch
 
-from diffusers_3d import (
-    Trellis2SLatFlowModel,
-    Trellis2SparseStructureFlowModel,
-    TrellisSparseTensor,
-)
+from diffusers_3d import Trellis2SLatFlowModel, Trellis2SparseStructureFlowModel, TrellisSparseTensor
 
 
 def test_sparse_structure_flow_forward_backward_state_layout_and_save_load(tmp_path):
@@ -43,8 +39,7 @@ def test_sparse_structure_flow_forward_backward_state_layout_and_save_load(tmp_p
     loaded = Trellis2SparseStructureFlowModel.from_pretrained(tmp_path, local_files_only=True).eval()
     with torch.no_grad():
         torch.testing.assert_close(
-            loaded(hidden_states, timesteps, context).sample,
-            model(hidden_states, timesteps, context).sample,
+            loaded(hidden_states, timesteps, context).sample, model(hidden_states, timesteps, context).sample
         )
 
 
@@ -54,10 +49,7 @@ def test_slat_flow_tiny_shape_and_texture_concat_forward_backward_and_save_load(
     with torch.no_grad():
         shape_model.out_layer.weight.normal_(std=0.02)
         texture_model.out_layer.weight.normal_(std=0.02)
-    coordinates = torch.tensor(
-        [[0, 0, 0, 0], [0, 1, 2, 3], [1, 2, 1, 0], [1, 7, 7, 7]],
-        dtype=torch.int64,
-    )
+    coordinates = torch.tensor([[0, 0, 0, 0], [0, 1, 2, 3], [1, 2, 1, 0], [1, 7, 7, 7]], dtype=torch.int64)
     generator = torch.Generator().manual_seed(11)
     shape_input = TrellisSparseTensor(coordinates, torch.randn(4, 4, generator=generator))
     shape_condition = TrellisSparseTensor(coordinates, torch.randn(4, 4, generator=generator))
@@ -67,12 +59,7 @@ def test_slat_flow_tiny_shape_and_texture_concat_forward_backward_and_save_load(
 
     shape_output = shape_model(shape_input, timesteps, context).sample
     texture_model.enable_gradient_checkpointing()
-    texture_output = texture_model(
-        texture_input,
-        timesteps,
-        context,
-        concat_cond=shape_condition,
-    ).sample
+    texture_output = texture_model(texture_input, timesteps, context, concat_cond=shape_condition).sample
     assert torch.equal(shape_output.coordinates, coordinates)
     assert torch.equal(texture_output.coordinates, coordinates)
     assert shape_output.features.shape == texture_output.features.shape == (4, 4)

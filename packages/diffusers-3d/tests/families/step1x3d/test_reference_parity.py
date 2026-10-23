@@ -224,15 +224,15 @@ def _upstream_import_environment():
             )
         },
         transformers.pytorch_utils: {"find_pruneable_heads_and_indices": None, "prune_linear_layer": None},
-        transformers.utils: {
-            name: _passthrough
-            for name in (
+        transformers.utils: dict.fromkeys(
+            (
                 "add_code_sample_docstrings",
                 "add_start_docstrings",
                 "add_start_docstrings_to_model_forward",
                 "replace_return_docstrings",
-            )
-        },
+            ),
+            _passthrough,
+        ),
     }
     added = [(module, name) for module, values in shims.items() for name in values if not hasattr(module, name)]
     saved = {name: sys.modules.get(name) for name in stubs}

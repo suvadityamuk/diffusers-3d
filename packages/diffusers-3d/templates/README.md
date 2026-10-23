@@ -5,8 +5,9 @@ These starters are code scaffolds. Copy a directory and replace every example re
 ## Reviewed model family
 
 `reviewed-model-family/` shows the package contracts for an exact model, object-native pipeline, converter, and
-registrations. Replace the starter conversion mapping only with behavior proven against the pinned upstream
-revision, then follow the checklist in [the contribution guide](../CONTRIBUTING.md).
+registrations. Copy it to `src/diffusers_3d/families/<family>/` and add its registration function to
+`families/registrations.py`. Replace the starter conversion mapping only with behavior proven against the pinned
+upstream revision, then follow the checklist in [the contribution guide](../CONTRIBUTING.md).
 
 ## Experimental custom block
 

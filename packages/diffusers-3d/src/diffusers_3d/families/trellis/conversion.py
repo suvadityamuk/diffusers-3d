@@ -27,30 +27,29 @@ from .scheduler import TrellisFlowEulerScheduler
 TRELLIS_REFERENCE_REVISION = "442aa1e1afb9014e80681d3bf604e8d728a86ee7"
 
 _COMPONENT_TYPES = {
-    "sparse_structure_flow_model": {
-        "SparseStructureFlowModel": TrellisSparseStructureFlowModel,
-    },
-    "sparse_structure_decoder": {
-        "SparseStructureDecoder": TrellisSparseStructureDecoder,
-    },
-    "slat_flow_model": {
-        "SLatFlowModel": TrellisSLatFlowModel,
-        "ElasticSLatFlowModel": TrellisSLatFlowModel,
-    },
+    "sparse_structure_flow_model": {"SparseStructureFlowModel": TrellisSparseStructureFlowModel},
+    "sparse_structure_decoder": {"SparseStructureDecoder": TrellisSparseStructureDecoder},
+    "slat_flow_model": {"SLatFlowModel": TrellisSLatFlowModel, "ElasticSLatFlowModel": TrellisSLatFlowModel},
     "slat_decoder_gs": {
         "SLatGaussianDecoder": TrellisSLatGaussianDecoder,
         "ElasticSLatGaussianDecoder": TrellisSLatGaussianDecoder,
     },
-    "slat_decoder_mesh": {
-        "SLatMeshDecoder": TrellisSLatMeshDecoder,
-        "ElasticSLatMeshDecoder": TrellisSLatMeshDecoder,
-    },
+    "slat_decoder_mesh": {"SLatMeshDecoder": TrellisSLatMeshDecoder, "ElasticSLatMeshDecoder": TrellisSLatMeshDecoder},
     "slat_decoder_rf": {
         "SLatRadianceFieldDecoder": TrellisSLatRadianceFieldDecoder,
         "ElasticSLatRadianceFieldDecoder": TrellisSLatRadianceFieldDecoder,
     },
 }
 _UPSTREAM_COMPONENTS = set(_COMPONENT_TYPES)
+# Upstream ``pipeline.json`` model keys -> pipeline component subfolders.
+_OUTPUT_NAMES = {
+    "sparse_structure_flow_model": "sparse_structure_flow_model",
+    "sparse_structure_decoder": "sparse_structure_decoder",
+    "slat_flow_model": "slat_flow_model",
+    "slat_decoder_gs": "gaussian_decoder",
+    "slat_decoder_mesh": "mesh_decoder",
+    "slat_decoder_rf": "radiance_field_decoder",
+}
 _SHARED_PIPELINE_ARGUMENTS = {"models", "slat_normalization", "slat_sampler", "sparse_structure_sampler"}
 # Upstream pipeline name -> (package pipeline, upstream encoder argument, released encoder id)
 _PIPELINES = {
@@ -78,11 +77,7 @@ def _load_component_descriptor(path: Path) -> tuple[str, dict[str, Any]]:
 
 
 def _save_component(
-    component_key: str,
-    source_stem: Path,
-    destination: Path,
-    *,
-    safe_serialization: bool,
+    component_key: str, source_stem: Path, destination: Path, *, safe_serialization: bool
 ) -> tuple[type[Any], dict[str, Any]]:
     model_name, model_config = _load_component_descriptor(source_stem.with_suffix(".json"))
     model_types = _COMPONENT_TYPES[component_key]
@@ -140,12 +135,7 @@ def _validate_sampler(value: object, *, name: str) -> tuple[float, dict[str, Any
         sigma_min = float(args["sigma_min"])
     except (TypeError, ValueError) as error:
         raise ValueError(f"{name} contains non-numeric sampler values") from error
-    normalized = {
-        "steps": steps,
-        "cfg_strength": cfg_strength,
-        "cfg_interval": cfg_interval,
-        "rescale_t": rescale_t,
-    }
+    normalized = {"steps": steps, "cfg_strength": cfg_strength, "cfg_interval": cfg_interval, "rescale_t": rescale_t}
     if (
         not math.isfinite(sigma_min)
         or not 0 <= sigma_min < 1
@@ -241,29 +231,22 @@ def convert_trellis_checkpoint(
 
     destination = Path(output_directory)
     destination.mkdir(parents=True, exist_ok=True)
-    component_index: dict[str, list[str | None]] = {}
+    component_index: dict[str, list[str]] = {}
     component_report: dict[str, dict[str, Any]] = {}
-    output_names = {
-        "sparse_structure_flow_model": "sparse_structure_flow_model",
-        "sparse_structure_decoder": "sparse_structure_decoder",
-        "slat_flow_model": "slat_flow_model",
-        "slat_decoder_gs": "gaussian_decoder",
-        "slat_decoder_mesh": "mesh_decoder",
-        "slat_decoder_rf": "radiance_field_decoder",
-    }
     for component_key, reference in models.items():
         if not isinstance(reference, str) or not reference:
             raise ValueError(f"pipeline model reference {component_key!r} must be a non-empty string")
+        output_name = _OUTPUT_NAMES[component_key]
         model_type, model_config = _save_component(
             component_key,
             _component_source(source, reference),
-            destination / output_names[component_key],
+            destination / output_name,
             safe_serialization=safe_serialization,
         )
-        component_index[output_names[component_key]] = [model_type.__module__, model_type.__name__]
+        component_index[output_name] = [model_type.__module__, model_type.__name__]
         component_report[component_key] = {
             "source": reference,
-            "target": output_names[component_key],
+            "target": output_name,
             "class": model_type.__name__,
             "config": model_config,
         }
@@ -273,42 +256,19 @@ def convert_trellis_checkpoint(
         component_index[name] = ["transformers", type(component).__name__]
 
     sigma_min, sparse_sampler_params = _validate_sampler(
-        args["sparse_structure_sampler"],
-        name="sparse_structure_sampler",
+        args["sparse_structure_sampler"], name="sparse_structure_sampler"
     )
-    scheduler = TrellisFlowEulerScheduler(sigma_min=sigma_min)
-    scheduler.save_pretrained(destination / "sparse_structure_scheduler")
-    component_index["sparse_structure_scheduler"] = [
-        TrellisFlowEulerScheduler.__module__,
-        TrellisFlowEulerScheduler.__name__,
-    ]
+    TrellisFlowEulerScheduler(sigma_min=sigma_min).save_pretrained(destination / "sparse_structure_scheduler")
+    scheduler_entry = [TrellisFlowEulerScheduler.__module__, TrellisFlowEulerScheduler.__name__]
+    component_index["sparse_structure_scheduler"] = scheduler_entry
 
     slat_sigma_min, slat_sampler_params = _validate_sampler(args["slat_sampler"], name="slat_sampler")
-    converted_slat = "slat_flow_model" in component_index
-    if converted_slat:
-        slat_scheduler = TrellisFlowEulerScheduler(sigma_min=slat_sigma_min)
-        slat_scheduler.save_pretrained(destination / "slat_scheduler")
-        component_index["slat_scheduler"] = [
-            TrellisFlowEulerScheduler.__module__,
-            TrellisFlowEulerScheduler.__name__,
-        ]
-    else:
-        component_index["slat_flow_model"] = [None, None]
-        component_index["slat_scheduler"] = [None, None]
-    for decoder_name in ("gaussian_decoder", "mesh_decoder", "radiance_field_decoder"):
-        if decoder_name not in component_index:
-            component_index[decoder_name] = [None, None]
+    TrellisFlowEulerScheduler(sigma_min=slat_sigma_min).save_pretrained(destination / "slat_scheduler")
+    component_index["slat_scheduler"] = scheduler_entry
 
-    normalization_mean, normalization_std = _validate_normalization(args["slat_normalization"])
-    if converted_slat:
-        slat_channels = int(component_report["slat_flow_model"]["config"]["out_channels"])
-        if len(normalization_mean) != slat_channels:
-            raise ValueError("SLAT normalization must contain one value per SLAT flow output channel")
-        slat_mean = normalization_mean
-        slat_std = normalization_std
-    else:
-        slat_mean = None
-        slat_std = None
+    slat_mean, slat_std = _validate_normalization(args["slat_normalization"])
+    if len(slat_mean) != int(component_report["slat_flow_model"]["config"]["out_channels"]):
+        raise ValueError("SLAT normalization must contain one value per SLAT flow output channel")
 
     model_index: dict[str, Any] = {
         "_class_name": pipeline_type.__name__,
@@ -318,30 +278,23 @@ def convert_trellis_checkpoint(
         "slat_std": slat_std,
     }
     (destination / "model_index.json").write_text(
-        json.dumps(model_index, indent=2, sort_keys=True) + "\n",
-        encoding="utf-8",
+        json.dumps(model_index, indent=2, sort_keys=True) + "\n", encoding="utf-8"
     )
     metadata = pipeline_type.object3d_model_index()
     metadata.validate_diffusers_model_index(
-        destination / "model_index.json",
-        pipeline_class_name=pipeline_type.__name__,
-        enforce_loading_eligibility=False,
+        destination / "model_index.json", pipeline_class_name=pipeline_type.__name__, enforce_loading_eligibility=False
     )
     metadata.save_pretrained(destination)
     report = {
         "components": component_report,
         "reference_revision": TRELLIS_REFERENCE_REVISION,
-        "samplers": {
-            "slat": slat_sampler_params,
-            "sparse_structure": sparse_sampler_params,
-        },
+        "samplers": {"slat": slat_sampler_params, "sparse_structure": sparse_sampler_params},
         "skipped_components": {},
         "source_pipeline": str(pipeline_path.resolve()),
         "production_gpu_quality_verified": False,
     }
     (destination / "trellis_conversion.json").write_text(
-        json.dumps(report, indent=2, sort_keys=True) + "\n",
-        encoding="utf-8",
+        json.dumps(report, indent=2, sort_keys=True) + "\n", encoding="utf-8"
     )
     return destination
 

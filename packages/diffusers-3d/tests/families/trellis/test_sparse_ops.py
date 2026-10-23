@@ -104,9 +104,7 @@ def test_subdivide_and_channel_to_spatial_follow_the_child_layout():
 
 
 def test_window_partition_groups_per_batch_and_pads_losslessly():
-    coordinates = torch.tensor(
-        [[0, 0, 0, 0], [0, 1, 1, 1], [0, 2, 0, 0], [0, 3, 3, 3], [1, 0, 0, 0], [1, 1, 0, 0]],
-    )
+    coordinates = torch.tensor([[0, 0, 0, 0], [0, 1, 1, 1], [0, 2, 0, 0], [0, 3, 3, 3], [1, 0, 0, 0], [1, 1, 0, 0]])
     partition = sparse_window_partition(coordinates, window_size=2)
     # Batch 0 splits into (0..1)^3 -> {0, 1}, (2..3, 0..1, 0..1) -> {2}, (2..3)^3 -> {3}; batch 1 is one window.
     assert partition.num_windows == 4 and partition.max_tokens == 2

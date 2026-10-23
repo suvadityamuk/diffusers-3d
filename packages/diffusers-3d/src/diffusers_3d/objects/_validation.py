@@ -34,17 +34,9 @@ def identity_transform() -> torch.Tensor:
 
 
 def follow_device(primary: torch.Tensor, transform: torch.Tensor) -> torch.Tensor:
-    """Place a 4x4 transform on ``primary``'s device.
+    """Move a (default CPU identity) transform onto ``primary``'s device so callers need not pass one."""
 
-    Assets default ``transform`` / ``grid_transform`` to a CPU identity, and a model producing tensors on an
-    accelerator should not have to pass them explicitly; a transform is metadata-sized, so moving it is cheap.
-    """
-
-    if (
-        isinstance(transform, torch.Tensor)
-        and isinstance(primary, torch.Tensor)
-        and transform.device != primary.device
-    ):
+    if isinstance(transform, torch.Tensor) and isinstance(primary, torch.Tensor):
         return transform.to(primary.device)
     return transform
 
@@ -154,8 +146,7 @@ def validate_extras(
 ) -> None:
     if not isinstance(extras, Mapping):
         raise Object3DValidationError("extras must be a mapping of names to tensors")
-    normalized_extras = normalize_extras(extras)
-    for name, tensor in normalized_extras.items():
+    for name, tensor in normalize_extras(extras).items():
         validate_tensor(f"extras[{name!r}]", tensor)
         if tensor.ndim == 0:
             raise TensorShapeError(f"extras[{name!r}] must have at least one dimension")

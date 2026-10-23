@@ -11,8 +11,7 @@ def test_released_rescaled_schedule_guidance_and_euler_equations():
     torch.testing.assert_close(scheduler.timesteps, torch.tensor([1.0, 0.75]))
     torch.testing.assert_close(scheduler._next_timesteps, torch.tensor([0.75, 0.0]))
     torch.testing.assert_close(
-        scheduler.model_timestep(scheduler.timesteps[0], 2, device="cpu"),
-        torch.tensor([1000.0, 1000.0]),
+        scheduler.model_timestep(scheduler.timesteps[0], 2, device="cpu"), torch.tensor([1000.0, 1000.0])
     )
 
     conditional = torch.tensor([2.0])
@@ -22,10 +21,7 @@ def test_released_rescaled_schedule_guidance_and_euler_equations():
     sample = torch.tensor([1.0])
     first = scheduler.step(velocity, scheduler.timesteps[0], sample)
     torch.testing.assert_close(first.prev_sample, sample - 0.25 * velocity)
-    torch.testing.assert_close(
-        first.pred_original_sample,
-        (1 - 1e-5) * sample - (1e-5 + (1 - 1e-5)) * velocity,
-    )
+    torch.testing.assert_close(first.pred_original_sample, (1 - 1e-5) * sample - (1e-5 + (1 - 1e-5)) * velocity)
     second = scheduler.step(velocity, scheduler.timesteps[1], first.prev_sample)
     torch.testing.assert_close(second.prev_sample, first.prev_sample - 0.75 * velocity)
 

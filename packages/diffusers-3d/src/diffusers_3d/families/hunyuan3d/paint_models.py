@@ -195,9 +195,8 @@ class Hunyuan3DPaintTransformerBlock(BasicTransformerBlock):
         norm_hidden_states = self.norm1(hidden_states)
         hidden_states = self.attn1(norm_hidden_states, num_views=num_views) + hidden_states
 
-        tokens = norm_hidden_states.unflatten(0, (-1, 2, num_views)).flatten(
-            2, 3
-        )  # (batch, material, view tokens, dim)
+        # (batch, material, view tokens, dim)
+        tokens = norm_hidden_states.unflatten(0, (-1, 2, num_views)).flatten(2, 3)
         features = cross_attention_kwargs["reference_features"][self.reference_key]
         reference = self.attn_refview(tokens[:, 0], encoder_hidden_states=features)
         reference = reference.unflatten(2, (num_views, -1)).flatten(0, 2)

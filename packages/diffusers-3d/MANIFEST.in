@@ -1,7 +1,6 @@
 include LICENSE-APACHE-2.0
 include README.md
 include CONTRIBUTING.md
-include COMPATIBILITY.md
 include pyproject.toml
 
 recursive-include docs *.md

@@ -148,6 +148,23 @@ def _normalize_schema_version(value: object) -> int:
     return value
 
 
+def _normalize_enum(value: object, enum_type: type[Enum], field_name: str) -> Enum:
+    try:
+        return enum_type(value)
+    except (TypeError, ValueError) as error:
+        raise Object3DMetadataError(f"{field_name} must be a valid {enum_type.__name__}") from error
+
+
+def _set_fields(instance: object, **values: object) -> None:
+    for name, value in values.items():
+        object.__setattr__(instance, name, value)
+
+
+def _is_explicit_local_reference(reference: str | os.PathLike[str]) -> bool:
+    path = Path(reference)
+    return isinstance(reference, os.PathLike) or path.exists() or path.is_absolute() or str(reference).startswith(".")
+
+
 def _normalize_subfolder(subfolder: str | os.PathLike[str] | None) -> str | None:
     if subfolder is None or os.fspath(subfolder) == "":
         return None
@@ -188,27 +205,18 @@ class Object3DComponentSpec:
     loading_eligible: bool
 
     def __post_init__(self) -> None:
-        object.__setattr__(self, "name", _normalize_component_name(self.name, "component.name"))
-        object.__setattr__(
+        _set_fields(
             self,
-            "expected_class",
-            _normalize_qualified_class(self.expected_class, "component.expected_class"),
-        )
-        object.__setattr__(
-            self,
-            "subfolder",
-            _normalize_component_subfolder(self.subfolder, "component.subfolder"),
+            name=_normalize_component_name(self.name, "component.name"),
+            expected_class=_normalize_qualified_class(self.expected_class, "component.expected_class"),
+            subfolder=_normalize_component_subfolder(self.subfolder, "component.subfolder"),
         )
         if type(self.optional) is not bool:
             raise Object3DMetadataError("component.optional must be a boolean")
-        try:
-            review_status = ReviewStatus(self.review_status)
-        except (TypeError, ValueError) as error:
-            raise Object3DMetadataError("component.review_status must be a valid ReviewStatus") from error
-        object.__setattr__(self, "review_status", review_status)
+        _set_fields(self, review_status=_normalize_enum(self.review_status, ReviewStatus, "component.review_status"))
         if type(self.loading_eligible) is not bool:
             raise Object3DMetadataError("component.loading_eligible must be a boolean")
-        if self.loading_eligible and review_status is not ReviewStatus.REVIEWED:
+        if self.loading_eligible and self.review_status is not ReviewStatus.REVIEWED:
             raise Object3DMetadataError("Only reviewed components can be eligible for automatic loading")
         if not self.optional and not self.loading_eligible:
             raise Object3DMetadataError("Required components must be reviewed and eligible for automatic loading")
@@ -282,38 +290,17 @@ class Object3DModelMetadata:
     review_status: ReviewStatus
 
     def __post_init__(self) -> None:
-        object.__setattr__(self, "schema_version", _normalize_schema_version(self.schema_version))
-        object.__setattr__(self, "family_id", _normalize_identifier(self.family_id, "family_id"))
-        object.__setattr__(
+        _set_fields(
             self,
-            "component_role",
-            _normalize_identifier(self.component_role, "component_role"),
+            schema_version=_normalize_schema_version(self.schema_version),
+            family_id=_normalize_identifier(self.family_id, "family_id"),
+            component_role=_normalize_identifier(self.component_role, "component_role"),
+            model_class=_normalize_qualified_class(self.model_class, "model_class"),
+            supported_object_kinds=_normalize_object_kinds(self.supported_object_kinds, "supported_object_kinds"),
+            required_backends=_normalize_identifiers(self.required_backends, "required_backends", allow_empty=True),
+            contribution_status=_normalize_enum(self.contribution_status, ContributionStatus, "contribution_status"),
+            review_status=_normalize_enum(self.review_status, ReviewStatus, "review_status"),
         )
-        object.__setattr__(
-            self,
-            "model_class",
-            _normalize_qualified_class(self.model_class, "model_class"),
-        )
-        object.__setattr__(
-            self,
-            "supported_object_kinds",
-            _normalize_object_kinds(self.supported_object_kinds, "supported_object_kinds"),
-        )
-        object.__setattr__(
-            self,
-            "required_backends",
-            _normalize_identifiers(self.required_backends, "required_backends", allow_empty=True),
-        )
-        try:
-            contribution_status = ContributionStatus(self.contribution_status)
-        except (TypeError, ValueError) as error:
-            raise Object3DMetadataError("contribution_status must be a valid ContributionStatus") from error
-        object.__setattr__(self, "contribution_status", contribution_status)
-        try:
-            review_status = ReviewStatus(self.review_status)
-        except (TypeError, ValueError) as error:
-            raise Object3DMetadataError("review_status must be a valid ReviewStatus") from error
-        object.__setattr__(self, "review_status", review_status)
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -345,45 +332,20 @@ class Object3DModelIndex:
     review_status: ReviewStatus
 
     def __post_init__(self) -> None:
-        object.__setattr__(self, "schema_version", _normalize_schema_version(self.schema_version))
-        object.__setattr__(self, "family_id", _normalize_identifier(self.family_id, "family_id"))
-        object.__setattr__(self, "task_ids", _normalize_identifiers(self.task_ids, "task_ids"))
-        object.__setattr__(
+        _set_fields(
             self,
-            "pipeline_class",
-            _normalize_qualified_class(self.pipeline_class, "pipeline_class"),
+            schema_version=_normalize_schema_version(self.schema_version),
+            family_id=_normalize_identifier(self.family_id, "family_id"),
+            task_ids=_normalize_identifiers(self.task_ids, "task_ids"),
+            pipeline_class=_normalize_qualified_class(self.pipeline_class, "pipeline_class"),
+            components=_normalize_component_specs(self.components),
+            output_object_types=_normalize_qualified_classes(self.output_object_types, "output_object_types"),
+            output_representations=_normalize_identifiers(self.output_representations, "output_representations"),
+            object_kinds=_normalize_object_kinds(self.object_kinds, "object_kinds"),
+            required_backends=_normalize_identifiers(self.required_backends, "required_backends", allow_empty=True),
+            contribution_status=_normalize_enum(self.contribution_status, ContributionStatus, "contribution_status"),
+            review_status=_normalize_enum(self.review_status, ReviewStatus, "review_status"),
         )
-        object.__setattr__(self, "components", _normalize_component_specs(self.components))
-        object.__setattr__(
-            self,
-            "output_object_types",
-            _normalize_qualified_classes(self.output_object_types, "output_object_types"),
-        )
-        object.__setattr__(
-            self,
-            "output_representations",
-            _normalize_identifiers(self.output_representations, "output_representations"),
-        )
-        object.__setattr__(
-            self,
-            "object_kinds",
-            _normalize_object_kinds(self.object_kinds, "object_kinds"),
-        )
-        object.__setattr__(
-            self,
-            "required_backends",
-            _normalize_identifiers(self.required_backends, "required_backends", allow_empty=True),
-        )
-        try:
-            contribution_status = ContributionStatus(self.contribution_status)
-        except (TypeError, ValueError) as error:
-            raise Object3DMetadataError("contribution_status must be a valid ContributionStatus") from error
-        object.__setattr__(self, "contribution_status", contribution_status)
-        try:
-            review_status = ReviewStatus(self.review_status)
-        except (TypeError, ValueError) as error:
-            raise Object3DMetadataError("review_status must be a valid ReviewStatus") from error
-        object.__setattr__(self, "review_status", review_status)
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -532,22 +494,12 @@ class Object3DModelIndex:
         local_files_only: bool = False,
     ) -> Object3DModelIndex:
         normalized_subfolder = _normalize_subfolder(subfolder)
-        reference_path = Path(pretrained_model_name_or_path)
-        is_pathlike = isinstance(pretrained_model_name_or_path, os.PathLike)
-        is_explicit_local = (
-            is_pathlike
-            or reference_path.exists()
-            or reference_path.is_absolute()
-            or str(pretrained_model_name_or_path).startswith(".")
-        )
-
-        if is_explicit_local:
-            if reference_path.is_file():
+        if _is_explicit_local_reference(pretrained_model_name_or_path):
+            metadata_path = Path(pretrained_model_name_or_path)
+            if metadata_path.is_file():
                 if normalized_subfolder is not None:
                     raise Object3DLoadingError("subfolder cannot be used when loading a metadata file directly")
-                metadata_path = reference_path
             else:
-                metadata_path = reference_path
                 if normalized_subfolder is not None:
                     metadata_path = metadata_path / normalized_subfolder
                 metadata_path = metadata_path / OBJECT3D_MODEL_INDEX_NAME
@@ -584,8 +536,6 @@ class Object3DModelIndex:
             directory.mkdir(parents=True, exist_ok=True)
         except OSError as error:
             raise Object3DLoadingError(f"Could not create metadata directory {directory}") from error
-        if not directory.is_dir():
-            raise Object3DLoadingError(f"Metadata destination {directory} is not a directory")
 
         destination = directory / OBJECT3D_MODEL_INDEX_NAME
         payload = json.dumps(self.to_dict(), indent=2, sort_keys=True, ensure_ascii=False) + "\n"

@@ -16,8 +16,15 @@ CUMESH_SOURCE_URL = "https://github.com/JeffreyXiang/CuMesh.git"
 CUMESH_SOURCE_REVISION = "12289e1062f0603f2f0d0771b02e1395d247f26f"
 
 
+def _call(native: Any, name: str, *args: Any, **kwargs: Any) -> Any:
+    function = getattr(native, name, None)
+    if not callable(function):
+        raise RuntimeError(f"the selected CuMesh build does not expose {name}")
+    return function(*args, **kwargs)
+
+
 class CuMeshBackend:
-    """Registry-attested CuMesh repair, simplify, remesh, UV, and BVH adapter."""
+    """CuMesh repair, simplify, remesh, UV-unwrap, and BVH adapter."""
 
     def __init__(
         self,
@@ -115,24 +122,12 @@ class CuMeshBackend:
             )
             if unknown:
                 raise ValueError(f"unknown repair parameters: {sorted(unknown)}")
-            for name in ("remove_duplicate_faces", "repair_non_manifold_edges"):
-                function = getattr(native, name, None)
-                if not callable(function):
-                    raise RuntimeError(f"the selected CuMesh build does not expose {name}")
-                function()
-            function = getattr(native, "remove_small_connected_components", None)
-            if not callable(function):
-                raise RuntimeError("the selected CuMesh build does not expose remove_small_connected_components")
-            function(float(values.get("minimum_component_area", 1e-5)))
-            function = getattr(native, "fill_holes", None)
-            if not callable(function):
-                raise RuntimeError("the selected CuMesh build does not expose fill_holes")
-            function(max_hole_perimeter=float(values.get("max_hole_perimeter", 3e-2)))
+            _call(native, "remove_duplicate_faces")
+            _call(native, "repair_non_manifold_edges")
+            _call(native, "remove_small_connected_components", float(values.get("minimum_component_area", 1e-5)))
+            _call(native, "fill_holes", max_hole_perimeter=float(values.get("max_hole_perimeter", 3e-2)))
             if bool(values.get("unify_face_orientations", True)):
-                function = getattr(native, "unify_face_orientations", None)
-                if not callable(function):
-                    raise RuntimeError("the selected CuMesh build does not expose unify_face_orientations")
-                function()
+                _call(native, "unify_face_orientations")
             return self._asset(mesh, native, operation=operation)
         if operation == "simplify":
             if set(values).difference({"target_faces", "verbose"}) or "target_faces" not in values:
@@ -148,12 +143,9 @@ class CuMeshBackend:
                 raise ValueError(
                     "remesh requires resolution and accepts center, scale, band, project_back, and verbose"
                 )
-            remesh = getattr(getattr(self._module, "remeshing", None), "remesh_narrow_band_dc", None)
-            if not callable(remesh):
-                raise RuntimeError("the selected CuMesh build does not expose remeshing.remesh_narrow_band_dc")
             center = values.get("center", mesh.vertices.mean(dim=0))
             scale = float(values.get("scale", (mesh.vertices.amax(dim=0) - mesh.vertices.amin(dim=0)).max()))
-            remeshed = remesh(
+            remeshed = self._module.remeshing.remesh_narrow_band_dc(
                 mesh.vertices,
                 mesh.faces,
                 center=torch.as_tensor(center, device=mesh.device, dtype=torch.float32),
@@ -189,11 +181,8 @@ class CuMeshBackend:
         raise ValueError("CuMeshBackend supports 'repair', 'simplify', 'remesh', and 'uv_unwrap'")
 
     def build_bvh(self, mesh: MeshAsset) -> Any:
-        self._native(mesh)
-        bvh_type = getattr(self._module, "cuBVH", None)
-        if not callable(bvh_type):
-            raise RuntimeError("the selected CuMesh build does not expose cuBVH")
-        return bvh_type(mesh.vertices, mesh.faces.to(dtype=torch.int32))
+        self._native(mesh)  # validates the mesh
+        return self._module.cuBVH(mesh.vertices, mesh.faces.to(dtype=torch.int32))
 
     def unsigned_distance(
         self,

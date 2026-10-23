@@ -84,12 +84,12 @@ _COMPONENTS = (
 _OPTIONAL_COMPONENTS = ("slat_conditioner", "slat_flow_model", "slat_scheduler", "gaussian_decoder", "mesh_decoder")
 
 
-def _pad_to_square(tensor: torch.Tensor, value: float = 0.0) -> torch.Tensor:
+def _pad_to_square(tensor: torch.Tensor) -> torch.Tensor:
     height, width = tensor.shape[-2:]
     difference = abs(height - width)
     before, after = difference // 2, difference - difference // 2
     padding = (before, after, 0, 0) if height > width else (0, 0, before, after)
-    return F.pad(tensor, padding, value=value)
+    return F.pad(tensor, padding)
 
 
 def _resize(tensor: torch.Tensor, size: int, mode: str) -> torch.Tensor:
@@ -415,7 +415,7 @@ class Sam3DObjectsPipeline(Object3DPipeline, Object3DLoraLoaderMixin):
         dense = shape_latents.permute(0, 2, 1).reshape(shape_latents.shape[0], -1, *(resolution,) * 3)
         structures, factors = [], []
         for asset in self.sparse_structure_decoder.decode_to_sparse_voxels(dense):
-            coordinates = _prune_interior(torch.nn.functional.pad(asset.coordinates, (1, 0)))[:, 1:]
+            coordinates = _prune_interior(F.pad(asset.coordinates, (1, 0)))[:, 1:]
             coordinates, factor = _downsample_structure(coordinates)
             structures.append(
                 dataclasses.replace(

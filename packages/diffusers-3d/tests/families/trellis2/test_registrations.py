@@ -40,9 +40,6 @@ def test_registries_contain_exact_trellis2_classes():
         "sparse-structure",
     }
     assert (
-        _PIPELINE_REGISTRY.resolve(
-            Trellis2ImageTo3DPipeline.object3d_model_index(),
-            "image-to-3d",
-        )
+        _PIPELINE_REGISTRY.resolve(Trellis2ImageTo3DPipeline.object3d_model_index(), "image-to-3d")
         is Trellis2ImageTo3DPipeline
     )

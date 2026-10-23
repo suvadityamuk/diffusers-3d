@@ -17,7 +17,9 @@ from diffusers import ModelMixin  # noqa: F401 - required by external-component 
 from diffusers.configuration_utils import register_to_config
 from diffusers.models.attention import AttentionModuleMixin
 from diffusers.models.attention_dispatch import dispatch_attention_fn
+from diffusers.models.embeddings import get_timestep_embedding
 from diffusers.models.modeling_utils import get_parameter_dtype
+from diffusers.models.normalization import FP32LayerNorm
 from diffusers.utils import BaseOutput
 from torch import nn
 
@@ -38,13 +40,8 @@ class Trellis2SLatFlowOutput(BaseOutput):
     sample: TrellisSparseTensor
 
 
-class Trellis2LayerNorm32(nn.LayerNorm):
-    def forward(self, hidden_states: torch.Tensor) -> torch.Tensor:
-        weight = None if self.weight is None else self.weight.float()
-        bias = None if self.bias is None else self.bias.float()
-        return F.layer_norm(hidden_states.float(), self.normalized_shape, weight, bias, self.eps).to(
-            dtype=hidden_states.dtype
-        )
+class Trellis2LayerNorm32(FP32LayerNorm):
+    """Upstream ``LayerNorm32``: layer norm computed in float32."""
 
 
 class Trellis2TimestepEmbedder(nn.Module):
@@ -58,14 +55,9 @@ class Trellis2TimestepEmbedder(nn.Module):
         self.frequency_embedding_size = frequency_embedding_size
 
     def forward(self, timestep: torch.Tensor) -> torch.Tensor:
-        half = self.frequency_embedding_size // 2
-        frequencies = torch.exp(
-            -math.log(10000) * torch.arange(half, dtype=torch.float32, device=timestep.device) / half
+        embedding = get_timestep_embedding(
+            timestep, self.frequency_embedding_size, flip_sin_to_cos=True, downscale_freq_shift=0
         )
-        arguments = timestep[:, None].float() * frequencies[None]
-        embedding = torch.cat([torch.cos(arguments), torch.sin(arguments)], dim=-1)
-        if self.frequency_embedding_size % 2:
-            embedding = torch.cat([embedding, torch.zeros_like(embedding[:, :1])], dim=-1)
         return self.mlp(embedding.to(dtype=get_parameter_dtype(self.mlp)))
 
 
@@ -86,29 +78,11 @@ class Trellis2AbsolutePositionEmbedder(nn.Module):
         embedding = torch.outer(coordinates.reshape(-1), frequencies)
         embedding = torch.cat([torch.sin(embedding), torch.cos(embedding)], dim=-1)
         embedding = embedding.reshape(coordinates.shape[0], -1)
-        if embedding.shape[1] < self.channels:
-            embedding = torch.cat(
-                [
-                    embedding,
-                    torch.zeros(
-                        embedding.shape[0],
-                        self.channels - embedding.shape[1],
-                        device=embedding.device,
-                        dtype=embedding.dtype,
-                    ),
-                ],
-                dim=-1,
-            )
-        return embedding
+        return F.pad(embedding, (0, self.channels - embedding.shape[1]))
 
 
 class Trellis2RotaryPositionEmbedder(nn.Module):
-    def __init__(
-        self,
-        head_dim: int,
-        dimensions: int = 3,
-        rope_freq: tuple[float, float] = (1.0, 10000.0),
-    ) -> None:
+    def __init__(self, head_dim: int, dimensions: int = 3, rope_freq: tuple[float, float] = (1.0, 10000.0)) -> None:
         super().__init__()
         if head_dim % 2:
             raise ValueError("attention head dimension must be even for rotary embeddings")
@@ -125,16 +99,9 @@ class Trellis2RotaryPositionEmbedder(nn.Module):
         phases = torch.outer(coordinates.reshape(-1).float(), frequencies)
         phases = torch.polar(torch.ones_like(phases), phases)
         phases = phases.reshape(*coordinates.shape[:-1], -1)
-        if phases.shape[-1] < self.head_dim // 2:
-            padding = self.head_dim // 2 - phases.shape[-1]
-            phases = torch.cat(
-                [
-                    phases,
-                    torch.ones(*phases.shape[:-1], padding, device=phases.device, dtype=phases.dtype),
-                ],
-                dim=-1,
-            )
-        return phases
+        # Head channels left over after splitting by axis are not rotated.
+        padding = phases.new_ones(*phases.shape[:-1], self.head_dim // 2 - phases.shape[-1])
+        return torch.cat([phases, padding], dim=-1)
 
     @staticmethod
     def apply_rotary_embedding(hidden_states: torch.Tensor, phases: torch.Tensor) -> torch.Tensor:
@@ -167,29 +134,14 @@ class Trellis2AttnProcessor:
         batch_size, sequence_length, _ = hidden_states.shape
         if attn._type == "self":
             query_key_value = attn.to_qkv(hidden_states).reshape(
-                batch_size,
-                sequence_length,
-                3,
-                attn.num_heads,
-                attn.head_dim,
+                batch_size, sequence_length, 3, attn.num_heads, attn.head_dim
             )
             query, key, value = query_key_value.unbind(dim=2)
         else:
             if context is None:
                 raise ValueError("context is required for cross-attention")
-            query = attn.to_q(hidden_states).reshape(
-                batch_size,
-                sequence_length,
-                attn.num_heads,
-                attn.head_dim,
-            )
-            key_value = attn.to_kv(context).reshape(
-                batch_size,
-                context.shape[1],
-                2,
-                attn.num_heads,
-                attn.head_dim,
-            )
+            query = attn.to_q(hidden_states).reshape(batch_size, sequence_length, attn.num_heads, attn.head_dim)
+            key_value = attn.to_kv(context).reshape(batch_size, context.shape[1], 2, attn.num_heads, attn.head_dim)
             key, value = key_value.unbind(dim=2)
         if attn.qk_rms_norm:
             query = attn.q_rms_norm(query)
@@ -200,11 +152,7 @@ class Trellis2AttnProcessor:
             query = Trellis2RotaryPositionEmbedder.apply_rotary_embedding(query, phases)
             key = Trellis2RotaryPositionEmbedder.apply_rotary_embedding(key, phases)
         hidden_states = dispatch_attention_fn(
-            query,
-            key,
-            value,
-            backend=self._attention_backend,
-            parallel_config=self._parallel_config,
+            query, key, value, backend=self._attention_backend, parallel_config=self._parallel_config
         )
         hidden_states = hidden_states.reshape(batch_size, sequence_length, -1).to(dtype=query.dtype)
         return attn.to_out(hidden_states)
@@ -248,10 +196,7 @@ class Trellis2Attention(nn.Module, AttentionModuleMixin):
         self.set_processor(Trellis2AttnProcessor())
 
     def forward(
-        self,
-        hidden_states: torch.Tensor,
-        context: torch.Tensor | None = None,
-        phases: torch.Tensor | None = None,
+        self, hidden_states: torch.Tensor, context: torch.Tensor | None = None, phases: torch.Tensor | None = None
     ) -> torch.Tensor:
         return self.processor(self, hidden_states, context, phases)
 
@@ -287,12 +232,7 @@ class Trellis2ModulatedTransformerCrossBlock(nn.Module):
         self.norm1 = Trellis2LayerNorm32(channels, elementwise_affine=False, eps=1e-6)
         self.norm2 = Trellis2LayerNorm32(channels, elementwise_affine=True, eps=1e-6)
         self.norm3 = Trellis2LayerNorm32(channels, elementwise_affine=False, eps=1e-6)
-        self.self_attn = Trellis2Attention(
-            channels,
-            num_heads,
-            use_rope=use_rope,
-            qk_rms_norm=qk_rms_norm,
-        )
+        self.self_attn = Trellis2Attention(channels, num_heads, use_rope=use_rope, qk_rms_norm=qk_rms_norm)
         self.cross_attn = Trellis2Attention(
             channels,
             num_heads,
@@ -304,10 +244,7 @@ class Trellis2ModulatedTransformerCrossBlock(nn.Module):
         if share_mod:
             self.modulation = nn.Parameter(torch.randn(6 * channels) / channels**0.5)
         else:
-            self.adaLN_modulation = nn.Sequential(
-                nn.SiLU(),
-                nn.Linear(channels, 6 * channels, bias=True),
-            )
+            self.adaLN_modulation = nn.Sequential(nn.SiLU(), nn.Linear(channels, 6 * channels, bias=True))
 
     def forward(
         self,
@@ -334,6 +271,7 @@ class Trellis2ModulatedTransformerCrossBlock(nn.Module):
 
 class _Trellis2FlowInitialization:
     def _apply(self, fn, recurse: bool = True):
+        # ``rope_phases`` is complex; keep it out of ``.to(dtype)`` casts and only follow device moves.
         rope_phases = self._buffers.pop("rope_phases", None)
         try:
             result = super()._apply(fn, recurse)
@@ -344,8 +282,7 @@ class _Trellis2FlowInitialization:
         return result
 
     def _convert_torso(self) -> None:
-        # Upstream converts only primitive Linear layers in the transformer
-        # torso. Norm, RMSNorm, and shared-modulation parameters remain fp32.
+        # Upstream casts only the torso's Linear layers; norms and shared modulation stay fp32.
         for module in self.blocks.modules():
             if isinstance(module, nn.Linear):
                 module.to(dtype=self.inner_dtype)
@@ -386,7 +323,7 @@ class _Trellis2FlowInitialization:
 
 
 class Trellis2SparseStructureFlowModel(_Trellis2FlowInitialization, Object3DModel, Object3DPeftAdapterMixin):
-    """Reviewed dense TRELLIS.2 sparse-structure flow transformer."""
+    """TRELLIS.2 sparse-structure flow transformer over the dense occupancy latent."""
 
     family_id = "trellis2"
     component_role = "sparse_structure_flow_model"
@@ -447,21 +384,16 @@ class Trellis2SparseStructureFlowModel(_Trellis2FlowInitialization, Object3DMode
         self.gradient_checkpointing = use_checkpoint
         self.t_embedder = Trellis2TimestepEmbedder(model_channels)
         if share_mod:
-            self.adaLN_modulation = nn.Sequential(
-                nn.SiLU(),
-                nn.Linear(model_channels, 6 * model_channels, bias=True),
-            )
+            self.adaLN_modulation = nn.Sequential(nn.SiLU(), nn.Linear(model_channels, 6 * model_channels, bias=True))
         coordinates = torch.stack(
-            torch.meshgrid(*[torch.arange(resolution) for _ in range(3)], indexing="ij"),
-            dim=-1,
+            torch.meshgrid(*[torch.arange(resolution) for _ in range(3)], indexing="ij"), dim=-1
         ).reshape(-1, 3)
         if pe_mode == "ape":
             self.register_buffer("pos_emb", Trellis2AbsolutePositionEmbedder(model_channels)(coordinates))
             self.rope_phases = None
         else:
             rope = Trellis2RotaryPositionEmbedder(
-                model_channels // resolved_heads,
-                rope_freq=tuple(float(item) for item in rope_freq),
+                model_channels // resolved_heads, rope_freq=tuple(float(item) for item in rope_freq)
             )
             # Derived from the config; the released checkpoints do not store it.
             self.register_buffer("rope_phases", rope(coordinates), persistent=False)
@@ -565,11 +497,7 @@ class Trellis2SparseStructureFlowModel(_Trellis2FlowInitialization, Object3DMode
         for block in self.blocks:
             if torch.is_grad_enabled() and self.gradient_checkpointing:
                 hidden_states = self._gradient_checkpointing_func(
-                    block,
-                    hidden_states,
-                    modulation,
-                    encoder_hidden_states,
-                    phases,
+                    block, hidden_states, modulation, encoder_hidden_states, phases
                 )
             else:
                 hidden_states = block(hidden_states, modulation, encoder_hidden_states, phases)
@@ -577,13 +505,7 @@ class Trellis2SparseStructureFlowModel(_Trellis2FlowInitialization, Object3DMode
         hidden_states = self.out_layer(hidden_states)
         hidden_states = (
             hidden_states.permute(0, 2, 1)
-            .reshape(
-                batch_size,
-                self.out_channels,
-                self.resolution,
-                self.resolution,
-                self.resolution,
-            )
+            .reshape(batch_size, self.out_channels, self.resolution, self.resolution, self.resolution)
             .contiguous()
         )
         if not return_dict:
@@ -594,9 +516,9 @@ class Trellis2SparseStructureFlowModel(_Trellis2FlowInitialization, Object3DMode
 class Trellis2SLatFlowModel(_Trellis2FlowInitialization, Object3DModel, Object3DPeftAdapterMixin):
     """TRELLIS.2 shape / texture SLAT flow transformer (released ``SLatFlowModel`` layout).
 
-    Unlike TRELLIS, the TRELLIS.2 SLAT denoiser has no sparse-convolution stages: it is a linear input
-    layer, RoPE full-attention DiT blocks over the active voxels, and a linear output layer, so it needs
-    no compiled sparse backend. The texture variant concatenates the shape SLAT as ``concat_cond``.
+    Unlike TRELLIS, there are no sparse-convolution stages: a linear input layer, RoPE full-attention DiT blocks
+    over each item's active voxels, and a linear output layer. The texture variant takes the shape SLAT as
+    ``concat_cond``.
     """
 
     family_id = "trellis2"
@@ -654,17 +576,13 @@ class Trellis2SLatFlowModel(_Trellis2FlowInitialization, Object3DModel, Object3D
         self.gradient_checkpointing = use_checkpoint
         self.t_embedder = Trellis2TimestepEmbedder(model_channels)
         if share_mod:
-            self.adaLN_modulation = nn.Sequential(
-                nn.SiLU(),
-                nn.Linear(model_channels, 6 * model_channels, bias=True),
-            )
+            self.adaLN_modulation = nn.Sequential(nn.SiLU(), nn.Linear(model_channels, 6 * model_channels, bias=True))
         if pe_mode == "ape":
             self.pos_embedder = Trellis2AbsolutePositionEmbedder(model_channels)
             self.rope = None
         else:
             self.rope = Trellis2RotaryPositionEmbedder(
-                model_channels // resolved_heads,
-                rope_freq=tuple(float(item) for item in rope_freq),
+                model_channels // resolved_heads, rope_freq=tuple(float(item) for item in rope_freq)
             )
         self.input_layer = nn.Linear(in_channels, model_channels)
         self.blocks = nn.ModuleList(
@@ -774,10 +692,10 @@ class Trellis2SLatFlowModel(_Trellis2FlowInitialization, Object3DModel, Object3D
         modulation = self.t_embedder(timestep)
         if self.share_mod:
             modulation = self.adaLN_modulation(modulation)
+        inner_dtype = get_parameter_dtype(self.blocks)
         output = torch.zeros_like(features)
         for batch_index in range(batch_size):
             positions = torch.nonzero(hidden_states.coordinates[:, 0] == batch_index, as_tuple=False).reshape(-1)
-            inner_dtype = get_parameter_dtype(self.blocks)
             batch_features = features[positions].unsqueeze(0).to(dtype=inner_dtype)
             batch_modulation = modulation[batch_index : batch_index + 1].to(dtype=inner_dtype)
             batch_context = self._batch_context(encoder_hidden_states, batch_index, positions, inner_dtype)
@@ -785,19 +703,10 @@ class Trellis2SLatFlowModel(_Trellis2FlowInitialization, Object3DModel, Object3D
             for block in self.blocks:
                 if torch.is_grad_enabled() and self.gradient_checkpointing:
                     batch_features = self._gradient_checkpointing_func(
-                        block,
-                        batch_features,
-                        batch_modulation,
-                        batch_context,
-                        phases,
+                        block, batch_features, batch_modulation, batch_context, phases
                     )
                 else:
-                    batch_features = block(
-                        batch_features,
-                        batch_modulation,
-                        batch_context,
-                        phases,
-                    )
+                    batch_features = block(batch_features, batch_modulation, batch_context, phases)
             output = output.index_copy(0, positions, batch_features.squeeze(0).to(dtype=features.dtype))
         output = F.layer_norm(output, output.shape[-1:])
         sample = hidden_states.replace(self.out_layer(output).to(dtype=hidden_states.dtype))

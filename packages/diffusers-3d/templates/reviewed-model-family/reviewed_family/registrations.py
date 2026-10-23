@@ -1,17 +1,18 @@
-from diffusers_3d import (
-    Object3DModelRegistration,
-    Object3DPipelineRegistration,
-)
+from __future__ import annotations
 
-from .model import ReviewedDenoiser
-from .pipeline import ReviewedObject3DPipeline
+from typing import Any
 
-REVIEWED_MODEL_REGISTRATION = Object3DModelRegistration(
-    model_class=ReviewedDenoiser,
-    metadata=ReviewedDenoiser.object3d_metadata(),
-)
 
-REVIEWED_PIPELINE_REGISTRATION = Object3DPipelineRegistration(
-    pipeline_class=ReviewedObject3DPipeline,
-    metadata=ReviewedObject3DPipeline.object3d_model_index(),
-)
+def reviewed_family_execution_registrations(
+    model_registration_type: type[Any],
+    pipeline_registration_type: type[Any],
+) -> tuple[tuple[Any, ...], tuple[Any, ...]]:
+    """Register the family's models and pipeline; add this function to ``families/registrations.py``."""
+
+    from .model import ReviewedDenoiser
+    from .pipeline import ReviewedObject3DPipeline
+
+    return (
+        (model_registration_type(ReviewedDenoiser, ReviewedDenoiser.object3d_metadata()),),
+        (pipeline_registration_type(ReviewedObject3DPipeline, ReviewedObject3DPipeline.object3d_model_index()),),
+    )

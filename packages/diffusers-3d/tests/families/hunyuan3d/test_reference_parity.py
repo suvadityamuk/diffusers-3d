@@ -96,12 +96,15 @@ def _reference(module: str) -> types.ModuleType:
         utils.synchronize_timer = lambda *args, **kwargs: _NoTimer()
         utils.smart_load_model = None
         sys.modules[utils.__name__] = utils
-        # moe_layers.py imports timm's ViT layers without using them.
-        timm = types.ModuleType("timm.models.vision_transformer")
-        timm.PatchEmbed = timm.Attention = timm.Mlp = None
-        sys.modules.setdefault("timm", types.ModuleType("timm"))
-        sys.modules.setdefault("timm.models", types.ModuleType("timm.models"))
-        sys.modules.setdefault(timm.__name__, timm)
+        # moe_layers.py imports timm's ViT layers without using them; stub them only when timm is missing.
+        try:
+            importlib.import_module("timm.models.vision_transformer")
+        except ImportError:
+            timm = types.ModuleType("timm.models.vision_transformer")
+            timm.PatchEmbed = timm.Attention = timm.Mlp = None
+            sys.modules.setdefault("timm", types.ModuleType("timm"))
+            sys.modules.setdefault("timm.models", types.ModuleType("timm.models"))
+            sys.modules.setdefault(timm.__name__, timm)
     sys.dont_write_bytecode = True
     try:
         return importlib.import_module(f"{REFERENCE_PACKAGE}.{module}")

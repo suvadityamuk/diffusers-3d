@@ -52,7 +52,6 @@ _TRIPOSG_EXPORTS = {
     "prepare_triposg_image",
 }
 
-
 _SAM3D_OBJECTS_EXPORTS = {
     "SAM3D_REFERENCE_REVISION",
     "Sam3DConditionEmbedder",
@@ -63,7 +62,6 @@ _SAM3D_OBJECTS_EXPORTS = {
     "convert_sam3d_checkpoint",
     "preprocess_sam3d_condition",
 }
-
 
 _STEP1X3D_EXPORTS = {
     "STEP1X3D_CHECKPOINT_REVISION",
@@ -82,7 +80,6 @@ _STEP1X3D_EXPORTS = {
     "preprocess_step1x3d_image",
     "preprocess_step1x3d_reference_image",
 }
-
 
 _PIXAL3D_EXPORTS = {
     "PIXAL3D_REFERENCE_REVISION",
@@ -109,35 +106,24 @@ _HUNYUAN3D_EXPORTS = {
     "convert_hunyuan3d_paint_checkpoint",
 }
 
+_MODULES = {
+    ".trellis": _TRELLIS_EXPORTS,
+    ".trellis2": _TRELLIS2_EXPORTS,
+    ".triposg": _TRIPOSG_EXPORTS,
+    ".sam3d_objects": _SAM3D_OBJECTS_EXPORTS,
+    ".step1x3d": _STEP1X3D_EXPORTS,
+    ".pixal3d": _PIXAL3D_EXPORTS,
+    ".hunyuan3d": _HUNYUAN3D_EXPORTS,
+}
+_EXPORT_MODULES = {name: module for module, names in _MODULES.items() for name in names}
+
 
 def __getattr__(name: str):
-    if name in _TRELLIS_EXPORTS:
-        module_name = ".trellis"
-    elif name in _TRELLIS2_EXPORTS:
-        module_name = ".trellis2"
-    elif name in _TRIPOSG_EXPORTS:
-        module_name = ".triposg"
-    elif name in _SAM3D_OBJECTS_EXPORTS:
-        module_name = ".sam3d_objects"
-    elif name in _STEP1X3D_EXPORTS:
-        module_name = ".step1x3d"
-    elif name in _PIXAL3D_EXPORTS:
-        module_name = ".pixal3d"
-    elif name in _HUNYUAN3D_EXPORTS:
-        module_name = ".hunyuan3d"
-    else:
-        raise AttributeError(name) from None
-    value = getattr(import_module(module_name, __name__), name)
+    if name not in _EXPORT_MODULES:
+        raise AttributeError(name)
+    value = getattr(import_module(_EXPORT_MODULES[name], __name__), name)
     globals()[name] = value
     return value
 
 
-__all__ = sorted(
-    _TRELLIS_EXPORTS
-    | _TRELLIS2_EXPORTS
-    | _TRIPOSG_EXPORTS
-    | _SAM3D_OBJECTS_EXPORTS
-    | _STEP1X3D_EXPORTS
-    | _PIXAL3D_EXPORTS
-    | _HUNYUAN3D_EXPORTS
-)
+__all__ = sorted(_EXPORT_MODULES)

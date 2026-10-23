@@ -4,8 +4,7 @@ from typing import Any
 
 
 def trellis_execution_registrations(
-    model_registration_type: type[Any],
-    pipeline_registration_type: type[Any],
+    model_registration_type: type[Any], pipeline_registration_type: type[Any]
 ) -> tuple[tuple[Any, ...], tuple[Any, ...]]:
     """Register the image and text pipelines and every reviewed component (sparse structure, SLAT, three decoders)."""
 
@@ -29,14 +28,8 @@ def trellis_execution_registrations(
     return (
         tuple(model_registration_type(model_type, model_type.object3d_metadata()) for model_type in models),
         (
-            pipeline_registration_type(
-                TrellisImageTo3DPipeline,
-                TrellisImageTo3DPipeline.object3d_model_index(),
-            ),
-            pipeline_registration_type(
-                TrellisTextTo3DPipeline,
-                TrellisTextTo3DPipeline.object3d_model_index(),
-            ),
+            pipeline_registration_type(TrellisImageTo3DPipeline, TrellisImageTo3DPipeline.object3d_model_index()),
+            pipeline_registration_type(TrellisTextTo3DPipeline, TrellisTextTo3DPipeline.object3d_model_index()),
         ),
     )
 

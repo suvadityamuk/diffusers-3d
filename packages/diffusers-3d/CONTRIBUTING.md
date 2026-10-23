@@ -1,69 +1,58 @@
 # Contributing
 
-The quickest way to contribute is to add a 3D model family: port its networks to plain PyTorch, convert its
-checkpoint into the Diffusers layout, and register its pipeline so `AutoPipelineFor3D.from_pretrained()` can load it.
-Start from [`templates/reviewed-model-family`](templates/reviewed-model-family), and see
-[templates/README.md](templates/README.md) for the starters.
+The main way to contribute is to add a model family: port its networks to plain PyTorch, convert its checkpoint to the
+Diffusers layout, and register its pipeline so `AutoPipelineFor3D.from_pretrained()` can load it. Start from
+[`templates/reviewed-model-family`](templates/reviewed-model-family).
 
 ## Adding a model family
 
-A family lives in `src/diffusers_3d/families/<family>/` and includes:
+A family lives in `src/diffusers_3d/families/<family>/` and has:
 
-- exact model and pipeline classes, registered in `registrations.py`;
-- a converter from the upstream checkpoint, exposed as a `diffusers-3d-convert-<family>` script;
-- tensor-native `Object3D` outputs;
-- tiny real-class tests and `save_pretrained`/`from_pretrained` round trips;
-- a README naming the upstream repository and commit, plus `LICENSE`/`NOTICE` files for ported code.
+- model and pipeline classes, registered in `registrations.py`;
+- a converter, exposed as a `diffusers-3d-convert-<family>` script in `pyproject.toml`;
+- outputs that are `Object3D` assets;
+- tiny-config tests, including a `save_pretrained`/`from_pretrained` round trip and parity against the pinned upstream;
+- a README naming the upstream repository and commit, and `LICENSE`/`NOTICE` files for ported code.
 
-Reuse before porting. Image and text encoders from Transformers (DINOv2, DINOv3, CLIP) must be stock pipeline
-components, loaded and saved with Transformers' own `from_pretrained` and `save_pretrained`; never wrap one inside a
-Diffusers model, because Transformers renames its internal parameters between releases and only its own loaders
-translate them. Build on stock Diffusers blocks (`UNet2DConditionModel`, `AutoencoderKL`, `T2IAdapter`, attention
-processors, schedulers) and on the package's shared backends (`mesh_rasterizer`, `texture_baking`,
-`multiview_baking`) rather than porting upstream CUDA extensions.
+Reuse before porting:
 
-Registries resolve exact classes. A subclass, structurally similar class, or class from a different revision is not
-loaded automatically.
+- Use Transformers image and text encoders (DINOv2, DINOv3, CLIP) as stock pipeline components, loaded and saved with
+  Transformers' own methods. Do not wrap them in a Diffusers model; only Transformers' loaders track its parameter
+  renames between releases.
+- Build on Diffusers blocks (`UNet2DConditionModel`, `AutoencoderKL`, attention processors, schedulers) and the
+  package's shared backends (`mesh_rasterizer`, `texture_baking`, `multiview_baking`) instead of porting CUDA
+  extensions.
+- Remap checkpoint keys in the converter rather than mirroring upstream module trees.
+- Keep it inference-only.
 
-### Conversion and parity checklist
+Registries resolve exact classes, so a subclass or look-alike class is never loaded automatically.
 
-1. Map one upstream component at a time and load converted state dictionaries with `strict=True`; for Transformers
-   encoders, use `from_pretrained(..., output_loading_info=True)` and reject any missing, unexpected, or mismatched
-   key.
-2. Save and reload through public Diffusers APIs; do not add custom runtime weight fetching.
-3. Compare freshly converted and reference components side by side on deterministic CPU float32 inputs.
-4. Run a tiny real-class pipeline save/load round trip and verify object-native output semantics.
-5. Verify task metadata, coordinate conventions, representation channels, dtype, and device preservation.
-6. Keep conversion tests distinct from normal model and pipeline contract tests.
+## Conversion checklist
 
-### Publishing converted checkpoints
+1. Load converted state dicts with `strict=True`. For Transformers encoders, use `output_loading_info=True` and reject
+   any missing, unexpected, or mismatched key.
+2. Save and reload through the public Diffusers APIs. No custom runtime weight fetching.
+3. Compare each converted component with the pinned upstream on deterministic CPU float32 inputs.
+4. Check the coordinate convention, representation channels, dtype, and device of the outputs.
+
+## Publishing converted checkpoints
 
 Add the release to `scripts/checkpoint_sources.py` and a model card to `scripts/publish_hub_checkpoints.py`, then run
-the script on a machine with access to the source weights. Each repository ships the family's license and notice
-files. Check that the upstream license allows redistribution before publishing, and never upload gated weights
-(declare them in `WITHHELD` so users pass them in at load time).
+the script with access to the source weights. Check that the upstream license allows redistribution. Never upload
+gated weights: list them in `WITHHELD` so users pass them in at load time.
+
+## Optional dependencies
+
+Never add a mandatory geometry, rendering, or CUDA dependency. An optional backend must import lazily, declare its
+license class and supported versions in a `BackendSpec`, give an actionable error when missing, and never silently
+replace another backend whose output differs. Pin source builds to a commit in `requirements/backends/`. Model weights
+keep their own licenses regardless of the package license.
 
 ## Experimental Hub blocks
 
-To iterate on a workflow before it becomes a family, publish a custom `ModularPipelineBlocks` with a pinned revision
-and explicit requirements. See [`templates/experimental-custom-block`](templates/experimental-custom-block).
-
-## Dependency requirements
-
-Do not add a mandatory geometry, rendering, or CUDA dependency. Optional adapters must:
-
-- lazy-import the dependency;
-- declare support and license classifications;
-- report versions and build/runtime compatibility;
-- normalize coordinate and representation conventions;
-- provide actionable installation diagnostics;
-- never silently replace an exact backend when outputs differ.
-
-Source dependencies must be commit-pinned in `requirements/backends`. Do not use an unrelated package with a
-colliding PyPI name. Model weights and converted artifacts keep their own licenses; a permissive package license does
-not override a model, checkpoint, or renderer license.
+To try a workflow before it becomes a family, publish a custom `ModularPipelineBlocks` from
+[`templates/experimental-custom-block`](templates/experimental-custom-block) with a pinned revision.
 
 ## Before opening a PR
 
-- Ruff and the package test suite pass (see [docs/testing.md](docs/testing.md)).
-- `tools/verify_wheel.py` and `tools/verify_sdist.py` pass on freshly built distributions.
+Ruff, the package tests, and the distribution checks must pass; see [docs/testing.md](docs/testing.md).

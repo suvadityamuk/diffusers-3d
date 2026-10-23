@@ -16,10 +16,9 @@ FLEX_GEMM_BATCH_INDICES = "flex_gemm_batch_indices"
 
 
 class FlexGemmBackend:
-    """Narrow FlexGEMM sparse-convolution and 3D grid-sampling adapter.
+    """FlexGEMM submanifold sparse convolution and 3D grid sampling.
 
-    The registry verifies the exact PEP 610 source revision before this class
-    imports the upstream runtime.
+    The registry checks the pinned PEP 610 source revision before the runtime is imported.
     """
 
     def __init__(
@@ -108,11 +107,7 @@ class FlexGemmBackend:
         dilation: Sequence[int] = (
             (1, 1, 1) if dilation_value is None else tuple(int(item) for item in dilation_value.reshape(-1).tolist())
         )
-        spconv = getattr(getattr(self._module, "ops", None), "spconv", None)
-        function = getattr(spconv, "sparse_submanifold_conv3d", None)
-        if not callable(function):
-            raise RuntimeError("the selected FlexGEMM build does not expose ops.spconv.sparse_submanifold_conv3d")
-        output = function(
+        output = self._module.ops.spconv.sparse_submanifold_conv3d(
             voxels.features,
             coordinates,
             torch.Size([batch_size, voxels.features.shape[1], *spatial_shape]),
@@ -160,10 +155,7 @@ class FlexGemmBackend:
         if shape is None:
             spatial_shape = tuple(int(item) + 1 for item in voxels.coordinates.amax(dim=0).tolist())
             shape = (int(coordinates[:, 0].max().item()) + 1, voxels.features.shape[1], *spatial_shape)
-        function = getattr(getattr(getattr(self._module, "ops", None), "grid_sample", None), "grid_sample_3d", None)
-        if not callable(function):
-            raise RuntimeError("the selected FlexGEMM build does not expose ops.grid_sample.grid_sample_3d")
-        return function(
+        return self._module.ops.grid_sample.grid_sample_3d(
             voxels.features,
             coordinates,
             shape=torch.Size(tuple(int(item) for item in shape)),
