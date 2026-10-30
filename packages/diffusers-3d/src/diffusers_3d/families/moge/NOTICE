@@ -1,0 +1,42 @@
+Microsoft MoGe integration notice
+
+Portions of the MoGe and MoGe-2 point-map heads, the image preprocessing, and
+the point-map post-processing (focal and shift recovery, intrinsics, depth
+unprojection, masking) in this family are modified from:
+
+  microsoft/MoGe
+  https://github.com/microsoft/MoGe
+  revision a8c37341bc0325ca99b9d57981cc3bb2bd3e255b (MoGe, as SAM 3D Objects pins)
+  revision 74fbce054ebed49800de42d0ad0e83495065719a (MoGe-2, as Pixal3D installs)
+
+Those portions are provided under the accompanying MIT License:
+
+  MIT License
+  Copyright (c) Microsoft Corporation.
+
+MoGe vendors torch-hub DINOv2 (facebookresearch/dinov2, Apache License 2.0,
+Copyright (c) Meta Platforms, Inc. and affiliates). Its code is not copied: the
+backbone is the stock Transformers Dinov2Model, with only the position-embedding
+interpolation rewritten to match the torch-hub behavior.
+
+The unprojection and intrinsics helpers reproduce EasternJournalist/utils3d
+(revision 3913c65d81e05e47b9f367250cf8c0f7462a0900) and
+EasternJournalist/utils3d-moge (revision 62f09d58509485564e24d5d9f6aac9ee9ebc0c37),
+MIT License, Copyright (c) 2022 EasternJournalist.
+
+The shift solver reproduces SciPy's least_squares(method="lm") from SciPy
+1.18.1, whose lmder, lmpar and qrsolv routines are a C translation of MINPACK
+(Argonne National Laboratory; B. S. Garbow, K. E. Hillstrom, J. J. More). It is
+provided under the accompanying SciPy BSD-3-Clause License
+(LICENSE-BSD-3-CLAUSE-SCIPY), Copyright (c) 2001-2002 Enthought, Inc.
+2003, SciPy Developers.
+
+All ported source files carry a prominent modification notice. Independently
+written diffusers-3d package glue remains under the package Apache-2.0 license.
+
+Weights are not redistributed. The Ruicheng/moge-vitl and Ruicheng/moge-2-vitl
+model cards declare the MIT License. Converted checkpoints keep their own
+licenses.
+
+No affiliation, sponsorship, or endorsement by Microsoft, Meta, the SciPy
+developers, or Argonne National Laboratory is claimed.

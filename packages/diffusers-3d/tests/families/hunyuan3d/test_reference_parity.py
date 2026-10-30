@@ -10,6 +10,12 @@ from pathlib import Path
 import numpy as np
 import pytest
 import torch
+from _configs import tiny_config
+from _reference import (
+    ReferenceCheckoutError,
+    reference_unavailable,
+    validate_reference_checkout,
+)
 from PIL import Image
 
 from diffusers_3d import (
@@ -19,7 +25,6 @@ from diffusers_3d import (
     Hunyuan3DShapeVAE,
     ImageCondition,
 )
-from diffusers_3d._reference import ReferenceCheckoutError, reference_unavailable, validate_reference_checkout
 from diffusers_3d.families.hunyuan3d.conversion import convert_transformer_state_dict, convert_vae_state_dict
 
 pytestmark = pytest.mark.reference_parity
@@ -122,7 +127,7 @@ def _randomize(module: torch.nn.Module, seed: int) -> torch.nn.Module:
 
 
 def _reference_transformer():
-    config = Hunyuan3DDiTModel.tiny_config()
+    config = tiny_config(Hunyuan3DDiTModel)
     reference_type = _reference("models.denoisers.hunyuandit").HunYuanDiTPlain
     reference = _randomize(reference_type(**config, **RELEASED_TRANSFORMER_OPTIONS, text_len=5), seed=0)
     model = Hunyuan3DDiTModel(**config).eval()
@@ -131,7 +136,7 @@ def _reference_transformer():
 
 
 def _reference_vae():
-    config = Hunyuan3DShapeVAE.tiny_config()
+    config = tiny_config(Hunyuan3DShapeVAE)
     reference_type = _reference("models.autoencoders").ShapeVAE
     reference = _randomize(reference_type(**config, **RELEASED_VAE_OPTIONS), seed=1)
     vae = Hunyuan3DShapeVAE(**config).eval()
@@ -197,11 +202,7 @@ def test_preprocessing_matches_pinned_opencv_reference(case, tiny_hunyuan3d_pipe
     pipeline = tiny_hunyuan3d_pipeline
     pipeline.register_to_config(image_size=512)
     actual = pipeline.preprocess(ImageCondition(image=torch.from_numpy(rgba).permute(2, 0, 1).float() / 255))[0]
-    # OpenCV's vectorized fixed-point rounding (and its platform-specific SIMD paths) can differ from the NumPy port
-    # by one level on rare pixels: 14 of 786,432 values (shrink) and 1 (enlarge) with OpenCV 5.0 on arm64 macOS.
-    levels = ((actual - expected) * 127.5).abs().round()
-    assert levels.max() <= 1
-    assert (levels > 0).float().mean() < 1e-2
+    assert torch.equal(actual, expected)
 
 
 def test_tiny_pipeline_matches_pinned_reference_end_to_end(tiny_hunyuan3d_pipeline):
@@ -250,3 +251,76 @@ def test_tiny_pipeline_matches_pinned_reference_end_to_end(tiny_hunyuan3d_pipeli
     mesh = pipeline.extract_mesh(expected_grid[0], bounds, mc_level=0.0)
     assert torch.equal(mesh.faces, torch.from_numpy(np.asarray(expected_mesh.faces)).to(torch.int64))
     assert torch.equal(mesh.vertices, torch.from_numpy(np.asarray(expected_mesh.vertices)).float())
+
+
+def test_vertex_merging_matches_pinned_reference_export():
+    """Samples exactly on the level make marching cubes emit duplicate vertices, which upstream's trimesh merges."""
+
+    from diffusers_3d import Hunyuan3DImageTo3DPipeline
+
+    axis = torch.linspace(-1, 1, 25)
+    grid = 0.6 - torch.stack(torch.meshgrid(axis, axis, axis, indexing="ij")).norm(dim=0)
+    grid[:, :, 12] = 0.0
+    extracted = _reference("models.autoencoders").MCSurfaceExtractor()(
+        grid[None], mc_level=0.0, bounds=1.01, octree_resolution=24
+    )
+    raw_vertices = len(extracted[0].mesh_v)
+    expected = _reference("pipelines").export_to_trimesh(extracted)[0]
+    mesh = Hunyuan3DImageTo3DPipeline.extract_mesh(grid, (-1.01,) * 3 + (1.01,) * 3, mc_level=0.0)
+    assert len(expected.vertices) < raw_vertices, "the field must exercise vertex merging"
+    assert torch.equal(mesh.faces, torch.from_numpy(np.asarray(expected.faces)).to(torch.int64))
+    assert torch.equal(mesh.vertices, torch.from_numpy(np.asarray(expected.vertices)).float())
+
+
+def test_shared_hierarchical_occupancy_matches_pinned_flashvdm_refinement():
+    """The shared decoder equals FlashVDM's coarse-to-fine refinement (float32 points) with adaptive KV selection off."""
+
+    from diffusers_3d.backends.occupancy import hierarchical_occupancy
+
+    volume_decoders = _reference("models.autoencoders.volume_decoders")
+    processors = _reference("models.autoencoders.attention_processors")
+    reference, vae = _reference_vae()
+    with torch.no_grad():
+        for projection in (reference.geo_decoder.output_proj, vae.proj_out):
+            projection.weight *= 40
+            projection.bias *= 40
+    latents = torch.randn(1, 6, 8, generator=torch.Generator().manual_seed(5))
+    decoding = volume_decoders.FlashVDMVolumeDecoding()
+    decoding.processor = processors.CrossAttentionProcessor()
+    with torch.no_grad():
+        expected = decoding(
+            reference.decode(latents), reference.geo_decoder, bounds=1.01, octree_resolution=256, enable_pbar=False
+        )[0]
+        decoded = vae(latents).sample
+        # FlashVDM rounds the coarsest level to a multiple of its four mini-grids, minus one: 64 -> 63.
+        actual = hierarchical_occupancy(
+            lambda points: vae.query_occupancy(decoded, points),
+            (-1.01,) * 3 + (1.01,) * 3,
+            [63, 126, 252],
+            dtype=torch.float32,
+            device="cpu",
+            num_chunks=10000,
+            point_dtype=torch.float32,
+        )
+    evaluated = torch.isfinite(expected)
+    assert 0.005 < evaluated.float().mean() < 0.6
+    assert torch.equal(torch.isfinite(actual), evaluated)
+    torch.testing.assert_close(actual[evaluated], expected[evaluated], atol=1e-5, rtol=1e-5)
+
+
+def test_pinned_hierarchical_volume_decoding_collapses_refined_points():
+    """Hunyuan3D-2.1's own ``HierarchicalVolumeDecoding`` multiplies integer indices by an integer-cast spacing, so
+    every refined query lands on ``int(bbox_min)``. It is not the decoder the shared module reproduces."""
+
+    volume_decoders = _reference("models.autoencoders.volume_decoders")
+    recorded = []
+
+    def geo_decoder(queries, latents):
+        recorded.append(queries[0].clone())
+        return torch.full((1, queries.shape[1], 1), 0.5)
+
+    volume_decoders.HierarchicalVolumeDecoding()(
+        torch.zeros(1, 4, 8), geo_decoder, bounds=1.01, octree_resolution=128, num_chunks=10**6, enable_pbar=False
+    )
+    refined = torch.cat(recorded[1:])
+    assert refined.numel() and torch.equal(refined, torch.full_like(refined, -1))

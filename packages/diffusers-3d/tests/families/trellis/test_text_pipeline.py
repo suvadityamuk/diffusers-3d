@@ -89,9 +89,16 @@ def test_text_pipeline_negative_prompt_replaces_the_released_empty_unconditional
         pipeline.preprocess([])
 
 
-def test_text_pipeline_save_load_auto_loader_and_task_gating(tmp_path, tiny_trellis_text_pipeline):
+def test_text_pipeline_save_load_auto_loader_and_task_gating(
+    tmp_path, tiny_trellis_text_pipeline, local_external_components
+):
     pipeline = tiny_trellis_text_pipeline
     pipeline.save_pretrained(tmp_path)
+    # CLIP is never redistributed: loading fetches it from its own repository.
+    assert not (tmp_path / "text_encoder").exists() and not (tmp_path / "tokenizer").exists()
+    local_external_components(
+        TrellisTextTo3DPipeline, text_encoder=pipeline.text_encoder, tokenizer=pipeline.tokenizer
+    )
     model_index = json.loads((tmp_path / "model_index.json").read_text())
     assert model_index["_class_name"] == "TrellisTextTo3DPipeline"
     assert model_index["text_encoder"] == ["transformers", "CLIPTextModel"]
@@ -104,7 +111,7 @@ def test_text_pipeline_save_load_auto_loader_and_task_gating(tmp_path, tiny_trel
         torch.testing.assert_close(
             automatic.encode_prompt(["a red chair"]), pipeline.encode_prompt(["a red chair"]), atol=0.0, rtol=0.0
         )
-    with pytest.raises(Exception, match="text-to-3d|image-to-3d"):
+    with pytest.raises(Exception, match="cannot load"):
         AutoPipelineForImageTo3D.from_pretrained(tmp_path, local_files_only=True)
 
 
@@ -115,8 +122,8 @@ def _write_component(root, stem, upstream_name, model):
     )
 
 
-def test_synthetic_text_conversion_from_a_clip_folder_auto_loads(
-    tmp_path, tiny_trellis_components, tiny_trellis_text_pipeline
+def test_synthetic_text_conversion_auto_loads_with_the_hub_clip(
+    tmp_path, tiny_trellis_components, tiny_trellis_text_pipeline, local_external_components
 ):
     source = tmp_path / "source"
     (source / "ckpts").mkdir(parents=True)
@@ -157,24 +164,29 @@ def test_synthetic_text_conversion_from_a_clip_folder_auto_loads(
             }
         )
     )
-    # The released encoder is the Hub CLIP checkpoint: weights plus tokenizer files in one folder.
-    tiny_trellis_text_pipeline.text_encoder.save_pretrained(tmp_path / "clip")
-    tiny_trellis_text_pipeline.tokenizer.save_pretrained(tmp_path / "clip")
 
-    output = convert_trellis_checkpoint(source, tmp_path / "converted", encoder_path=tmp_path / "clip")
+    output = convert_trellis_checkpoint(source, tmp_path / "converted")
+    # CLIP is not converted: the pipeline loads it from its own repository.
+    assert not (output / "text_encoder").exists() and not (output / "tokenizer").exists()
     model_index = json.loads((output / "model_index.json").read_text())
     report = json.loads((output / "trellis_conversion.json").read_text())
-    # The released text pipeline.json omits text_cond_model entirely (upstream hard-codes CLIP): still accepted.
+    # Every released text pipeline.json names the encoder; upstream raises without it, and so does the converter.
     released = json.loads((source / "pipeline.json").read_text())
     del released["args"]["text_cond_model"]
     (source / "pipeline.json").write_text(json.dumps(released))
-    convert_trellis_checkpoint(source, tmp_path / "converted_released", encoder_path=tmp_path / "clip")
+    with pytest.raises(ValueError, match="pipeline args must contain exactly"):
+        convert_trellis_checkpoint(source, tmp_path / "converted_released")
     assert model_index["_class_name"] == "TrellisTextTo3DPipeline"
     assert model_index["text_encoder"] == ["transformers", "CLIPTextModel"]
     assert model_index["tokenizer"] == ["transformers", "CLIPTokenizer"]
     assert report["skipped_components"] == {}
     assert report["samplers"]["sparse_structure"]["cfg_strength"] == 7.5
 
+    local_external_components(
+        TrellisTextTo3DPipeline,
+        text_encoder=tiny_trellis_text_pipeline.text_encoder,
+        tokenizer=tiny_trellis_text_pipeline.tokenizer,
+    )
     loaded = AutoPipelineForTextTo3D.from_pretrained(output, local_files_only=True)
     assert type(loaded) is TrellisTextTo3DPipeline
     with torch.no_grad():
@@ -197,4 +209,4 @@ def test_synthetic_text_conversion_from_a_clip_folder_auto_loads(
         bad = json.loads((source / "pipeline.json").read_text())
         bad["args"]["text_cond_model"] = "other"
         (source / "pipeline.json").write_text(json.dumps(bad))
-        convert_trellis_checkpoint(source, tmp_path / "bad", encoder_path=tmp_path / "clip")
+        convert_trellis_checkpoint(source, tmp_path / "bad")

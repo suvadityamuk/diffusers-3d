@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import re
 from collections.abc import Callable, Mapping
 from pathlib import Path
@@ -14,6 +15,7 @@ from accelerate import init_empty_weights
 from safetensors.torch import load_file
 from transformers import Dinov2WithRegistersConfig, Dinov2WithRegistersModel
 
+from ..moge.models import MoGeModel
 from ..trellis.decoders import TrellisSLatGaussianDecoder, TrellisSLatMeshDecoder, TrellisSparseStructureDecoder
 from ..trellis.models import TrellisSLatFlowModel
 from ..trellis.scheduler import TrellisFlowEulerScheduler
@@ -258,29 +260,38 @@ def _check_configs(source: Path) -> dict[str, Any]:
 
 
 def _shared_dinov2(*states: Mapping[str, torch.Tensor]) -> Dinov2WithRegistersModel:
-    # The image and mask embedders of both generators are copies of the same frozen DINOv2; convert it once.
+    """An empty shell for the frozen DINOv2, after checking that the release's four copies are one network.
+
+    Those copies equal ``facebook/dinov2-with-registers-large`` tensor for tensor, so the pipeline loads that
+    repository instead of converting them; the shell only names the class in ``model_index.json``.
+    """
+
     state, *copies = (
         _children(state, f"{_EMBEDDER}module_list.{index}.backbone.") for state in states for index in (0, 1)
     )
     for copy in copies:
         if copy.keys() != state.keys() or not all(torch.equal(value, copy[key]) for key, value in state.items()):
             raise ValueError("the DINOv2 image and mask backbones of ss_generator and slat_generator differ")
-    return convert_dinov2_encoder(state, _dinov2_config())
+    with init_empty_weights():
+        return Dinov2WithRegistersModel(_dinov2_config()).eval()
 
 
 def convert_sam3d_checkpoint(
     source_directory: str | Path,
     output_directory: str | Path,
     *,
+    depth_estimator: bool = True,
     safe_serialization: bool = True,
 ) -> Path:
     """Convert the released ``checkpoints/`` folder.
 
-    Writes the DINOv2 image encoder, the sparse-structure conditioner, flow model, decoder and scheduler, the
-    structured-latent conditioner, flow model and scheduler, and the 32-splat Gaussian and FlexiCubes mesh decoders.
-    The 4-splat Gaussian decoder and the sparse-structure decoder copy embedded in ``ss_generator`` are not used by
-    the released sampler and are skipped. MoGe depth estimation is not part of the checkpoint; pass pointmaps to the
-    pipeline instead.
+    Writes the sparse-structure conditioner, flow model, decoder and scheduler, the structured-latent conditioner,
+    flow model and scheduler, and the 32-splat Gaussian and FlexiCubes mesh decoders. The 4-splat Gaussian decoder and
+    the sparse-structure decoder copy embedded in ``ss_generator`` are not used by the released sampler and are
+    skipped. Third-party networks used unchanged are named in ``model_index.json`` but never written; the pipeline
+    loads them from their original repositories: the frozen DINOv2 ``image_encoder``
+    (``facebook/dinov2-with-registers-large``) and, with ``depth_estimator``, the MoGe pointmap estimator upstream
+    uses (``Ruicheng/moge-vitl``).
     """
 
     source = Path(source_directory)
@@ -332,6 +343,11 @@ def convert_sam3d_checkpoint(
     )
     destination = Path(output_directory)
     pipeline.save_pretrained(destination, safe_serialization=safe_serialization)
+    if depth_estimator:
+        index_path = destination / "model_index.json"
+        index = json.loads(index_path.read_text())
+        index["depth_estimator"] = [MoGeModel.__module__, MoGeModel.__name__]
+        index_path.write_text(json.dumps(index, indent=2, sort_keys=True) + "\n")
     return destination
 
 
@@ -339,10 +355,14 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("source_directory", type=Path, help="the released checkpoints/ folder with pipeline.yaml")
     parser.add_argument("output_directory", type=Path)
+    parser.add_argument("--no-depth-estimator", action="store_true")
     parser.add_argument("--no-safe-serialization", action="store_true")
     args = parser.parse_args(argv)
     convert_sam3d_checkpoint(
-        args.source_directory, args.output_directory, safe_serialization=not args.no_safe_serialization
+        args.source_directory,
+        args.output_directory,
+        depth_estimator=not args.no_depth_estimator,
+        safe_serialization=not args.no_safe_serialization,
     )
     return 0
 

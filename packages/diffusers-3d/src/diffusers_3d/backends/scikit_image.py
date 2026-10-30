@@ -6,23 +6,14 @@ from collections.abc import Sequence
 import torch
 
 from ..objects import MeshAsset
-from ._optional import load_selected_backend
-from .defaults import BACKEND_REGISTRY
-from .registry import BackendRegistry
-from .types import BackendCapability
+from ._optional import require
 
 
 class ScikitImageBackend:
     """Portable, non-differentiable marching cubes on detached CPU fields."""
 
-    def __init__(self, *, registry: BackendRegistry = BACKEND_REGISTRY) -> None:
-        module = load_selected_backend(
-            "scikit-image",
-            "skimage.measure",
-            (BackendCapability.SURFACE_EXTRACTION,),
-            registry=registry,
-        )
-        self._marching_cubes = module.marching_cubes
+    def __init__(self) -> None:
+        self._marching_cubes = require("skimage.measure", "portable").marching_cubes
 
     def extract_surface(
         self,

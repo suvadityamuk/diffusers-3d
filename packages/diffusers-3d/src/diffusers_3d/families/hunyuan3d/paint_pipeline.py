@@ -9,6 +9,8 @@
 
 from __future__ import annotations
 
+import os
+import tempfile
 import warnings
 
 import numpy as np
@@ -19,9 +21,10 @@ from diffusers.utils.torch_utils import randn_tensor
 from PIL import Image
 from transformers import BitImageProcessorPil, Dinov2Model
 
-from ...backends import TrimeshBackend, XAtlasBackend
+from ...backends._optional import require
 from ...backends.mesh_rasterizer import interpolate, rasterize
 from ...backends.multiview_baking import (
+    file_geometry,
     inpaint_texture,
     look_at_view,
     merge_views,
@@ -29,11 +32,11 @@ from ...backends.multiview_baking import (
     project_view,
     rasterize_texels,
 )
-from ...data import ImageCondition, validate_image_condition_pixels
+from ...data import ImageInput, validate_image_condition_pixels
 from ...data.image_processing import _quantized_rgba
-from ...execution.metadata import ContributionStatus, Object3DComponentSpec, ReviewStatus, fully_qualified_class_name
 from ...execution.pipelines import Object3DPipeline
-from ...objects import CoordinateSystem, Latent3DOutput, MeshAsset, Object3DKind, Object3DPipelineOutput, PBRMaterial
+from ...objects import Latent3DOutput, MeshAsset, Object3DPipelineOutput, PBRMaterial
+from .paint_components import HUNYUAN3D_PAINT_EXTERNAL_COMPONENTS
 from .paint_models import Hunyuan3DPaintRRDBNet, Hunyuan3DPaintUNet
 
 # (elevation, azimuth, bake weight) in degrees: six fixed views, then 12 azimuths at +-20 degrees elevation.
@@ -50,15 +53,109 @@ CAMERA_DISTANCE = 1.45
 ORTHOGRAPHIC_SCALE = 1.2
 MESH_SCALE = 1.15  # diameter of the normalized mesh
 BAKE_EXPONENT = 4
+REMESH_FACES = 40000  # ``mesh_simplify_trimesh``'s target_count
+SELECTION_RESOLUTION = 1024  # view selection renders at 1024 px
+# View selection sets the boundary kernel from its 1024 px renders and the released pipeline never resets it.
+UNRELIABLE_RADIUS = int(2 / 512 * SELECTION_RESOLUTION)
+OPEN3D_INSTALL = "pip install open3d (trimesh 4.4.7 simplifies with open3d)"
+
+
+def renderer_frame(vertices: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor, float]:
+    """``MeshRender.set_mesh``: float32 Y-up vertices in its frame ``(-x, z, -y)``, centred on their bounding box
+    and scaled to diameter 1.15. Returns the vertices, the centre, and the scale factor."""
+
+    vertices = vertices.to(torch.float32).clone()
+    vertices[:, [0, 1]] = -vertices[:, [0, 1]]
+    vertices[:, [1, 2]] = vertices[:, [2, 1]]
+    center = (vertices.max(0)[0] + vertices.min(0)[0]) / 2
+    scale = torch.norm(vertices - center, dim=1).max() * 2.0
+    factor = MESH_SCALE / float(scale)
+    return (vertices - center) * factor, center, factor
 
 
 def renderer_vertices(vertices: torch.Tensor) -> torch.Tensor:
     """Y-up vertices in ``MeshRender``'s frame ``(-x, z, -y)``, centred on their bounding box with diameter 1.15."""
 
-    vertices = torch.stack([-vertices[:, 0], vertices[:, 2], -vertices[:, 1]], dim=1)
-    center = (vertices.amax(dim=0) + vertices.amin(dim=0)) / 2
-    scale = (vertices - center).norm(dim=1).max() * 2.0
-    return (vertices - center) * (MESH_SCALE / float(scale))
+    return renderer_frame(vertices)[0]
+
+
+def remesh(vertices: np.ndarray, faces: np.ndarray, target_count: int = REMESH_FACES):
+    """``remesh_mesh`` followed by the pipeline's ``trimesh.load``, as the released Paint pipeline runs them.
+
+    pymeshlab writes the mesh as OBJ (with six decimals, as upstream's pymeshlab does), trimesh loads it (merging
+    vertices) and, above ``target_count`` faces,
+    quadric-decimates it with open3d (trimesh 4.4.7's ``simplify_quadric_decimation``), writes it as OBJ again, and
+    the pipeline loads that file. Returns the loaded ``trimesh.Trimesh``.
+    """
+
+    pymeshlab = require("pymeshlab", "meshlab")
+    trimesh = require("trimesh", "portable")
+    with tempfile.TemporaryDirectory() as directory:
+        path = os.path.join(directory, "white_mesh_remesh.obj")
+        meshes = pymeshlab.MeshSet()
+        meshes.add_mesh(pymeshlab.Mesh(vertex_matrix=vertices.astype(np.float64), face_matrix=faces.astype(np.int32)))
+        meshes.save_current_mesh(path, save_textures=False)
+        _six_decimal_vertices(path, vertices)
+        mesh = trimesh.load(path, force="mesh")
+        if mesh.faces.shape[0] > target_count:
+            open3d = require("open3d", OPEN3D_INSTALL)
+            simple = open3d.geometry.TriangleMesh(
+                vertices=open3d.utility.Vector3dVector(mesh.vertices.copy()),
+                triangles=open3d.utility.Vector3iVector(mesh.faces.copy()),
+            ).simplify_quadric_decimation(int(target_count))
+            mesh = trimesh.Trimesh(vertices=simple.vertices, faces=simple.triangles)
+        mesh.export(path)
+        return trimesh.load(path)
+
+
+def _six_decimal_vertices(path: str, vertices: np.ndarray) -> None:
+    """Rewrite the ``v`` lines of a MeshLab OBJ as pymeshlab 2022.2.post3 (upstream's pin) writes them: ``%f``.
+
+    Newer pymeshlab releases write 16 decimals; the released pipeline's vertices are rounded to six.
+    """
+
+    with open(path, encoding="utf-8") as file:
+        lines = file.readlines()
+    rows = iter(vertices.astype(np.float32).astype(np.float64).tolist())
+    lines = ["v %f %f %f\n" % tuple(next(rows)) if line.startswith("v ") else line for line in lines]
+    with open(path, "w", encoding="utf-8") as file:
+        file.writelines(lines)
+
+
+def _obj_values(values: np.ndarray) -> np.ndarray:
+    """Float32 values as ``np.savetxt(..., "%.6f")`` writes them to the released OBJ."""
+
+    return np.char.mod("%.6f", values.astype(np.float32)).astype(np.float64).astype(np.float32)
+
+
+def _jpeg_round_trip(image: np.ndarray) -> np.ndarray:
+    """``cv2.imwrite`` of an 8-bit texture as JPEG (OpenCV's default quality), read back as it is stored."""
+
+    import cv2
+
+    encoded = cv2.imencode(".jpg", image)[1]
+    return cv2.imdecode(encoded, cv2.IMREAD_UNCHANGED)
+
+
+def export_textures(texture: np.ndarray) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    """The released ``save_mesh(..., downsample=True)`` of a baked ``(T, T, 6)`` albedo and metallic-roughness atlas.
+
+    Each map is halved with ``cv2.resize``, truncated to 8 bits, and written as JPEG: the albedo as colour, the
+    metallic (channel 3) and roughness (channel 4) as greyscale. Returns the decoded base colour ``(T/2, T/2, 3)``,
+    metallic and roughness ``(T/2, T/2, 1)`` in ``[0, 1]``.
+    """
+
+    import cv2
+
+    height, width = texture.shape[:2]
+    size = (width // 2, height // 2)
+    albedo = (cv2.resize(np.ascontiguousarray(texture[..., :3]), size) * 255).astype(np.uint8)
+    base_color = _jpeg_round_trip(np.ascontiguousarray(albedo[..., ::-1]))[..., ::-1]
+    maps = []
+    for channel in (3, 4):
+        plane = cv2.resize(np.repeat(texture[..., channel : channel + 1], 3, axis=2), size)
+        maps.append(_jpeg_round_trip(cv2.cvtColor((plane * 255).astype(np.uint8), cv2.COLOR_RGB2GRAY))[..., None])
+    return tuple(torch.from_numpy(np.ascontiguousarray(value)).float() / 255 for value in (base_color, *maps))
 
 
 def project_vertices(vertices: torch.Tensor, elevation: float, azimuth: float) -> torch.Tensor:
@@ -120,6 +217,30 @@ def render_conditions(
     return ((normals + 1) * 0.5 * 255).to(torch.uint8), (positions * 255).to(torch.uint8)
 
 
+def object_vertices(vertices: torch.Tensor, center: torch.Tensor, factor: float) -> np.ndarray:
+    """``MeshRender.get_mesh(normalize=False)``: renderer-frame vertices back in the input's float32 frame."""
+
+    vertices = vertices.numpy() / factor + center[None].numpy()
+    vertices[:, [1, 2]] = vertices[:, [2, 1]]
+    vertices[:, [0, 1]] = -vertices[:, [0, 1]]
+    return vertices
+
+
+def object_uvs(uvs: torch.Tensor) -> np.ndarray:
+    """``MeshRender``'s UVs as it hands them back: ``v`` flipped twice in float32."""
+
+    uvs = uvs.numpy().copy()
+    uvs[:, 1] = np.float32(1.0) - (np.float32(1.0) - uvs[:, 1])
+    return uvs
+
+
+def _resize_view(image: torch.Tensor, size: int) -> torch.Tensor:
+    """Pillow's default (bicubic) resize of an ``(H, W, 6)`` uint8 albedo and metallic-roughness view."""
+
+    halves = [Image.fromarray(image[..., start : start + 3].numpy()).resize((size, size)) for start in (0, 3)]
+    return torch.from_numpy(np.concatenate([np.asarray(half) for half in halves], axis=-1))
+
+
 def _resize(images: torch.Tensor, size: int) -> torch.Tensor:
     """Pillow bicubic resize of ``(N, H, W, 3)`` uint8 images to ``(N, 3, size, size)`` floats in ``[0, 1]``."""
 
@@ -140,33 +261,10 @@ class Hunyuan3DPaintPipeline(Object3DPipeline):
     inpainted, and returned as a ``MeshAsset`` with one ``PBRMaterial``; export it as GLB with ``TrimeshBackend``.
     """
 
-    family_id = "hunyuan3d-2.1"
-    task_ids = ("mesh-texturing",)
-    output_object_types = (MeshAsset,)
-    output_representations = ("mesh",)
-    object_kinds = (Object3DKind.MESH,)
-    required_backends = ("trimesh", "xatlas")
-    contribution_status = ContributionStatus.REVIEWED_PACKAGE
-    review_status = ReviewStatus.REVIEWED
-    component_specs = tuple(
-        Object3DComponentSpec(
-            name=name,
-            expected_class=fully_qualified_class_name(component_type),
-            subfolder=name,
-            optional=name == "upscaler",
-            review_status=ReviewStatus.REVIEWED,
-            loading_eligible=True,
-        )
-        for name, component_type in (
-            ("feature_extractor", BitImageProcessorPil),
-            ("image_encoder", Dinov2Model),
-            ("unet", Hunyuan3DPaintUNet),
-            ("vae", AutoencoderKL),
-            ("scheduler", UniPCMultistepScheduler),
-            ("upscaler", Hunyuan3DPaintRRDBNet),
-        )
-    )
     _optional_components = ["upscaler"]
+    # The DINOv2 encoder and processor, the Stable Diffusion 2.1 VAE, and Real-ESRGAN load from their original
+    # sources; pass ``upscaler=None`` to ``from_pretrained`` to skip the upscaler.
+    external_components = HUNYUAN3D_PAINT_EXTERNAL_COMPONENTS
 
     def __init__(
         self,
@@ -194,26 +292,34 @@ class Hunyuan3DPaintPipeline(Object3DPipeline):
             upscaler=upscaler,
         )
 
-    def prepare_mesh(self, mesh: MeshAsset, max_faces: int | None) -> MeshAsset:
-        """World-space Y-up geometry, merged and simplified to ``max_faces`` (unless ``None``), then UV-unwrapped."""
+    def prepare_mesh(self, mesh: MeshAsset, max_faces: int | None = REMESH_FACES) -> MeshAsset:
+        """The mesh the released pipeline paints: remeshed (:func:`remesh`) and unwrapped by ``xatlas.parametrize``.
 
-        mesh = mesh.to_coordinate_system(CoordinateSystem.RIGHT_HANDED_Y_UP)
-        vertices = mesh.vertices @ mesh.transform[:3, :3].T + mesh.transform[:3, 3]
-        mesh = MeshAsset(vertices=vertices.detach().cpu().float(), faces=mesh.faces.detach().cpu())
-        if max_faces is not None:
-            backend = TrimeshBackend()
-            mesh = backend.process_geometry(mesh, operation="merge_vertices")
-            mesh = MeshAsset(vertices=mesh.vertices, faces=mesh.faces)
-            if mesh.faces.shape[0] > max_faces:
-                mesh = backend.process_geometry(
-                    mesh, operation="simplify_quadric_decimation", parameters={"face_count": max_faces}
-                )
-                mesh = MeshAsset(vertices=mesh.vertices, faces=mesh.faces)
-        return XAtlasBackend().process_geometry(mesh, operation="unwrap_uv")
+        The input is read as its GLB export holds it (``MeshAsset.save``). ``max_faces=None`` skips the remesh
+        (``use_remesh=False``). Returns float32 vertices and UVs, as ``MeshRender.load_mesh`` reads them.
+        """
 
-    def prepare_image(self, image: ImageCondition, size: int) -> Image.Image:
+        xatlas = require("xatlas", "portable")
+        vertices, faces = file_geometry(mesh)
+        if max_faces is None:
+            vertices, faces = vertices.numpy().astype(np.float64), faces.numpy()
+        else:
+            remeshed = remesh(vertices.numpy(), faces.numpy(), max_faces)
+            vertices, faces = np.asarray(remeshed.vertices), np.asarray(remeshed.faces)
+        mapping, faces, uvs = xatlas.parametrize(vertices, faces)
+        return MeshAsset(
+            vertices=torch.from_numpy(vertices[mapping].astype(np.float32)),
+            faces=torch.from_numpy(faces.astype(np.int64)),
+            uvs=torch.from_numpy(uvs.astype(np.float32)),
+        )
+
+    def prepare_image(self, image: ImageInput, size: int) -> Image.Image:
         """The reference image resized to ``size`` with Pillow's bicubic filter and composited on white."""
 
+        conditions = self.image_conditions(image)
+        if len(conditions) != 1:
+            raise ValueError("Hunyuan3D-2.1 Paint takes one reference image")
+        image = conditions[0]
         validate_image_condition_pixels(image)
         rgba = Image.fromarray(_quantized_rgba(image)[1], "RGBA").resize((size, size), Image.Resampling.BICUBIC)
         reference = Image.new("RGB", rgba.size, (255, 255, 255))
@@ -244,16 +350,24 @@ class Hunyuan3DPaintPipeline(Object3DPipeline):
 
         device, dtype = self._execution_device, self.unet.dtype
         views = normal_maps.shape[0]
-        # The initial noise is drawn first, so a fresh generator gives the noise upstream draws from its seeded one.
+        # Upstream seeds both its generator and the global RNG with 0; the latents come from the generator and the
+        # VAE posteriors from the global RNG. A copy of the generator's starting state plays the global RNG.
+        posterior_generator = None
+        if generator is not None:
+            posterior_generator = torch.Generator(generator.device).set_state(generator.get_state())
         size = reference.width // 2 ** (len(self.vae.config.block_out_channels) - 1)
         shape = (2 * views, self.unet.config.latent_channels, size, size)
         latents = (
             randn_tensor(shape, generator=generator, device=device, dtype=dtype) * self.scheduler.init_noise_sigma
         )
         reference_image = torch.from_numpy(np.array(reference)).permute(2, 0, 1)[None].float() / 255
-        reference_latents = self.encode_latents(reference_image, generator)
+        reference_latents = self.encode_latents(reference_image, posterior_generator)
         condition_latents = torch.cat(
-            [self.encode_latents(normal_maps, generator), self.encode_latents(position_maps, generator)], dim=1
+            [
+                self.encode_latents(normal_maps, posterior_generator),
+                self.encode_latents(position_maps, posterior_generator),
+            ],
+            dim=1,
         )
         pixel_values = self.feature_extractor(reference, return_tensors="pt").pixel_values
         image_embeds = self.image_encoder(pixel_values.to(device, self.image_encoder.dtype)).last_hidden_state
@@ -303,15 +417,15 @@ class Hunyuan3DPaintPipeline(Object3DPipeline):
 
     def bake(
         self,
-        images: torch.Tensor,
+        images: list[torch.Tensor],
         views: list[tuple[float, float, float]],
         vertices: torch.Tensor,
         faces: torch.Tensor,
         uvs: torch.Tensor,
         texture_size: int,
-        unreliable_radius: int,
     ) -> torch.Tensor:
-        """Back-project ``(views, H, W, C)`` images onto a ``texture_size`` atlas, merge them, and inpaint the rest."""
+        """Back-project ``(H, W, 6)`` albedo and metallic-roughness views onto a ``texture_size`` atlas, merge them,
+        and inpaint the rest (``bake_from_multiview`` and ``texture_inpaint``); each view keeps its own size."""
 
         texels = rasterize_texels(vertices, faces, uvs, texture_size)
         projection = orthographic_projection(ORTHOGRAPHIC_SCALE).to(vertices)
@@ -326,18 +440,18 @@ class Hunyuan3DPaintPipeline(Object3DPipeline):
                 projection,
                 texels,
                 texture_size,
-                unreliable_radius=unreliable_radius,
+                unreliable_radius=UNRELIABLE_RADIUS,
             )
             textures.append(texture)
             weights.append(view_weight * cosine**BAKE_EXPONENT)
         texture, mask = merge_views(textures, weights)
-        return inpaint_texture(texture, mask, vertices, faces, uvs)
+        return inpaint_texture(texture, mask, vertices, faces, uvs, arithmetic="cpp")
 
     @torch.no_grad()
     def __call__(
         self,
         mesh: MeshAsset,
-        image: ImageCondition,
+        image: ImageInput,
         *,
         num_inference_steps: int = 15,
         guidance_scale: float = 3.0,
@@ -351,20 +465,20 @@ class Hunyuan3DPaintPipeline(Object3DPipeline):
     ) -> Object3DPipelineOutput | tuple[tuple[MeshAsset], Latent3DOutput]:
         """Texture ``mesh`` from ``image`` (whose alpha or mask isolates the object) with the released defaults.
 
-        The mesh is read in its own coordinate system and world transform and returned in right-handed Y-up world
-        coordinates with xatlas UVs. ``max_num_views`` (6 to 9 upstream) caps the view selection; views are
-        generated at ``view_size``, rendered and baked at ``render_size`` (``render_size // 512`` pixels of each
-        view's silhouette and depth edges are not trusted), baked into a ``2 * texture_size`` atlas, and
-        box-filtered to ``texture_size``. The latents are the denoised ``(1, 2, views, C, h, w)`` albedo and
-        metallic-roughness latents; ``previews`` holds the decoded ``(views, 3, view_size, view_size)`` albedo and
-        metallic-roughness images.
+        The mesh is read as its GLB export holds it, remeshed to ``max_faces`` (``None`` skips it), and unwrapped
+        with xatlas. ``max_num_views`` (6 to 9 upstream) caps the view selection; views are generated at
+        ``view_size``, upscaled, baked at their size into a ``2 * texture_size`` atlas, inpainted, and written out
+        as the released pipeline saves them: halved, truncated to 8 bits, and JPEG-compressed. The returned mesh
+        holds the vertices and UVs of that OBJ export, in the input's frame (right-handed Y-up). The latents are the
+        denoised ``(1, 2, views, C, h, w)`` albedo and metallic-roughness latents; ``previews`` holds the decoded
+        ``(views, 3, view_size, view_size)`` albedo and metallic-roughness images.
         """
 
         device = self._execution_device
         prepared = self.prepare_mesh(mesh, max_faces)
-        vertices = renderer_vertices(prepared.vertices).to(device)
-        faces, uvs = prepared.faces.to(device), prepared.uvs.to(device)
-        views = select_views(vertices, faces, max_num_views, render_size // 2)
+        vertices, center, factor = renderer_frame(prepared.vertices)
+        vertices, faces, uvs = vertices.to(device), prepared.faces.to(device), prepared.uvs.to(device)
+        views = select_views(vertices, faces, max_num_views, SELECTION_RESOLUTION)
         normal_maps, position_maps = render_conditions(vertices, faces, views, render_size)
         normal_maps, position_maps = _resize(normal_maps, view_size), _resize(position_maps, view_size)
 
@@ -380,24 +494,20 @@ class Hunyuan3DPaintPipeline(Object3DPipeline):
         images = torch.cat([albedo, metallic_roughness], dim=1)
         if self.upscaler is not None:
             images = torch.cat([self.upscale(part) for part in images.split(3, dim=1)], dim=1)
-        if images.shape[-1] != render_size:
-            images = F.interpolate(images, size=(render_size, render_size), mode="bicubic", antialias=True)
-            images = (images.clamp(0, 1) * 255).round() / 255
-        texture = self.bake(
-            images.permute(0, 2, 3, 1).float(),
-            views,
-            vertices,
-            faces,
-            uvs,
-            2 * texture_size,
-            unreliable_radius=render_size // 512,
-        )
-        texture = F.avg_pool2d(texture.permute(2, 0, 1)[None], 2)[0].permute(1, 2, 0).clamp(0, 1).cpu()
-        material = PBRMaterial(base_color=texture[..., :3], metallic=texture[..., 3:4], roughness=texture[..., 4:5])
+        images = list((images.permute(0, 2, 3, 1).float().cpu() * 255).round().to(torch.uint8))
+        # The released loop over the enhanced images runs over its two keys, so only the first two views are resized
+        # to the render size; the others are baked at their own size. Without the upscaler every view is resized.
+        for index in range(len(images) if self.upscaler is None else min(2, len(images))):
+            if images[index].shape[0] != render_size:
+                images[index] = _resize_view(images[index], render_size)
+        images = [torch.from_numpy(image.numpy() / 255.0).float().to(device) for image in images]
+        texture = self.bake(images, views, vertices, faces, uvs, 2 * texture_size).cpu().numpy()
+        base_color, metallic, roughness = export_textures(texture)
+        material = PBRMaterial(base_color=base_color, metallic=metallic, roughness=roughness)
         textured = MeshAsset(
-            vertices=prepared.vertices,
+            vertices=torch.from_numpy(_obj_values(object_vertices(vertices.cpu(), center, factor))),
             faces=prepared.faces,
-            uvs=prepared.uvs,
+            uvs=torch.from_numpy(_obj_values(object_uvs(prepared.uvs))),
             materials=(material,),
             metadata={"family": "hunyuan3d-2.1", "views": [list(view) for view in views]},
         )
@@ -413,8 +523,11 @@ class Hunyuan3DPaintPipeline(Object3DPipeline):
 __all__ = [
     "CANDIDATE_VIEWS",
     "Hunyuan3DPaintPipeline",
+    "export_textures",
     "project_vertices",
+    "remesh",
     "render_conditions",
+    "renderer_frame",
     "renderer_vertices",
     "select_views",
 ]

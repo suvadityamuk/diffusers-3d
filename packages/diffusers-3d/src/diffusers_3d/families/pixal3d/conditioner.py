@@ -12,8 +12,10 @@
 
 from __future__ import annotations
 
+import hashlib
 import math
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 import torch
@@ -24,9 +26,8 @@ from diffusers.models.embeddings import apply_rotary_emb
 from diffusers.utils import BaseOutput
 from torch import nn
 
-from ...execution.metadata import ContributionStatus, ReviewStatus
 from ...execution.models import Object3DModel
-from ...objects import CameraRig, Object3DKind
+from ...objects import CameraRig
 
 # Blender camera-to-world of the canonical front view, camera at (0, -distance, 0) looking along +y with +z up.
 _FRONT_VIEW = ((1.0, 0.0, 0.0, 0.0), (0.0, 0.0, -1.0, 0.0), (0.0, 1.0, 0.0, 0.0), (0.0, 0.0, 0.0, 1.0))
@@ -108,13 +109,6 @@ class Pixal3DNAFUpsampler(Object3DModel):
     size; average-pooled copies of them are the keys over the low-resolution features, which are the values.
     """
 
-    family_id = "pixal3d"
-    component_role = "feature_upsampler"
-    supported_object_kinds = (Object3DKind.SPARSE_VOXEL, Object3DKind.O_VOXEL)
-    required_backends = ()
-    contribution_status = ContributionStatus.REVIEWED_PACKAGE
-    review_status = ReviewStatus.REVIEWED
-
     @register_to_config
     def __init__(
         self,
@@ -131,14 +125,6 @@ class Pixal3DNAFUpsampler(Object3DModel):
             raise ValueError("dim must divide into attention heads and 4 * rope_heads")
         self.encoder = _image_encoder(dim // 2, 1, encoder_layers, norm_groups)
         self.semantic_encoder = _image_encoder(dim // 2, 3, encoder_layers, norm_groups)
-
-    @classmethod
-    def production_config(cls) -> dict[str, Any]:
-        return {}
-
-    @classmethod
-    def tiny_config(cls) -> dict[str, Any]:
-        return {"dim": 16, "num_heads": 2, "rope_heads": 2, "kernel_size": 3, "encoder_layers": 1}
 
     def _rotate(self, hidden_states: torch.Tensor) -> torch.Tensor:
         """Axial 2D RoPE over ``[-1, 1]`` pixel-centre coordinates, rotating channel halves as DINOv3 does."""
@@ -271,7 +257,68 @@ def project_grid_features(
     return torch.cat(samples, dim=-1)
 
 
+# valeo.ai's released NAF checkpoint, which Pixal3D uses unchanged. It loads from this URL, checked against its SHA-256,
+# and is never converted or redistributed.
+NAF_CHECKPOINT_URL = "https://github.com/valeoai/NAF/releases/download/model/naf_release.pth"
+NAF_CHECKPOINT_SHA256 = "c096c1ab2217a5c3ac136365f721685e2201379cb69d509cfb0261183847c98f"
+_NAF_BLOCK_OFFSETS = {"norm1": 0, "conv1": 2, "norm2": 3, "conv2": 5}
+
+
+def _naf_block_key(key: str) -> str:
+    """Map NAF ``image_encoder.{encoder,sem_encoder}.<block>.<layer>`` keys onto the flat ``nn.Sequential`` encoders."""
+
+    branch, index, *rest = key.removeprefix("image_encoder.").split(".")
+    if rest[0] in _NAF_BLOCK_OFFSETS:
+        index, rest = str(1 + 6 * (int(index) - 1) + _NAF_BLOCK_OFFSETS[rest[0]]), rest[1:]
+    return ".".join(["semantic_encoder" if branch == "sem_encoder" else branch, index, *rest])
+
+
+def _naf_state_dict(path: Path, sha256: str = NAF_CHECKPOINT_SHA256) -> dict[str, torch.Tensor]:
+    digest = hashlib.sha256(Path(path).read_bytes()).hexdigest()
+    if digest != sha256:
+        raise ValueError(f"{path} is not the pinned NAF release checkpoint (sha256 {digest})")
+    state_dict = torch.load(path, map_location="cpu", weights_only=True)
+    # RoPE periods are derived from ``rope_base``; check the stored copy instead of loading it.
+    periods = state_dict.pop("image_encoder.rope.periods")
+    if not torch.equal(periods, 100.0 ** (2 * torch.arange(16, dtype=torch.float32) / 32)):
+        raise ValueError("NAF RoPE periods differ from the configured rope_base")
+    return {_naf_block_key(key): value for key, value in state_dict.items()}
+
+
+def load_naf_upsampler(
+    url: str = NAF_CHECKPOINT_URL,
+    *,
+    revision: str = NAF_CHECKPOINT_SHA256,
+    dtype: torch.dtype | None = None,
+    cache_dir: str | Path | None = None,
+    local_files_only: bool = False,
+    force_download: bool = False,
+    **hub_kwargs: Any,
+) -> Pixal3DNAFUpsampler:
+    """Download valeo.ai's NAF release (``url``, checked against the SHA-256 ``revision``) and convert it on load.
+
+    ``url`` may also be a local ``naf_release.pth``. The file is cached under ``cache_dir`` (by default torch hub's
+    checkpoint directory); float32 unless ``dtype`` is given.
+    """
+
+    path = Path(url)
+    if not path.is_file():
+        directory = Path(cache_dir) if cache_dir is not None else Path(torch.hub.get_dir()) / "checkpoints"
+        path = directory / f"naf-{revision[:12]}-{url.rsplit('/', 1)[-1]}"
+        if force_download or not path.is_file():
+            if local_files_only:
+                raise FileNotFoundError(f"the NAF checkpoint is not cached at {path}; download it from {url}")
+            path.parent.mkdir(parents=True, exist_ok=True)
+            torch.hub.download_url_to_file(url, str(path), hash_prefix=revision, progress=False)
+    model = Pixal3DNAFUpsampler()
+    model.load_state_dict(_naf_state_dict(path, revision), strict=True)
+    return (model if dtype is None else model.to(dtype)).eval()
+
+
 __all__ = [
+    "NAF_CHECKPOINT_SHA256",
+    "NAF_CHECKPOINT_URL",
+    "load_naf_upsampler",
     "Pixal3DNAFUpsampler",
     "Pixal3DNAFUpsamplerOutput",
     "blender_camera_to_world",

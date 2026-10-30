@@ -1,6 +1,8 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, field, fields
+import os
+from dataclasses import dataclass, field, fields, replace
+from typing import Any
 
 import torch
 from diffusers.utils import BaseOutput
@@ -82,6 +84,74 @@ class MeshAsset(BaseOutput, TensorDataMixin):
             normals=None if self.normals is None else self.normals @ matrix.T,
         )
         return MeshAsset(**values)
+
+    def save(self, file: str | os.PathLike[str] | Any, *, file_type: str | None = None) -> None:
+        """Write a GLB, OBJ, PLY, or STL file with trimesh (``portable`` extra), with the format read from the suffix.
+
+        Coordinates are written the way the model's upstream exports them: when ``metadata["export_rotation"]`` holds a
+        3x3 matrix ``R``, the native vertices ``v`` are written as ``v @ R.T`` (and normals likewise); otherwise the file
+        is right-handed Y-up, as glTF requires and most viewers assume. Package-only ``extras`` are dropped, because no
+        mesh format stores them.
+        """
+
+        from ..backends.trimesh import TrimeshBackend
+
+        mesh = replace(self.to("cpu"), extras={})
+        rotation = mesh.metadata.get("export_rotation")
+        if rotation is None:
+            TrimeshBackend().export_mesh(
+                mesh.to_coordinate_system(CoordinateSystem.RIGHT_HANDED_Y_UP), file, file_type=file_type
+            )
+            return
+        matrix = torch.tensor(rotation, dtype=mesh.vertices.dtype)
+        faces = mesh.faces[:, [0, 2, 1]] if torch.det(matrix.double()) < 0 else mesh.faces
+        mesh = replace(
+            mesh,
+            vertices=mesh.vertices @ matrix.T,
+            faces=faces,
+            normals=None if mesh.normals is None else mesh.normals @ matrix.T,
+        )
+        TrimeshBackend().export_mesh(mesh, file, file_type=file_type, raw_coordinates=True)
+
+    @classmethod
+    def load(cls, file: str | os.PathLike[str] | Any, *, file_type: str | None = None) -> MeshAsset:
+        """Read one GLB, OBJ, PLY, or STL mesh as right-handed Y-up CPU tensors (``portable`` extra)."""
+
+        from ..backends.trimesh import TrimeshBackend
+
+        return TrimeshBackend().import_mesh(file, file_type=file_type)
+
+    def simplify(self, face_count: int) -> MeshAsset:
+        """Quadric-decimate to about ``face_count`` faces on the CPU (``portable`` extra).
+
+        Decimation cannot carry per-vertex or per-face channels, so the result keeps only geometry, the transform,
+        and metadata.
+        """
+
+        from ..backends.trimesh import TrimeshBackend
+
+        geometry = MeshAsset(
+            vertices=self.vertices.detach().cpu(),
+            faces=self.faces.detach().cpu(),
+            transform=self.transform.detach().cpu(),
+            coordinate_system=self.coordinate_system,
+            metadata=dict(self.metadata),
+        )
+        return TrimeshBackend().simplify(geometry, face_count)
+
+    def repair(self) -> MeshAsset:
+        """Drop degenerate and duplicate faces and unreferenced vertices, and make normals consistent (CPU)."""
+
+        from ..backends.trimesh import TrimeshBackend
+
+        return TrimeshBackend().cleanup(self)
+
+    def unwrap_uv(self) -> MeshAsset:
+        """UV-unwrap with xatlas on the CPU (``portable`` extra); seam vertices are duplicated with their channels."""
+
+        from ..backends.xatlas import XAtlasBackend
+
+        return XAtlasBackend().unwrap_uv(self)
 
     def validate(self, expensive: bool = False) -> None:
         if not isinstance(self.coordinate_system, CoordinateSystem):

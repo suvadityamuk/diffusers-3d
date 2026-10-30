@@ -4,7 +4,7 @@ import os
 from typing import Any, ClassVar
 
 import torch
-from diffusers.loaders import LoraBaseMixin, PeftAdapterMixin
+from diffusers.loaders import LoraBaseMixin
 from diffusers.loaders.lora_base import _fetch_state_dict
 from diffusers.utils import USE_PEFT_BACKEND
 from diffusers.utils.constants import MIN_PEFT_VERSION
@@ -17,20 +17,6 @@ def require_peft() -> None:
         raise ImportError(
             f'Loading LoRA weights requires `peft>={MIN_PEFT_VERSION}`. Install it with `pip install "peft>={MIN_PEFT_VERSION}"`.'
         )
-
-
-class Object3DPeftAdapterMixin(PeftAdapterMixin):
-    """Diffusers `PeftAdapterMixin` that fails early with an install hint when `peft` is missing."""
-
-    def load_lora_adapter(
-        self,
-        pretrained_model_name_or_path_or_dict: str | os.PathLike[str] | dict[str, torch.Tensor],
-        prefix: str | None = "transformer",
-        hotswap: bool = False,
-        **kwargs: Any,
-    ) -> None:
-        require_peft()
-        super().load_lora_adapter(pretrained_model_name_or_path_or_dict, prefix=prefix, hotswap=hotswap, **kwargs)
 
 
 class Object3DLoraLoaderMixin(LoraBaseMixin):
@@ -125,4 +111,4 @@ class Object3DLoraLoaderMixin(LoraBaseMixin):
         super().unfuse_lora(components=components or list(self._lora_loadable_modules), **kwargs)
 
 
-__all__ = ["Object3DLoraLoaderMixin", "Object3DPeftAdapterMixin", "require_peft"]
+__all__ = ["Object3DLoraLoaderMixin"]

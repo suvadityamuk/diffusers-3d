@@ -5,7 +5,7 @@
 #
 # MIT License. Copyright (c) 2023 LIU-Yuxin.
 # Modified to rasterize with the package mesh rasterizer, to bake by explicit scatter instead of differentiating a
-# render, and to fill texels with a jump-flooding nearest-texel search instead of the CuPy Voronoi kernel.
+# render, and to run the CuPy Voronoi kernel's jump flooding in plain PyTorch.
 
 from __future__ import annotations
 
@@ -17,30 +17,36 @@ from ...backends.mesh_rasterizer import interpolate, rasterize
 
 
 def nearest_valid_index(valid: torch.Tensor) -> torch.Tensor:
-    """Flat index of a nearest ``True`` texel for every texel of an ``(H, W)`` mask, found by jump flooding.
+    """Flat index of the texel each texel of an ``(H, W)`` mask copies from: ``voronoi_solve``'s jump flooding.
 
-    Returns ``(H * W,)`` indices, ``-1`` everywhere when nothing is valid.
+    A port of the released CuPy kernel, pass by pass: steps ``max(H, W) // 2, ..., 1``; each texel tests the nine
+    texels ``step`` rows and columns away in row-major order of the offsets, on the flat index (so a column offset
+    wraps into the next row), keeps the first candidate when it holds none, and takes a later one only when it is
+    strictly closer. The two buffers swap after every pass, so a texel starts each pass from its value two passes
+    back. Returns ``(H * W,)`` indices, ``-1`` everywhere when nothing is valid.
     """
 
     height, width = valid.shape
-    rows = torch.arange(height, device=valid.device)[:, None].expand(height, width)
-    columns = torch.arange(width, device=valid.device)[None].expand(height, width)
-    nearest = torch.where(valid, rows * width + columns, -1)
-    step = 1 << (max(height, width).bit_length() - 1)
+    count = height * width
+    index = torch.arange(count, device=valid.device)
+    ping = torch.where(valid.flatten(), index, -1)
+    pong = ping.clone()
+    row, column = index // width, index % width
+    step = max(height, width) // 2
     while step:
-        padded = F.pad(nearest, (step, step, step, step), value=-1)
-        best = nearest
-        best_distance = torch.where(best >= 0, (best // width - rows) ** 2 + (best % width - columns) ** 2, -1)
-        for row_offset in (0, step, 2 * step):
-            for column_offset in (0, step, 2 * step):
-                candidate = padded[row_offset : row_offset + height, column_offset : column_offset + width]
-                distance = (candidate // width - rows) ** 2 + (candidate % width - columns) ** 2
-                closer = (candidate >= 0) & ((best_distance < 0) | (distance < best_distance))
-                best = torch.where(closer, candidate, best)
-                best_distance = torch.where(closer, distance, best_distance)
-        nearest = best
+        result = pong
+        for row_step in (-1, 0, 1):
+            for column_step in (-1, 0, 1):
+                source = index + step * row_step * width + step * column_step
+                inside = (source >= 0) & (source < count)
+                candidate = torch.where(inside, ping[source.clamp(0, count - 1)], -1)
+                current_distance = (row - result // width) ** 2 + (column - result % width) ** 2
+                distance = (row - candidate // width) ** 2 + (column - candidate % width) ** 2
+                take = (candidate != -1) & ((result == -1) | (distance < current_distance))
+                result = torch.where(take, candidate, result)
+        ping, pong = result, ping
         step //= 2
-    return nearest.flatten()
+    return ping
 
 
 def _fill(values: torch.Tensor, nearest: torch.Tensor) -> torch.Tensor:
@@ -61,7 +67,7 @@ class Step1X3DLatentTextureSync:
 
     ``world_to_clip`` ``(6, 4, 4)`` maps ``positions`` into clip space with row 0 of the image at the top; views are
     rasterized at ``image_size`` with back faces culled and sample the ``texture_size`` texture at the nearest texel
-    (``v = 1`` is row 0). Baking averages each view's pixels into the texels they sample, fills every other texel
+    (``v = 1`` is row 0) of ``uvs``, indexed by ``uv_faces`` (``faces`` by default). Baking averages each view's pixels into the texels they sample, fills every other texel
     from its nearest sampled one, and blends the views with ``visible * cos ** exp`` weights, where ``visible``
     marks the texels of faces seen at ``visibility_size`` (dilated by a texel) and ``cos`` is the baked cosine
     between the vertex normal and the direction to the camera.
@@ -78,14 +84,16 @@ class Step1X3DLatentTextureSync:
         image_size: int,
         texture_size: int,
         visibility_size: int = 512,
+        uv_faces: torch.Tensor | None = None,
     ) -> None:
         self.image_size, self.texture_size = image_size, texture_size
         clip = torch.cat([positions, torch.ones_like(positions[:, :1])], dim=1) @ world_to_clip.transpose(1, 2)
         normals = vertex_normals(positions, faces)
         # The clip transform flips y, so front faces turn clockwise; reversing the winding culls the back faces.
+        uv_faces = (faces if uv_faces is None else uv_faces)[:, [0, 2, 1]]
         faces = faces[:, [0, 2, 1]]
         raster = rasterize(clip, faces, (image_size, image_size), cull_backfaces=True)
-        texel = (interpolate(uvs, raster, faces) * (texture_size - 1)).round().long().clamp(0, texture_size - 1)
+        texel = (interpolate(uvs, raster, uv_faces) * (texture_size - 1)).round().long().clamp(0, texture_size - 1)
         texel = (texture_size - 1 - texel[..., 1]) * texture_size + texel[..., 0]
         self.pixel_texel = torch.where(raster.face_index >= 0, texel, -1).flatten(1)
         self.masks = (raster.face_index >= 0)[:, None].float()
@@ -106,7 +114,7 @@ class Step1X3DLatentTextureSync:
         seen.scatter_(1, visible_faces.flatten(1) + 1, True)
         uv_clip = torch.cat([uvs * 2 - 1, torch.zeros_like(uvs[:, :1]), torch.ones_like(uvs[:, :1])], dim=1)
         uv_clip[:, 1] = -uv_clip[:, 1]
-        uv_face = rasterize(uv_clip, faces, (texture_size, texture_size)).face_index.flatten()
+        uv_face = rasterize(uv_clip, uv_faces, (texture_size, texture_size)).face_index.flatten()
         visible = seen[:, 1:][:, uv_face.clamp(min=0)] & (uv_face >= 0)
         visible = F.max_pool2d(visible.view(-1, 1, texture_size, texture_size).float(), 3, stride=1, padding=1)
         self.visible = visible.flatten(1)
@@ -156,7 +164,8 @@ class Step1X3DLatentTextureSync:
         alpha_prod = scheduler.alphas_cumprod[timestep]
         alpha_prod_previous = scheduler.alphas_cumprod[previous] if previous >= 0 else scheduler.one
         current_alpha = alpha_prod / alpha_prod_previous
-        original = (sample.float() - (1 - alpha_prod) ** 0.5 * model_output.float()) / alpha_prod**0.5
+        # In the latents' dtype, as ``step_tex_sync`` computes it.
+        original = (sample - (1 - alpha_prod) ** 0.5 * model_output) / alpha_prod**0.5
         if scheduler.config.clip_sample:
             original = original.clamp(-scheduler.config.clip_sample_range, scheduler.config.clip_sample_range)
         original_coefficient = alpha_prod_previous**0.5 * (1 - current_alpha) / (1 - alpha_prod)

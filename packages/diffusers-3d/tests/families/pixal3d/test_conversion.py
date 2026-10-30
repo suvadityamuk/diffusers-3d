@@ -5,6 +5,8 @@ import json
 
 import pytest
 import torch
+from _configs import tiny_config
+from moge.configs import tiny_moge2_config
 from safetensors.torch import load_file, save_file
 
 from diffusers_3d import (
@@ -14,6 +16,7 @@ from diffusers_3d import (
     Pixal3DImageTo3DPipeline,
     Pixal3DSLatFlowModel,
 )
+from diffusers_3d.families.moge import MoGe2Model
 from diffusers_3d.families.pixal3d import conversion
 from diffusers_3d.families.pixal3d.conversion import _naf_block_key, _rope_phases, convert_pixal3d_checkpoint
 
@@ -56,28 +59,28 @@ def _sampler(guidance_rescale: float) -> dict:
         ("pipeline_mv.json", "Pixal3DMVImageTo3DPipeline", True),
     ],
 )
-def test_synthetic_release_converts_auto_loads_and_runs(tmp_path, config_file, name, multiview):
+def test_synthetic_release_converts_auto_loads_and_runs(
+    tmp_path, monkeypatch, config_file, name, multiview, local_external_components
+):
     reference = tiny_pipeline()
     source = tmp_path / "source"
     (source / "ckpts").mkdir(parents=True)
     for stem, upstream_name, model, projected in (
         ("ss_flow", "SparseStructureFlowModel", reference.sparse_structure_flow_model, True),
-        ("ss_dec", "SparseStructureDecoder", reference.sparse_structure_decoder, False),
         ("shape_512", "ElasticSLatFlowModel", reference.shape_slat_flow_model, True),
         ("shape_1024", "ElasticSLatFlowModel", reference.shape_slat_flow_model_1024, True),
-        ("shape_dec", "FlexiDualGridVaeDecoder", reference.shape_slat_decoder, False),
         ("tex_1024", "ElasticSLatFlowModel", reference.texture_slat_flow_model_1024, True),
-        ("tex_dec", "SparseUnetVaeDecoder", reference.pbr_decoder, False),
     ):
         _write_component(source / "ckpts", stem, upstream_name, model, projected=projected)
     models = {
         "sparse_structure_flow_model": "ckpts/ss_flow",
-        "sparse_structure_decoder": "ckpts/ss_dec",
+        # Byte-identical copies of TRELLIS release files: the pipeline loads them from those releases.
+        "sparse_structure_decoder": "ckpts/ss_dec_conv3d_16l8_fp16",
         "shape_slat_flow_model_512": "ckpts/shape_512",
         "shape_slat_flow_model_1024": "ckpts/shape_1024",
-        "shape_slat_decoder": "ckpts/shape_dec",
+        "shape_slat_decoder": "ckpts/shape_dec_next_dc_f16c32_fp16",
         "tex_slat_flow_model_1024": "ckpts/tex_1024",
-        "tex_slat_decoder": "ckpts/tex_dec",
+        "tex_slat_decoder": "ckpts/tex_dec_next_dc_f16c32_fp16",
     }
     args = {
         "models": models,
@@ -94,24 +97,47 @@ def test_synthetic_release_converts_auto_loads_and_runs(tmp_path, config_file, n
         "default_pipeline_type": "1536_cascade",
     }
     (source / config_file).write_text(json.dumps({"name": name, "args": args}))
-    reference.image_encoder.save_pretrained(tmp_path / "dinov3")
-    reference.feature_upsampler.save_pretrained(tmp_path / "naf")
-
-    output = convert_pixal3d_checkpoint(
-        source,
-        tmp_path / "converted",
-        image_encoder_path=tmp_path / "dinov3",
-        naf_checkpoint_path=tmp_path / "naf",
-        config_file=config_file,
+    # The released MoGe-2 is 1.3 GB; a tiny one stands in for it.
+    estimator = MoGe2Model(**tiny_moge2_config()).eval()
+    calls = local_external_components(
+        Pixal3DImageTo3DPipeline,
+        image_encoder=reference.image_encoder,
+        feature_upsampler=reference.feature_upsampler,
+        depth_estimator=estimator,
+        sparse_structure_decoder=reference.sparse_structure_decoder,
+        shape_slat_decoder=reference.shape_slat_decoder,
+        pbr_decoder=reference.pbr_decoder,
     )
+    output = convert_pixal3d_checkpoint(source, tmp_path / "converted", config_file=config_file)
     report = json.loads((output / "pixal3d_conversion.json").read_text())
     assert report["reference_revision"] == conversion.PIXAL3D_REFERENCE_REVISION
     assert report["multiview"] is multiview
+    # Third-party networks (DINOv3, NAF, MoGe-2, TRELLIS decoders) are named but never converted; loading fetches them.
+    index = json.loads((output / "model_index.json").read_text())
+    assert index["image_encoder"] == ["transformers", "DINOv3ViTModel"]
+    assert index["feature_upsampler"][1] == "Pixal3DNAFUpsampler"
+    assert index["depth_estimator"] == ([None, None] if multiview else [MoGe2Model.__module__, "MoGe2Model"])
+    external = ("image_encoder", "feature_upsampler", "depth_estimator", "sparse_structure_decoder")
+    assert not any((output / name).exists() for name in (*external, "shape_slat_decoder", "pbr_decoder"))
     pipeline = AutoPipelineForImageTo3D.from_pretrained(output, local_files_only=True)
+    expected = {
+        "image_encoder": "facebook/dinov3-vitl16-pretrain-lvd1689m",
+        "feature_upsampler": "https://github.com/valeoai/NAF/releases/download/model/naf_release.pth",
+        "sparse_structure_decoder": "microsoft/TRELLIS-image-large",
+        "shape_slat_decoder": "microsoft/TRELLIS.2-4B",
+        "pbr_decoder": "microsoft/TRELLIS.2-4B",
+    } | ({} if multiview else {"depth_estimator": "Ruicheng/moge-2-vitl"})
+    assert {call[0]: call[1] for call in calls} == expected and len(calls) == len(expected)
     assert type(pipeline) is Pixal3DImageTo3DPipeline
+    pipeline.disable_background_removal()
     assert pipeline.config.multiview is multiview
     assert pipeline.texture_slat_flow_model is None
     assert pipeline.config.image_size == TINY_IMAGE_SIZE
+    # Only single-view checkpoints estimate their field of view.
+    assert (pipeline.depth_estimator is None) is multiview
+    if not multiview:
+        assert pipeline.depth_estimator.dtype is torch.float32
+        torch.testing.assert_close(pipeline.depth_estimator.state_dict(), estimator.state_dict(), atol=0, rtol=0)
     for component in (
         "image_encoder",
         "sparse_structure_flow_model",
@@ -156,7 +182,7 @@ def test_projection_mode_and_rope_phases_are_checked(tmp_path):
 
 
 def test_float32_release_weights_keep_the_configured_bfloat16_torso(tmp_path):
-    model = Pixal3DSLatFlowModel(**{**Pixal3DSLatFlowModel.tiny_config(), "dtype": "bfloat16"})
+    model = Pixal3DSLatFlowModel(**{**tiny_config(Pixal3DSLatFlowModel), "dtype": "bfloat16"})
     config = {key: value for key, value in model.config.items() if not key.startswith("_")}
     (tmp_path / "flow.json").write_text(
         json.dumps({"name": "ElasticSLatFlowModel", "args": {**config, "image_attn_mode": "proj"}})
@@ -186,9 +212,17 @@ def test_naf_release_keys_map_onto_the_flat_encoders(tmp_path, monkeypatch):
     torch.save({key: value.detach().clone() for key, value in released.items()}, path)
     with pytest.raises(ValueError, match="pinned NAF release"):
         conversion._naf_state_dict(path)
-    monkeypatch.setattr(conversion, "NAF_CHECKPOINT_SHA256", hashlib.sha256(path.read_bytes()).hexdigest())
-    state = conversion._naf_state_dict(path)
+    state = conversion._naf_state_dict(path, hashlib.sha256(path.read_bytes()).hexdigest())
     for key, value in released.items():
         if "rope" not in key:
             assert torch.equal(state[_naf_block_key(key)], value)
             assert torch.equal(model.state_dict()[_naf_block_key(key)], value)
+
+
+def test_naf_loads_from_its_release_url_and_never_from_an_uncached_offline_path(tmp_path):
+    from diffusers_3d.families.pixal3d.conditioner import NAF_CHECKPOINT_URL, load_naf_upsampler
+
+    component = Pixal3DImageTo3DPipeline.external_components["feature_upsampler"]
+    assert (component.repository, component.revision) == (NAF_CHECKPOINT_URL, conversion.NAF_CHECKPOINT_SHA256)
+    with pytest.raises(FileNotFoundError, match="not cached"):
+        load_naf_upsampler(cache_dir=tmp_path, local_files_only=True)

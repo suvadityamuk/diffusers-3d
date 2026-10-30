@@ -13,6 +13,13 @@ from unittest import mock
 import pytest
 import torch
 import torch.nn.functional as F
+from _configs import tiny_config
+from _reference import (
+    ReferenceCheckoutError,
+    import_reference_dependency,
+    reference_unavailable,
+    validate_reference_checkout,
+)
 
 from diffusers_3d import (
     SAM3D_REFERENCE_REVISION,
@@ -22,12 +29,6 @@ from diffusers_3d import (
     SparseVoxelAsset,
     preprocess_sam3d_condition,
     trellis_grid_transform,
-)
-from diffusers_3d._reference import (
-    ReferenceCheckoutError,
-    import_reference_dependency,
-    reference_unavailable,
-    validate_reference_checkout,
 )
 from diffusers_3d.families.sam3d_objects.conversion import (
     convert_condition_embedder_state,
@@ -361,7 +362,7 @@ def _upstream_names(values: dict) -> dict:
 
 
 def _flow_pair(reference, seed: int):
-    config = Sam3DSparseStructureFlowModel.tiny_config()
+    config = tiny_config(Sam3DSparseStructureFlowModel)
     width = config["model_channels"]
     mapping = {
         "6drotation_normalized": reference.latents.Latent(
@@ -435,7 +436,7 @@ def _embedder_pair(reference, *, prenorm: bool, seed: int):
     upstream = reference.fuser.EmbedderFuser(embedders, projection_net_hidden_dim_multiplier=1.0).eval()
     _randomize(upstream, seed)
     config = {
-        **Sam3DConditionEmbedder.tiny_config(),
+        **tiny_config(Sam3DConditionEmbedder),
         "prenorm_features": prenorm,
         "pointmap_config": None if prenorm else pointmap_config,
     }
@@ -514,6 +515,8 @@ def test_preprocessing_matches_pinned_reference():
     pointmap = torch.randn(3, 37, 29, generator=generator)
     pointmap[2] = pointmap[2].abs() + 1.5
     pointmap[:, 10:12, 16:20] = float("nan")
+    # MoGe marks its masked-out points with infinity; flipped to PyTorch3D axes, x and y become -inf.
+    pointmap[:, 3:8, 20:24] = torch.tensor([-float("inf"), -float("inf"), float("inf")])[:, None, None]
 
     expected = structure._process_image_mask_pointmap_mess(image, mask, pointmap)
     expected_latent = latent._process_image_and_mask_mess(image, mask)

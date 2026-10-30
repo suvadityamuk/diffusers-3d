@@ -20,9 +20,8 @@ from diffusers.utils import BaseOutput
 from torch import nn
 
 from ...backends import ovoxel_grid_transform
-from ...execution.metadata import ContributionStatus, ReviewStatus
 from ...execution.models import Object3DModel
-from ...objects import CoordinateSystem, Object3DKind, OVoxelAsset, SparseVoxelAsset
+from ...objects import CoordinateSystem, OVoxelAsset, SparseVoxelAsset
 from ..trellis.decoders import TrellisSparseStructureDecoder
 from ..trellis.models import TrellisLayerNorm32
 from ..trellis.sparse import TrellisSparseTensor, trellis_grid_transform
@@ -31,13 +30,6 @@ from ..trellis.sparse_ops import SparseConv3d, channel_to_spatial, sparse_subdiv
 
 class Trellis2SparseStructureDecoder(TrellisSparseStructureDecoder):
     """The TRELLIS image-large sparse-structure decoder, which TRELLIS.2 reuses unchanged; adds occupancy pooling."""
-
-    family_id = "trellis2"
-    component_role = "sparse_structure_decoder"
-    supported_object_kinds = (Object3DKind.SPARSE_VOXEL,)
-    required_backends = ()
-    contribution_status = ContributionStatus.REVIEWED_PACKAGE
-    review_status = ReviewStatus.REVIEWED
 
     def decode_to_sparse_voxels(
         self, hidden_states: torch.Tensor, *, target_resolution: int | None = None, pooling: int | None = None
@@ -318,13 +310,6 @@ class Trellis2ShapeDualGridDecoder(_Trellis2SparseUnetDecoder):
     three per-axis intersection logits, and the quad split weight; ``ovoxel_to_mesh`` turns them into a mesh.
     """
 
-    family_id = "trellis2"
-    component_role = "shape_slat_decoder"
-    supported_object_kinds = (Object3DKind.O_VOXEL,)
-    required_backends = ()
-    contribution_status = ContributionStatus.REVIEWED_PACKAGE
-    review_status = ReviewStatus.REVIEWED
-
     @register_to_config
     def __init__(
         self,
@@ -358,34 +343,6 @@ class Trellis2ShapeDualGridDecoder(_Trellis2SparseUnetDecoder):
             use_fp16=use_fp16,
             use_checkpoint=use_checkpoint,
         )
-
-    @classmethod
-    def production_config(cls) -> dict[str, Any]:
-        return {
-            "resolution": 256,
-            "model_channels": [1024, 512, 256, 128, 64],
-            "latent_channels": 32,
-            "num_blocks": [4, 16, 8, 4, 0],
-            "block_type": ["SparseConvNeXtBlock3d"] * 5,
-            "up_block_type": ["SparseResBlockC2S3d"] * 4,
-            "block_args": [{}, {}, {}, {}, {}],
-            "voxel_margin": 0.5,
-            "use_fp16": True,
-        }
-
-    @classmethod
-    def tiny_config(cls) -> dict[str, Any]:
-        return {
-            "resolution": 16,
-            "model_channels": [8, 8],
-            "latent_channels": 4,
-            "num_blocks": [1, 0],
-            "block_type": ["SparseConvNeXtBlock3d"] * 2,
-            "up_block_type": ["SparseResBlockC2S3d"],
-            "block_args": [{}, {}],
-            "voxel_margin": 0.5,
-            "use_fp16": False,
-        }
 
     @torch.no_grad()
     def upsample_coordinates(self, hidden_states: TrellisSparseTensor, upsample_times: int) -> torch.Tensor:
@@ -467,13 +424,6 @@ class Trellis2PBRSparseDecoder(_Trellis2SparseUnetDecoder):
     pipeline (``* 0.5 + 0.5``) and written onto the shape O-Voxels.
     """
 
-    family_id = "trellis2"
-    component_role = "tex_slat_decoder"
-    supported_object_kinds = (Object3DKind.O_VOXEL,)
-    required_backends = ()
-    contribution_status = ContributionStatus.REVIEWED_PACKAGE
-    review_status = ReviewStatus.REVIEWED
-
     @register_to_config
     def __init__(
         self,
@@ -517,36 +467,6 @@ class Trellis2PBRSparseDecoder(_Trellis2SparseUnetDecoder):
             use_fp16=use_fp16,
             use_checkpoint=use_checkpoint,
         )
-
-    @classmethod
-    def production_config(cls) -> dict[str, Any]:
-        return {
-            "out_channels": 6,
-            "model_channels": [1024, 512, 256, 128, 64],
-            "latent_channels": 32,
-            "num_blocks": [4, 16, 8, 4, 0],
-            "block_type": ["SparseConvNeXtBlock3d"] * 5,
-            "up_block_type": ["SparseResBlockC2S3d"] * 4,
-            "block_args": [{}, {}, {}, {}, {}],
-            "pred_subdiv": False,
-            "use_fp16": True,
-            "channel_layout": ["base_color", "metallic", "roughness", "alpha"],
-        }
-
-    @classmethod
-    def tiny_config(cls) -> dict[str, Any]:
-        return {
-            "out_channels": 6,
-            "model_channels": [8, 8],
-            "latent_channels": 4,
-            "num_blocks": [1, 0],
-            "block_type": ["SparseConvNeXtBlock3d"] * 2,
-            "up_block_type": ["SparseResBlockC2S3d"],
-            "block_args": [{}, {}],
-            "pred_subdiv": False,
-            "use_fp16": False,
-            "channel_layout": ["base_color", "metallic", "roughness", "alpha"],
-        }
 
     def forward(
         self,

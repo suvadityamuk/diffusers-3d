@@ -1,12 +1,16 @@
 from __future__ import annotations
 
+import copy
+import dataclasses
 import warnings
 
 import pytest
 import torch
+from _configs import tiny_config
 from diffusers import AutoencoderKL, UniPCMultistepScheduler
 from transformers import BitImageProcessorPil, Dinov2Config, Dinov2Model
 
+import diffusers_3d.execution.pipelines as pipelines
 from diffusers_3d import (
     Hunyuan3DDiTModel,
     Hunyuan3DFlowMatchEulerDiscreteScheduler,
@@ -26,8 +30,8 @@ def make_tiny_hunyuan3d_pipeline() -> Hunyuan3DImageTo3DPipeline:
                 hidden_size=24, num_hidden_layers=1, num_attention_heads=4, mlp_ratio=2, image_size=28, patch_size=14
             )
         ),
-        "transformer": Hunyuan3DDiTModel(**Hunyuan3DDiTModel.tiny_config()),
-        "vae": Hunyuan3DShapeVAE(**Hunyuan3DShapeVAE.tiny_config()),
+        "transformer": Hunyuan3DDiTModel(**tiny_config(Hunyuan3DDiTModel)),
+        "vae": Hunyuan3DShapeVAE(**tiny_config(Hunyuan3DShapeVAE)),
         "scheduler": Hunyuan3DFlowMatchEulerDiscreteScheduler(),
     }
     with warnings.catch_warnings():
@@ -54,7 +58,7 @@ def make_tiny_paint_pipeline(upscaler: bool = True) -> Hunyuan3DPaintPipeline:
     """Tiny random Paint components: 16 px views (8 px latents) and a 10-dimensional DINOv2."""
 
     torch.manual_seed(0)
-    unet = Hunyuan3DPaintUNet(**Hunyuan3DPaintUNet.tiny_config())
+    unet = Hunyuan3DPaintUNet(**tiny_config(Hunyuan3DPaintUNet))
     with torch.no_grad():
         for parameter in unet.parameters():
             parameter.normal_(std=0.05)
@@ -73,7 +77,7 @@ def make_tiny_paint_pipeline(upscaler: bool = True) -> Hunyuan3DPaintPipeline:
         "scheduler": UniPCMultistepScheduler(
             prediction_type="v_prediction", rescale_betas_zero_snr=True, timestep_spacing="trailing"
         ),
-        "upscaler": Hunyuan3DPaintRRDBNet(**Hunyuan3DPaintRRDBNet.tiny_config()) if upscaler else None,
+        "upscaler": Hunyuan3DPaintRRDBNet(**tiny_config(Hunyuan3DPaintRRDBNet)) if upscaler else None,
     }
     with warnings.catch_warnings():
         warnings.filterwarnings("ignore", message="Hunyuan3D-2.1 weights", category=UserWarning)
@@ -82,3 +86,35 @@ def make_tiny_paint_pipeline(upscaler: bool = True) -> Hunyuan3DPaintPipeline:
 
 # Small sizes for the tiny components; the released defaults are 512, 2048, and 2048.
 TINY_PAINT_SIZES = {"view_size": 16, "render_size": 32, "texture_size": 16}
+
+
+@pytest.fixture
+def local_external_components(monkeypatch):
+    """Load a pipeline class's external components (Meta's DINOv2) from local objects instead of their repository.
+
+    ``use(pipeline_class, image_encoder=module, ...)`` returns the list of ``(name, repository, revision, dtype)``
+    loads; each load returns a copy of the object, cast to the requested dtype when it is a module.
+    """
+
+    def use(pipeline_class, **components):
+        calls = []
+
+        def loader(name):
+            def load(repository, *, revision, dtype, **hub_kwargs):
+                calls.append((name, repository, revision, dtype))
+                component = copy.deepcopy(components[name])
+                return (
+                    component.to(dtype) if dtype is not None and isinstance(component, torch.nn.Module) else component
+                )
+
+            return load
+
+        external = {
+            name: dataclasses.replace(component, load=loader(name))
+            for name, component in pipeline_class.external_components.items()
+        }
+        monkeypatch.setattr(pipeline_class, "external_components", external)
+        monkeypatch.setattr(pipelines.huggingface_hub, "auth_check", lambda *args, **kwargs: None)
+        return calls
+
+    return use

@@ -7,7 +7,7 @@ radiance-field renderer, and checks a few invariants (finite tensors, non-empty 
 
     python scripts/gpu_smoke.py --work /tmp/smoke --output /tmp/smoke/out
 
-Requires a CUDA device, ``HF_TOKEN`` with access to the gated DINOv3 weights, and the backends built by
+Requires a CUDA device, a Hub login with access to the gated DINOv3 and RMBG-2.0 weights, and the backends built by
 ``scripts/install_gpu_backends.sh``.
 """
 
@@ -19,13 +19,12 @@ import sys
 import time
 import traceback
 from contextlib import contextmanager
-from dataclasses import replace
 from pathlib import Path
 
 import torch
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from checkpoint_sources import RELEASES, convert_release, download  # noqa: E402
+from checkpoint_sources import convert_release  # noqa: E402
 
 EXAMPLE_IMAGE_URL = (
     "https://raw.githubusercontent.com/microsoft/TRELLIS/442aa1e1afb9014e80681d3bf604e8d728a86ee7/"
@@ -118,46 +117,31 @@ def pipeline_source(name: str, work: Path, hub_namespace: str | None) -> str | P
     return f"{hub_namespace}/{HUB_REPOSITORIES[name]}"
 
 
-def dinov3_image_encoder(work: Path, device, dtype):
-    """The gated DINOv3 image encoder is never republished, so published TRELLIS.2 repos need it supplied."""
-
-    from transformers import DINOv3ViTModel
-
-    path = download(RELEASES["trellis2"]["encoder"], work)
-    return DINOv3ViTModel.from_pretrained(path, local_files_only=True).to(device, dtype)
-
-
 # ------------------------------------------------------------------------------------------------ stages
 
 
 def stage_status(report: dict, device) -> None:
-    from diffusers_3d.backends import BACKEND_REGISTRY, discover_backend
+    import importlib.util
 
     report["device"] = torch.cuda.get_device_name(device)
     report["torch"] = torch.__version__
     statuses = {}
-    for name in ("cumesh", "flex_gemm", "gsplat", "trimesh", "xatlas", "o_voxel", "nvdiffrast"):
-        status = discover_backend(BACKEND_REGISTRY.get(name))
-        statuses[name] = {
-            "installed": status.installed,
-            "importable": status.importable,
-            "provenance_verified": status.provenance_verified,
-        }
-        log(f"backend {name:10s} {statuses[name]}")
+    for name in ("cumesh", "gsplat", "trimesh", "xatlas", "skimage"):
+        statuses[name] = importlib.util.find_spec(name) is not None
+        log(f"backend {name:10s} installed={statuses[name]}")
     report["backends"] = statuses
 
 
 def stage_trellis2(work: Path, out: Path, report: dict, condition, *, dtype, device, hub_namespace) -> None:
     from diffusers_3d import AutoPipelineForImageTo3D
-    from diffusers_3d.backends import CuMeshBackend, TrimeshBackend
+    from diffusers_3d.backends import CuMeshBackend
 
     record = report.setdefault("trellis2", {})
-    components = {} if hub_namespace is None else {"image_encoder": dinov3_image_encoder(work, device, dtype)}
+    # The gated DINOv3 image encoder loads from its own repository in either case.
     pipeline = AutoPipelineForImageTo3D.from_pretrained(
-        pipeline_source("trellis2", work, hub_namespace), dtype=dtype, **components
+        pipeline_source("trellis2", work, hub_namespace), dtype=dtype
     ).to(device)
     cumesh = CuMeshBackend(device=device)
-    trimesh_backend = TrimeshBackend()
 
     with timed(record, "generate_512"):
         output = pipeline(condition, pipeline_type="512", generator=torch.Generator(device).manual_seed(0))
@@ -169,11 +153,11 @@ def stage_trellis2(work: Path, out: Path, report: dict, condition, *, dtype, dev
         mesh = pipeline.postprocess_ovoxel(ovoxel, output_format="mesh")
     record["mesh"] = {"vertices": int(mesh.vertices.shape[0]), "faces": int(mesh.faces.shape[0])}
     check(bool(torch.isfinite(mesh.vertices).all()) and mesh.faces.shape[0] > 0, "O-Voxel mesh is empty or NaN")
-    trimesh_backend.export_mesh(mesh.to("cpu").to_coordinate_system("right_handed_y_up"), out / "t2_mesh.glb")
+    mesh.save(out / "t2_mesh.glb")
 
     with timed(record, "cumesh"):
-        repaired = cumesh.process_geometry(mesh, operation="repair")
-        simplified = cumesh.process_geometry(repaired, operation="simplify", parameters={"target_faces": 100_000})
+        repaired = cumesh.repair(mesh)
+        simplified = cumesh.simplify(repaired, 100_000)
     record["cumesh"] = {
         "repaired_faces": int(repaired.faces.shape[0]),
         "simplified_faces": int(simplified.faces.shape[0]),
@@ -184,7 +168,7 @@ def stage_trellis2(work: Path, out: Path, report: dict, condition, *, dtype, dev
         textured = pipeline.postprocess_ovoxel(
             ovoxel, output_format="textured_mesh", device=device, decimation_target=300_000, texture_size=2048
         )
-    trimesh_backend.export_mesh(textured.to("cpu").to_coordinate_system("right_handed_y_up"), out / "t2_pbr.glb")
+    textured.save(out / "t2_pbr.glb")
     material = textured.materials[0]
     record["textured_mesh"].update(
         {
@@ -202,7 +186,7 @@ def stage_trellis2(work: Path, out: Path, report: dict, condition, *, dtype, dev
 
 def stage_trellis(work: Path, out: Path, report: dict, condition, *, dtype, device, hub_namespace) -> None:
     from diffusers_3d import AutoPipelineForImageTo3D, GaussianSplatAsset, MeshAsset, RadianceFieldAsset
-    from diffusers_3d.backends import GsplatBackend, TrellisGlbPostprocessFacade, TrimeshBackend
+    from diffusers_3d.backends import GsplatBackend, textured_mesh_from_splats
     from diffusers_3d.backends.radiance_field import render_radiance_field
 
     record = report.setdefault("trellis", {})
@@ -246,12 +230,10 @@ def stage_trellis(work: Path, out: Path, report: dict, condition, *, dtype, devi
     check(float(overlap) > 0.6, "radiance-field silhouette disagrees with the Gaussian one")
     save_png(tile(volume["color"]), out / "t1_radiance_field.png")
 
-    exportable = replace(mesh.to("cpu").to_coordinate_system("right_handed_y_up"), extras={})
-    TrimeshBackend().export_mesh(exportable, out / "t1_mesh_vertex_colors.glb")
+    mesh.save(out / "t1_mesh_vertex_colors.glb")
 
-    facade = TrellisGlbPostprocessFacade()
     with timed(record, "textured_mesh"):
-        textured = facade.to_textured_mesh(mesh, gaussians, device=device, texture_size=1024, num_views=100)
+        textured = textured_mesh_from_splats(mesh, gaussians, device=device, texture_size=1024, num_views=100)
     record["textured_mesh"].update(
         {
             "vertices": int(textured.vertices.shape[0]),
@@ -260,7 +242,7 @@ def stage_trellis(work: Path, out: Path, report: dict, condition, *, dtype, devi
         }
     )
     check(textured.metadata["observed_texel_fraction"] > 0.5, "most texels were never observed while baking")
-    TrimeshBackend().export_mesh(textured.to("cpu").to_coordinate_system("right_handed_y_up"), out / "t1_textured.glb")
+    textured.save(out / "t1_textured.glb")
     save_png(textured.materials[0].base_color.permute(2, 0, 1), out / "t1_texture.png")
     del pipeline
     torch.cuda.empty_cache()

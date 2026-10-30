@@ -11,6 +11,7 @@ import math
 import numpy as np
 import torch
 from PIL import Image
+from transformers.image_utils import IMAGENET_DEFAULT_MEAN, IMAGENET_DEFAULT_STD
 
 from ..objects import CameraRig
 from .conditions import ImageCondition
@@ -156,6 +157,15 @@ def preprocess_image_condition(
 
 
 __all__ = [
+    "normalize_imagenet",
     "preprocess_image_condition",
     "validate_image_condition_pixels",
 ]
+
+
+def normalize_imagenet(images: torch.Tensor) -> torch.Tensor:
+    """Normalize ``(batch, 3, H, W)`` images in ``[0, 1]`` with the ImageNet mean and std, as DINO encoders expect."""
+
+    mean = images.new_tensor(IMAGENET_DEFAULT_MEAN).reshape(1, 3, 1, 1)
+    std = images.new_tensor(IMAGENET_DEFAULT_STD).reshape(1, 3, 1, 1)
+    return (images - mean) / std

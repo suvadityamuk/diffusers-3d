@@ -13,7 +13,6 @@ def _required_source_files(package_root: Path) -> set[str]:
         "docs": ("*.md",),
         "requirements": ("*.md", "*.txt"),
         "src/diffusers_3d": ("*.json", "*.md", "*.py", "LICENSE*", "NOTICE", "py.typed"),
-        "templates": ("*.json", "*.md", "*.py"),
         "tests": ("*.py",),
         "tools": ("*.py",),
     }

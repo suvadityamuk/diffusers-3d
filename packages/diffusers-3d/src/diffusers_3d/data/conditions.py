@@ -1,9 +1,12 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+import os
+from dataclasses import dataclass, field
 from typing import TypeAlias
 
+import numpy as np
 import torch
+from PIL import Image, ImageOps
 
 from ..objects import CameraRig
 from ..objects._validation import (
@@ -34,11 +37,16 @@ class TextCondition(TensorDataMixin):
 
 @dataclass(frozen=True, slots=True)
 class ImageCondition(TensorDataMixin):
-    """A channel-first image with an optional matching camera."""
+    """A channel-first image with an optional matching camera.
+
+    ``source_mode`` is the PIL mode the image was loaded from (``None`` for tensors and arrays). Upstream pipelines
+    only read alpha from ``"RGBA"`` images and resize in the source mode, so background removal consults it.
+    """
 
     image: torch.Tensor
     camera: CameraRig | None = None
     mask: torch.Tensor | None = None
+    source_mode: str | None = field(default=None, compare=False)
 
     def __post_init__(self) -> None:
         self.validate()
@@ -100,10 +108,53 @@ class MultiViewCondition(TensorDataMixin):
 
 
 Object3DCondition: TypeAlias = TextCondition | ImageCondition | MultiViewCondition
+ImageInput: TypeAlias = ImageCondition | torch.Tensor | Image.Image | np.ndarray | str | os.PathLike
+
+
+def _image_tensor(image: Image.Image | np.ndarray) -> torch.Tensor:
+    if isinstance(image, Image.Image):
+        keep_alpha = "A" in image.getbands() or "transparency" in image.info
+        image = np.asarray(image.convert("RGBA" if keep_alpha else "RGB"))
+    pixels = torch.from_numpy(np.ascontiguousarray(image))
+    if pixels.ndim == 2:
+        pixels = pixels[..., None]
+    pixels = pixels.permute(2, 0, 1)
+    return pixels.float() / 255.0 if pixels.dtype == torch.uint8 else pixels.float()
+
+
+def as_image_conditions(image: ImageInput | list[ImageInput] | tuple[ImageInput, ...]) -> list[ImageCondition]:
+    """Turn one image or a batch into :class:`ImageCondition` values.
+
+    Accepts an ``ImageCondition``; a float ``(C, H, W)`` or ``(B, C, H, W)`` tensor in ``[0, 1]``; a PIL image, a
+    ``(H, W, C)`` array, or a file path (alpha is kept as the foreground); or a list of any of these. PIL images and
+    files are turned upright by their EXIF orientation.
+    """
+
+    if isinstance(image, ImageCondition):
+        return [image]
+    if isinstance(image, torch.Tensor):
+        if image.ndim not in (3, 4):
+            raise ValueError("image tensor must have shape (channels, height, width) or be batched")
+        return [ImageCondition(image=value) for value in (image[None] if image.ndim == 3 else image)]
+    if isinstance(image, (str, os.PathLike)):
+        with Image.open(image) as opened:
+            return as_image_conditions(opened)
+    if isinstance(image, Image.Image):
+        image = ImageOps.exif_transpose(image)
+        return [ImageCondition(image=_image_tensor(image), source_mode=image.mode)]
+    if isinstance(image, np.ndarray):
+        return [ImageCondition(image=_image_tensor(image))]
+    if isinstance(image, (list, tuple)) and image:
+        return [condition for item in image for condition in as_image_conditions(item)]
+    raise TypeError(
+        f"expected an image, a tensor, a path, an ImageCondition, or a non-empty list of them; got {image!r}"
+    )
 
 
 __all__ = [
     "ImageCondition",
+    "ImageInput",
+    "as_image_conditions",
     "MultiViewCondition",
     "Object3DCondition",
     "TextCondition",

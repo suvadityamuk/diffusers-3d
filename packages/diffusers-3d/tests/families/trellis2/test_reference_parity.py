@@ -11,6 +11,8 @@ from pathlib import Path
 import numpy as np
 import pytest
 import torch
+from _configs import tiny_config
+from _reference import ReferenceCheckoutError, reference_unavailable, validate_reference_checkout
 from PIL import Image
 
 from diffusers_3d import (
@@ -25,9 +27,8 @@ from diffusers_3d import (
     Trellis2SparseStructureFlowModel,
     TrellisSparseTensor,
     ovoxel_to_mesh,
-    preprocess_image_condition,
 )
-from diffusers_3d._reference import ReferenceCheckoutError, reference_unavailable, validate_reference_checkout
+from diffusers_3d.data import preprocess_image_condition
 
 pytestmark = pytest.mark.reference_parity
 
@@ -158,7 +159,7 @@ def _randomize_state(module: torch.nn.Module, *, seed: int) -> None:
                 value.copy_(torch.randn(value.shape, generator=generator, dtype=value.dtype) * 0.02)
 
 
-def _assert_soft_alpha_preprocessing_parity() -> None:
+def _reference_preprocess_image():
     path = REFERENCE_ROOT / "trellis2" / "pipelines" / "trellis2_image_to_3d.py"
     tree = ast.parse(path.read_text(encoding="utf-8"))
     class_node = next(
@@ -171,7 +172,11 @@ def _assert_soft_alpha_preprocessing_parity() -> None:
     module = ast.fix_missing_locations(ast.Module(body=[function_node], type_ignores=[]))
     namespace = {"Image": Image, "np": np}
     exec(compile(module, str(path), "exec"), namespace)
+    return namespace["preprocess_image"]
 
+
+def _assert_soft_alpha_preprocessing_parity() -> None:
+    preprocess_image = _reference_preprocess_image()
     rgba = np.zeros((9, 11, 4), dtype=np.uint8)
     rgba[:, :, 0] = np.arange(11, dtype=np.uint8) * 23
     rgba[:, :, 1] = np.arange(9, dtype=np.uint8)[:, None] * 29
@@ -179,7 +184,7 @@ def _assert_soft_alpha_preprocessing_parity() -> None:
     rgba[1:8, 2:10, 3] = np.linspace(1, 255, 56, dtype=np.uint8).reshape(7, 8)
     rgba[0, 0, 3] = 204
     rgba[8, 10, 3] = 205
-    reference = namespace["preprocess_image"](object(), Image.fromarray(rgba))
+    reference = preprocess_image(object(), Image.fromarray(rgba))
     reference = reference.resize((512, 512), Image.Resampling.LANCZOS)
     expected = torch.from_numpy(np.array(reference, copy=True)).permute(2, 0, 1).float().div(255)
     condition = ImageCondition(torch.from_numpy(rgba.copy()).permute(2, 0, 1).float().div(255))
@@ -195,7 +200,7 @@ def _assert_soft_alpha_preprocessing_parity() -> None:
 def test_tiny_sparse_structure_components_match_pinned_reference():
     reference_flow_type, reference_decoder_type = _load_pinned_reference()
     _assert_soft_alpha_preprocessing_parity()
-    flow_config = Trellis2SparseStructureFlowModel.tiny_config()
+    flow_config = tiny_config(Trellis2SparseStructureFlowModel)
     torch.manual_seed(0)
     reference_flow = reference_flow_type(**flow_config).eval()
     _randomize_state(reference_flow, seed=1)
@@ -212,7 +217,7 @@ def test_tiny_sparse_structure_components_match_pinned_reference():
         actual_flow = flow(hidden_states, timesteps, context).sample
     torch.testing.assert_close(actual_flow, expected_flow, atol=1e-6, rtol=1e-5)
 
-    decoder_config = Trellis2SparseStructureDecoder.tiny_config()
+    decoder_config = tiny_config(Trellis2SparseStructureDecoder)
     torch.manual_seed(3)
     reference_decoder = reference_decoder_type(**decoder_config).eval()
     _randomize_state(reference_decoder, seed=4)
@@ -227,7 +232,7 @@ def test_tiny_sparse_structure_components_match_pinned_reference():
 
 def test_tiny_sparse_structure_flow_backward_matches_pinned_reference():
     reference_flow_type, _ = _load_pinned_reference()
-    config = Trellis2SparseStructureFlowModel.tiny_config()
+    config = tiny_config(Trellis2SparseStructureFlowModel)
     torch.manual_seed(5)
     reference = reference_flow_type(**config)
     _randomize_state(reference, seed=6)
@@ -422,7 +427,7 @@ def _sparse_inputs(reference, coordinates: torch.Tensor, features: torch.Tensor)
 
 def test_tiny_slat_flow_matches_pinned_reference():
     reference = _load_pinned_sparse_reference()
-    config = Trellis2SLatFlowModel.tiny_config(texture=True)
+    config = tiny_config(Trellis2SLatFlowModel, texture=True)
     torch.manual_seed(20)
     reference_model = reference.SLatFlowModel(**config).eval()
     _randomize_state(reference_model, seed=21)
@@ -455,8 +460,8 @@ def test_tiny_slat_flow_matches_pinned_reference():
 
 def test_tiny_shape_and_pbr_decoders_match_pinned_reference():
     reference = _load_pinned_sparse_reference()
-    shape_config = Trellis2ShapeDualGridDecoder.tiny_config()
-    pbr_config = Trellis2PBRSparseDecoder.tiny_config()
+    shape_config = tiny_config(Trellis2ShapeDualGridDecoder)
+    pbr_config = tiny_config(Trellis2PBRSparseDecoder)
     torch.manual_seed(30)
     reference_shape = reference.FlexiDualGridVaeDecoder(**shape_config).eval()
     reference_pbr = reference.SparseUnetVaeDecoder(
@@ -577,3 +582,22 @@ def test_mesh_extraction_matches_pinned_flexible_dual_grid_to_mesh(with_split_we
 
     assert torch.equal(mesh.vertices, vertices)
     assert torch.equal(mesh.faces, faces.long())
+
+
+@pytest.mark.parametrize("masked", [False, True])
+def test_large_inputs_shrink_like_pinned_preprocess_image(tiny_trellis2_pipeline, masked):
+    """Upstream shrinks a longer side above 1024 px with RGBA LANCZOS before it crops the foreground."""
+
+    _validate_reference()
+    rgba = np.zeros((1100, 1537, 4), dtype=np.uint8)
+    rgba[..., :3] = np.random.default_rng(4).integers(0, 256, (1100, 1537, 3), dtype=np.uint8)
+    rgba[200:900, 300:1300, 3] = np.random.default_rng(5).integers(1, 256, (700, 1000), dtype=np.uint8)
+    rgba[400:700, 500:1000, 3] = 255
+    expected = _reference_preprocess_image()(object(), Image.fromarray(rgba))
+    expected = expected.resize((8, 8), Image.Resampling.LANCZOS)
+    expected = torch.from_numpy(np.array(expected, copy=True)).permute(2, 0, 1).float().div(255)
+    pixels = torch.from_numpy(rgba).permute(2, 0, 1).float().div(255)
+    # The same alpha given as a mask on an RGB image.
+    condition = ImageCondition(pixels[:3], mask=pixels[3:]) if masked else ImageCondition(pixels)
+    actual = tiny_trellis2_pipeline.preprocess(condition)[0]
+    torch.testing.assert_close(actual, expected, atol=0.0, rtol=0.0)

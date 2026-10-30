@@ -17,32 +17,30 @@ from diffusers.utils.torch_utils import randn_tensor
 from transformers import Dinov2WithRegistersModel
 from transformers.image_utils import IMAGENET_DEFAULT_MEAN, IMAGENET_DEFAULT_STD
 
-from ...data import ImageCondition
+from ...data import ImageInput
 from ...execution.lora import Object3DLoraLoaderMixin
-from ...execution.metadata import (
-    ContributionStatus,
-    Object3DComponentSpec,
-    ReviewStatus,
-    fully_qualified_class_name,
-)
-from ...execution.pipelines import Object3DPipeline
+from ...execution.pipelines import ExternalComponent, Object3DPipeline
 from ...objects import (
     CoordinateSystem,
-    GaussianSplatAsset,
     Latent3DOutput,
-    MeshAsset,
     Object3D,
-    Object3DKind,
     Object3DPipelineOutput,
     SparseVoxelAsset,
     coordinate_change_matrix,
 )
+from ..moge.conversion import MOGE_WEIGHTS_REPOSITORY, MOGE_WEIGHTS_REVISION, load_moge_estimator
+from ..moge.models import MoGeModel
 from ..trellis.decoders import TrellisSLatGaussianDecoder, TrellisSLatMeshDecoder, TrellisSparseStructureDecoder
 from ..trellis.models import TrellisSLatFlowModel
 from ..trellis.scheduler import TrellisFlowEulerScheduler
 from ..trellis.sparse import TrellisSparseTensor
 from ..trellis.sparse_ops import submanifold_neighbors
-from .conditioner import Sam3DConditionEmbedder
+from .conditioner import (
+    DINOV2_REGISTERS_REPO,
+    DINOV2_REGISTERS_REVISION,
+    Sam3DConditionEmbedder,
+    load_dinov2_with_registers,
+)
 from .models import Sam3DSparseStructureFlowModel
 
 SAM_LICENSE_WARNING = (
@@ -81,7 +79,14 @@ _COMPONENTS = (
     ("gaussian_decoder", TrellisSLatGaussianDecoder),
     ("mesh_decoder", TrellisSLatMeshDecoder),
 )
-_OPTIONAL_COMPONENTS = ("slat_conditioner", "slat_flow_model", "slat_scheduler", "gaussian_decoder", "mesh_decoder")
+_OPTIONAL_COMPONENTS = (
+    "slat_conditioner",
+    "slat_flow_model",
+    "slat_scheduler",
+    "gaussian_decoder",
+    "mesh_decoder",
+    "depth_estimator",
+)
 
 
 def _pad_to_square(tensor: torch.Tensor) -> torch.Tensor:
@@ -160,7 +165,10 @@ def preprocess_sam3d_condition(
     result = {}
     if pointmap is not None:
         scale, shift = _pointmap_scale_shift(pointmap, mask)
-        views["pointmaps"] = ((pointmap - shift[:, None, None]) / scale[:, None, None], "nearest")
+        # Upstream's normalized pointmap marks every invalid point, NaN or infinite (MoGe's masked points), as NaN.
+        normalized = (pointmap - shift[:, None, None]) / scale[:, None, None]
+        normalized = torch.where(pointmap.isfinite().all(dim=0), normalized, float("nan"))
+        views["pointmaps"] = (normalized, "nearest")
         result |= {"pointmap_scale": scale, "pointmap_shift": shift}
     for name, (tensor, mode) in views.items():
         cropped = _crop_square(tensor, box, float("nan") if name == "pointmaps" else 0.0)
@@ -210,31 +218,20 @@ class Sam3DObjectsPipeline(Object3DPipeline, Object3DLoraLoaderMixin):
     assets. Every asset's ``transform`` places the object in the input camera's frame; see :meth:`__call__`.
 
     Both stages condition on tokens of the same frozen DINOv2 (``image_encoder``, run on the image and on its mask),
-    which upstream keeps four identical copies of.
+    which upstream keeps four identical copies of. That DINOv2 and the MoGe ``depth_estimator`` are third-party
+    networks used unchanged: they load from ``facebook/dinov2-with-registers-large`` and ``Ruicheng/moge-vitl`` at
+    pinned revisions and are never saved with the pipeline.
     """
 
-    family_id = "sam3d_objects"
-    task_ids = ("image-to-3d",)
-    output_object_types = (SparseVoxelAsset, GaussianSplatAsset, MeshAsset)
-    output_representations = ("sparse-structure", "gaussian-splat", "mesh")
-    object_kinds = (Object3DKind.SPARSE_VOXEL, Object3DKind.GAUSSIAN_SPLAT, Object3DKind.MESH)
-    required_backends = ()
-    contribution_status = ContributionStatus.REVIEWED_PACKAGE
-    review_status = ReviewStatus.REVIEWED
+    external_components = {
+        "image_encoder": ExternalComponent(
+            DINOV2_REGISTERS_REPO, DINOV2_REGISTERS_REVISION, load_dinov2_with_registers
+        ),
+        "depth_estimator": ExternalComponent(MOGE_WEIGHTS_REPOSITORY, MOGE_WEIGHTS_REVISION, load_moge_estimator),
+    }
     _optional_components = list(_OPTIONAL_COMPONENTS)
-    component_specs = tuple(
-        Object3DComponentSpec(
-            name=name,
-            expected_class=fully_qualified_class_name(component_type),
-            subfolder=name,
-            optional=name in _OPTIONAL_COMPONENTS,
-            review_status=ReviewStatus.REVIEWED,
-            loading_eligible=True,
-        )
-        for name, component_type in _COMPONENTS
-    )
     model_cpu_offload_seq = (
-        "image_encoder->sparse_structure_conditioner->sparse_structure_flow_model->sparse_structure_decoder"
+        "depth_estimator->image_encoder->sparse_structure_conditioner->sparse_structure_flow_model->sparse_structure_decoder"
         "->slat_conditioner->slat_flow_model->gaussian_decoder->mesh_decoder"
     )
     _lora_loadable_modules = ["sparse_structure_flow_model", "slat_flow_model"]
@@ -253,6 +250,7 @@ class Sam3DObjectsPipeline(Object3DPipeline, Object3DLoraLoaderMixin):
         mesh_decoder: TrellisSLatMeshDecoder | None = None,
         slat_mean: Sequence[float] | None = None,
         slat_std: Sequence[float] | None = None,
+        depth_estimator: MoGeModel | None = None,
     ) -> None:
         super().__init__()
         warnings.warn(SAM_LICENSE_WARNING, UserWarning, stacklevel=2)
@@ -286,6 +284,7 @@ class Sam3DObjectsPipeline(Object3DPipeline, Object3DLoraLoaderMixin):
             slat_scheduler=slat_scheduler,
             gaussian_decoder=gaussian_decoder,
             mesh_decoder=mesh_decoder,
+            depth_estimator=depth_estimator,
         )
         self.register_to_config(
             slat_mean=None if slat_mean is None else [float(value) for value in slat_mean],
@@ -294,14 +293,16 @@ class Sam3DObjectsPipeline(Object3DPipeline, Object3DLoraLoaderMixin):
 
     def preprocess(
         self,
-        image: ImageCondition | Sequence[ImageCondition],
+        image: ImageInput | list[ImageInput],
         pointmap: torch.Tensor | Sequence[torch.Tensor] | None = None,
     ) -> dict[str, torch.Tensor]:
-        """Stack the per-image views; ``pointmap`` is ``(3, H, W)`` OpenCV camera-space points (x right, y down)."""
+        """Stack the per-image views; ``pointmap`` is ``(3, H, W)`` OpenCV camera-space points (x right, y down).
 
-        conditions = (image,) if isinstance(image, ImageCondition) else tuple(image)
-        if not conditions or any(type(condition) is not ImageCondition for condition in conditions):
-            raise TypeError("image must be an ImageCondition or a non-empty sequence of them")
+        Without ``pointmap``, a loaded ``depth_estimator`` (MoGe) predicts it from the unmasked RGB image, as upstream
+        ``compute_pointmap`` does.
+        """
+
+        conditions = self.image_conditions(image)
         pointmaps = (pointmap,) if pointmap is None or isinstance(pointmap, torch.Tensor) else tuple(pointmap)
         if pointmap is None:
             pointmaps *= len(conditions)
@@ -311,6 +312,10 @@ class Sam3DObjectsPipeline(Object3DPipeline, Object3DLoraLoaderMixin):
         for condition, points in zip(conditions, pointmaps):
             if condition.mask is None:
                 raise ValueError("SAM 3D Objects needs an object mask on every ImageCondition")
+            if points is None and self.depth_estimator is not None:
+                rgb = condition.image[:3].expand(3, -1, -1).to(self.depth_estimator.device)
+                with torch.no_grad():
+                    points = self.depth_estimator.infer(rgb, force_projection=False)["points"].permute(2, 0, 1)
             if points is not None:
                 height, width = condition.image.shape[-2:]
                 if points.ndim != 3 or points.shape[0] != 3:
@@ -484,7 +489,7 @@ class Sam3DObjectsPipeline(Object3DPipeline, Object3DLoraLoaderMixin):
     @torch.no_grad()
     def __call__(
         self,
-        image: ImageCondition | Sequence[ImageCondition],
+        image: ImageInput | list[ImageInput],
         *,
         pointmap: torch.Tensor | Sequence[torch.Tensor] | None = None,
         formats: tuple[str, ...] | list[str] | None = None,
@@ -567,7 +572,7 @@ class Sam3DObjectsPipeline(Object3DPipeline, Object3DLoraLoaderMixin):
         metric = "pointmaps" in inputs
         placed = tuple(self._place(asset, layouts[index], metric) for index, asset in objects)
         latent_output = (
-            Latent3DOutput(latents=latents["shape"], metadata={"family": self.family_id, "stage": "sparse_structure"})
+            Latent3DOutput(latents=latents["shape"], metadata={"family": "sam3d_objects", "stage": "sparse_structure"})
             if return_latents
             else None
         )

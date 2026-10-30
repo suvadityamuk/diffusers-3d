@@ -4,6 +4,7 @@ import json
 
 import pytest
 import torch
+from _configs import tiny_config
 from diffusers import FlowMatchEulerDiscreteScheduler
 from safetensors.torch import save_file
 from transformers import BitImageProcessorPil, Dinov2Model
@@ -26,7 +27,7 @@ def released_snapshot(tmp_path, tiny_triposg_components):
     transformer = tiny_triposg_components["transformer"]
     _write_json(
         root / "transformer" / "config.json",
-        {"_class_name": "TripoSGDiTModel", **TripoSGTransformerModel.tiny_config()},
+        {"_class_name": "TripoSGDiTModel", **tiny_config(TripoSGTransformerModel)},
     )
     save_file(transformer.state_dict(), root / "transformer" / "diffusion_pytorch_model.safetensors")
     vae = tiny_triposg_components["vae"]
@@ -37,7 +38,7 @@ def released_snapshot(tmp_path, tiny_triposg_components):
             "embedding_type": "frequency",
             "width_encoder": 8,
             "num_layers_encoder": 1,
-            **TripoSGVAEDecoder.tiny_config(),
+            **tiny_config(TripoSGVAEDecoder),
         },
     )
     vae_state = {
@@ -77,19 +78,29 @@ def released_snapshot(tmp_path, tiny_triposg_components):
 
 
 def test_conversion_writes_a_loadable_pipeline_with_unchanged_weights(
-    released_snapshot, tmp_path, tiny_triposg_components
+    released_snapshot, tmp_path, tiny_triposg_components, local_external_components
 ):
     output = tmp_path / "converted"
     assert main([str(released_snapshot), str(output)]) == 0
+    # DINOv2 and its preprocessor equal Meta's facebook/dinov2-large: they are not written and load from there.
+    assert not (output / "image_encoder").exists() and not (output / "feature_extractor").exists()
+    index = json.loads((output / "model_index.json").read_text())
+    assert index["image_encoder"] == ["transformers", "Dinov2Model"]
+    assert index["feature_extractor"] == ["transformers", "BitImageProcessorPil"]
+    calls = local_external_components(
+        TripoSGImageTo3DPipeline,
+        image_encoder=tiny_triposg_components["image_encoder"],
+        feature_extractor=tiny_triposg_components["feature_extractor"],
+    )
     pipeline = TripoSGImageTo3DPipeline.from_pretrained(output, local_files_only=True)
-
-    assert (output / "object3d_model_index.json").is_file()
-    assert json.loads((output / "model_index.json").read_text())["image_encoder"] == ["transformers", "Dinov2Model"]
+    revision = "47b73eefe95e8d44ec3623f8890bd894b6ea2d6c"
+    assert sorted(calls) == [
+        ("feature_extractor", "facebook/dinov2-large", revision, None),
+        ("image_encoder", "facebook/dinov2-large", revision, None),
+    ]
     assert type(pipeline.scheduler) is FlowMatchEulerDiscreteScheduler
     assert type(pipeline.image_encoder) is Dinov2Model
     assert type(pipeline.feature_extractor) is BitImageProcessorPil
-    assert pipeline.feature_extractor.crop_size == {"height": 28, "width": 28}
-    assert pipeline.feature_extractor.size == {"shortest_edge": 32}
     for name in ("transformer", "vae", "image_encoder"):
         expected = tiny_triposg_components[name].state_dict()
         actual = getattr(pipeline, name).state_dict()

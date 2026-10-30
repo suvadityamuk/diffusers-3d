@@ -9,7 +9,7 @@ import torch
 import yaml
 from safetensors.torch import load_file, save_file
 
-from diffusers_3d import AutoPipelineForImageTo3D, Hunyuan3DImageTo3DPipeline, Object3DModelIndex
+from diffusers_3d import AutoPipelineForImageTo3D, Hunyuan3DImageTo3DPipeline
 from diffusers_3d.families.hunyuan3d.conversion import convert_hunyuan3d_checkpoint, main
 
 from .conftest import make_tiny_hunyuan3d_pipeline, sample_latents
@@ -175,7 +175,9 @@ def _write_release(folder, pipeline, weights_format="safetensors"):
 
 
 @pytest.mark.parametrize("weights_format", ["ckpt", "safetensors"])
-def test_released_layout_converts_to_an_equivalent_auto_loadable_pipeline(tmp_path, weights_format):
+def test_released_layout_converts_to_an_equivalent_auto_loadable_pipeline(
+    tmp_path, weights_format, local_external_components
+):
     pipeline = make_tiny_hunyuan3d_pipeline()
     # Round the tiny weights through fp16 so the fp16 release pickle holds them exactly.
     with torch.no_grad():
@@ -183,13 +185,15 @@ def test_released_layout_converts_to_an_equivalent_auto_loadable_pipeline(tmp_pa
             for parameter in getattr(pipeline, name).parameters():
                 parameter.copy_(parameter.half())
     _write_release(tmp_path / "hunyuan3d-dit-v2-1", pipeline, weights_format)
+    # The conditioner's DINOv2 is Meta's: the converter does not write it, and loading fetches it from there.
+    local_external_components(Hunyuan3DImageTo3DPipeline, image_encoder=pipeline.image_encoder)
     with warnings.catch_warnings():
         warnings.simplefilter("ignore", UserWarning)
         assert main([str(tmp_path), str(tmp_path / "converted")]) == 0
+        assert not (tmp_path / "converted" / "image_encoder").exists()
         loaded = AutoPipelineForImageTo3D.from_pretrained(tmp_path / "converted", local_files_only=True)
 
     assert type(loaded) is Hunyuan3DImageTo3DPipeline
-    Object3DModelIndex.from_pretrained(tmp_path / "converted", local_files_only=True)
     report = json.loads((tmp_path / "converted" / "hunyuan3d_conversion.json").read_text())
     assert report["dropped_vae_encoder_keys"] == ["pre_kl.weight"]
     stored = load_file(tmp_path / "converted" / "transformer" / "diffusion_pytorch_model.safetensors")

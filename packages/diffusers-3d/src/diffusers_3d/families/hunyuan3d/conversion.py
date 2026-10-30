@@ -173,8 +173,8 @@ def convert_hunyuan3d_checkpoint(
 
     ``source`` is a local folder holding ``config.yaml`` and the aggregate ``model.fp16.ckpt`` (the release's
     ``hunyuan3d-dit-v2-1`` folder or its parent), or a Hub repository id downloaded at ``revision``. Weights keep
-    their stored dtype, except the DINOv2 image encoder, which Transformers loads in float32. The point-cloud
-    encoder of the ShapeVAE is dropped.
+    their stored dtype. The conditioner's DINOv2 is Meta's ``facebook/dinov2-large`` cast to float16, so it is not
+    written: the pipeline loads it from Meta's repository. The point-cloud encoder of the ShapeVAE is dropped.
     """
 
     root = Path(source)
@@ -203,15 +203,8 @@ def convert_hunyuan3d_checkpoint(
     image_processor = config["image_processor"]["params"]
 
     checkpoint = _load_checkpoint(folder)
-    # Released keys use the Hub's DINOv2 layout, which Transformers maps onto its current module names.
-    encoder_state = {
-        key.removeprefix("main_image_encoder.model."): value for key, value in checkpoint["conditioner"].items()
-    }
-    image_encoder, loading_info = Dinov2Model.from_pretrained(
-        None, config=dinov2_config, state_dict=encoder_state, output_loading_info=True
-    )
-    if any(loading_info[name] for name in ("missing_keys", "unexpected_keys", "mismatched_keys")):
-        raise ValueError(f"the DINOv2 weights do not match its config: {loading_info}")
+    with init_empty_weights():
+        image_encoder = Dinov2Model(dinov2_config)
     pipeline = Hunyuan3DImageTo3DPipeline(
         image_encoder=image_encoder.eval(),
         transformer=_materialize(

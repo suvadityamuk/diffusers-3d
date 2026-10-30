@@ -1,25 +1,24 @@
 from __future__ import annotations
 
-import shutil
-
 import pytest
 import torch
 import torch.nn.functional as F
 
 from diffusers_3d import (
     AutoPipelineForImageTo3D,
+    CameraRig,
     CoordinateSystem,
     ImageCondition,
     MeshAsset,
-    Object3DLoadingError,
     Object3DPipelineOutput,
     OVoxelAsset,
     SparseVoxelAsset,
     Trellis2ImageTo3DPipeline,
-    preprocess_image_condition,
 )
+from diffusers_3d.data import preprocess_image_condition
 from diffusers_3d.families.trellis.decoders import TrellisSparseStructureDecoderOutput
 from diffusers_3d.families.trellis.sparse import trellis_grid_transform
+from diffusers_3d.families.trellis2.pipeline import shrink_image_condition
 
 pytestmark = pytest.mark.integration
 
@@ -97,9 +96,16 @@ def test_reviewed_sparse_structure_pipeline_is_deterministic_and_uses_released_d
 
 
 def test_pipeline_save_load_auto_and_serialized_capability_limitations(
-    tmp_path, tiny_trellis2_pipeline, tiny_trellis2_full_pipeline
+    tmp_path, tiny_trellis2_pipeline, tiny_trellis2_full_pipeline, local_external_components
 ):
+    calls = local_external_components(
+        Trellis2ImageTo3DPipeline,
+        image_encoder=tiny_trellis2_pipeline.image_encoder,
+        sparse_structure_decoder=tiny_trellis2_pipeline.sparse_structure_decoder,
+    )
     tiny_trellis2_pipeline.save_pretrained(tmp_path / "sparse")
+    # The gated DINOv3 weights are never saved; model_index.json still names the class they load into.
+    assert not (tmp_path / "sparse" / "image_encoder").exists()
     loaded = Trellis2ImageTo3DPipeline.from_pretrained(tmp_path / "sparse", local_files_only=True)
     automatic = AutoPipelineForImageTo3D.from_pretrained(tmp_path / "sparse", local_files_only=True)
     assert type(loaded) is Trellis2ImageTo3DPipeline
@@ -116,14 +122,22 @@ def test_pipeline_save_load_auto_and_serialized_capability_limitations(
         expected = tiny_trellis2_pipeline.encode_image(images)
         assert torch.equal(loaded.encode_image(images), expected)
 
-    # A published pipeline leaves out the gated DINOv3 weights; they are passed in at load time.
-    shutil.rmtree(tmp_path / "sparse" / "image_encoder")
-    with pytest.raises(Object3DLoadingError, match="image_encoder"):
-        AutoPipelineForImageTo3D.from_pretrained(tmp_path / "sparse", local_files_only=True)
+    # DINOv3 loads from facebook/dinov3-vitl16-pretrain-lvd1689m and the sparse-structure decoder from
+    # microsoft/TRELLIS-image-large, at pinned revisions, unless passed in.
+    assert not (tmp_path / "sparse" / "sparse_structure_decoder").exists()
+    dinov3 = ("image_encoder", "facebook/dinov3-vitl16-pretrain-lvd1689m", "ea8dc2863c51be0a264bab82070e3e8836b02d51")
+    decoder = ("sparse_structure_decoder", "microsoft/TRELLIS-image-large", "25e0d31ffbebe4b5a97464dd851910efc3002d96")
+    assert calls == [(*dinov3, None), (*decoder, None)] * 2
+    bfloat16 = AutoPipelineForImageTo3D.from_pretrained(
+        tmp_path / "sparse", local_files_only=True, dtype=torch.bfloat16
+    )
+    assert calls[-1][-1] is torch.bfloat16 and bfloat16.image_encoder.dtype is torch.bfloat16
     supplied = AutoPipelineForImageTo3D.from_pretrained(
         tmp_path / "sparse", local_files_only=True, image_encoder=loaded.image_encoder
     )
-    assert supplied.image_encoder is loaded.image_encoder
+    assert supplied.image_encoder is loaded.image_encoder and [call[0] for call in calls[6:]] == [
+        "sparse_structure_decoder"
+    ]
     with torch.no_grad():
         assert torch.equal(supplied.encode_image(images), expected)
 
@@ -316,16 +330,30 @@ def test_mesh_format_runs_on_cpu_and_textured_mesh_is_an_explicit_postprocess(
 
     sentinel = object()
 
-    class PBRPostprocess:
-        def to_textured_mesh(self, asset, **kwargs):
-            assert asset is ovoxel and kwargs == {"texture_size": 32}
-            return sentinel
+    def texturer(asset, **kwargs):
+        assert asset is ovoxel and kwargs == {"texture_size": 32}
+        return sentinel
 
     assert (
-        pipeline.postprocess_ovoxel(
-            ovoxel, output_format="textured_mesh", pbr_postprocess=PBRPostprocess(), texture_size=32
-        )
+        pipeline.postprocess_ovoxel(ovoxel, output_format="textured_mesh", texturer=texturer, texture_size=32)
         is sentinel
     )
     with pytest.raises(ValueError, match="output_format"):
         pipeline.postprocess_ovoxel(ovoxel, output_format="glb")
+
+
+def test_shrink_keeps_small_images_and_scales_the_camera_of_large_ones():
+    small = ImageCondition(torch.rand(4, 1024, 700))
+    assert shrink_image_condition(small) is small
+    intrinsics = torch.tensor([[[1500.0, 0.0, 1025.0], [0.0, 1500.0, 600.0], [0.0, 0.0, 1.0]]])
+    camera = CameraRig(
+        world_to_camera=torch.eye(4)[None], intrinsics=intrinsics, image_sizes=torch.tensor([[1200, 2050]])
+    )
+    shrunk = shrink_image_condition(ImageCondition(torch.rand(3, 1200, 2050), camera=camera))
+    # int(2050 * 1024 / 2050) x int(1200 * 1024 / 2050) = 1024 x 599, the same field of view.
+    assert shrunk.image.shape == (4, 599, 1024)
+    assert shrunk.camera.image_sizes.tolist() == [[599, 1024]]
+    expected = intrinsics.clone()
+    expected[0, 0] *= 1024 / 2050
+    expected[0, 1] *= 599 / 1200
+    torch.testing.assert_close(shrunk.camera.intrinsics, expected)

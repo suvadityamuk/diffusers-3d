@@ -9,8 +9,8 @@ from diffusers_3d import (
     CameraRig,
     ImageCondition,
     Object3DValidationError,
-    preprocess_image_condition,
 )
+from diffusers_3d.data import preprocess_image_condition
 
 
 def _rgba_tensor(height: int = 10, width: int = 12) -> torch.Tensor:

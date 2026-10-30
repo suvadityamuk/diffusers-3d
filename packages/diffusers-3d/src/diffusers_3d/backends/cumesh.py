@@ -7,13 +7,7 @@ from typing import Any
 import torch
 
 from ..objects import MeshAsset
-from ._optional import diagnostic_build_identity, load_explicit_backend, validate_accelerated_runtime
-from .defaults import BACKEND_REGISTRY
-from .registry import BackendRegistry
-from .types import BackendCapability
-
-CUMESH_SOURCE_URL = "https://github.com/JeffreyXiang/CuMesh.git"
-CUMESH_SOURCE_REVISION = "12289e1062f0603f2f0d0771b02e1395d247f26f"
+from ._optional import require
 
 
 def _call(native: Any, name: str, *args: Any, **kwargs: Any) -> Any:
@@ -26,42 +20,15 @@ def _call(native: Any, name: str, *args: Any, **kwargs: Any) -> Any:
 class CuMeshBackend:
     """CuMesh repair, simplify, remesh, UV-unwrap, and BVH adapter."""
 
-    def __init__(
-        self,
-        *,
-        device: str | torch.device = "cuda",
-        registry: BackendRegistry = BACKEND_REGISTRY,
-    ) -> None:
-        self.source_url = CUMESH_SOURCE_URL
-        self.source_revision = CUMESH_SOURCE_REVISION
+    def __init__(self, *, device: str | torch.device = "cuda") -> None:
         self.device = torch.device(device)
-        self._module = load_explicit_backend(
-            "cumesh",
-            "cumesh",
-            (BackendCapability.GEOMETRY_PROCESSING, BackendCapability.CONVERSION),
-            device=device,
-            dtype=torch.float32,
-            differentiable=False,
-            registry=registry,
-        )
-        validate_accelerated_runtime(
-            "CuMesh",
-            device=self.device,
-            dtype=torch.float32,
-        )
+        self._module = require("cumesh", "cumesh")
         warnings.warn(
             "CuMesh bundles cubvh, which NVIDIA licenses for non-commercial research and evaluation use only. "
             "You are responsible for making sure your use of it complies with that license.",
             UserWarning,
             stacklevel=2,
         )
-        if not callable(getattr(self._module, "CuMesh", None)):
-            raise RuntimeError("the selected CuMesh build does not expose CuMesh")
-        if not callable(getattr(self._module, "cuBVH", None)):
-            raise RuntimeError("the selected CuMesh build does not expose cuBVH")
-        if not callable(getattr(getattr(self._module, "remeshing", None), "remesh_narrow_band_dc", None)):
-            raise RuntimeError("the selected CuMesh build does not expose remeshing.remesh_narrow_band_dc")
-        self.build_identity = diagnostic_build_identity(self._module)
 
     def _native(self, mesh: MeshAsset) -> Any:
         if type(mesh) is not MeshAsset:
@@ -90,13 +57,7 @@ class CuMeshBackend:
         if not isinstance(values, tuple) or len(values) < 2:
             raise RuntimeError("CuMesh.read() must return vertices and faces")
         vertices, faces = values[:2]
-        metadata = {
-            **template.metadata,
-            "cumesh_operation": operation,
-            "cumesh_source_revision": self.source_revision,
-        }
-        if self.build_identity is not None:
-            metadata["cumesh_build_identity"] = self.build_identity
+        metadata = {**template.metadata, "cumesh_operation": operation}
         return MeshAsset(
             vertices=vertices,
             faces=faces.to(dtype=torch.int64),
@@ -107,78 +68,82 @@ class CuMeshBackend:
             metadata=metadata,
         )
 
-    def process_geometry(
+    def repair(
         self,
         mesh: MeshAsset,
         *,
-        operation: str,
-        parameters: Mapping[str, object] | None = None,
+        max_hole_perimeter: float = 3e-2,
+        minimum_component_area: float = 1e-5,
+        unify_face_orientations: bool = True,
     ) -> MeshAsset:
-        values = {} if parameters is None else dict(parameters)
+        """Remove duplicate faces, non-manifold edges, and small components, fill holes, and unify winding."""
+
         native = self._native(mesh)
-        if operation == "repair":
-            unknown = set(values).difference(
-                {"max_hole_perimeter", "minimum_component_area", "unify_face_orientations"}
-            )
-            if unknown:
-                raise ValueError(f"unknown repair parameters: {sorted(unknown)}")
-            _call(native, "remove_duplicate_faces")
-            _call(native, "repair_non_manifold_edges")
-            _call(native, "remove_small_connected_components", float(values.get("minimum_component_area", 1e-5)))
-            _call(native, "fill_holes", max_hole_perimeter=float(values.get("max_hole_perimeter", 3e-2)))
-            if bool(values.get("unify_face_orientations", True)):
-                _call(native, "unify_face_orientations")
-            return self._asset(mesh, native, operation=operation)
-        if operation == "simplify":
-            if set(values).difference({"target_faces", "verbose"}) or "target_faces" not in values:
-                raise ValueError("simplify requires target_faces and accepts verbose")
-            target = values["target_faces"]
-            if not isinstance(target, int) or isinstance(target, bool) or target <= 0:
-                raise ValueError("target_faces must be a positive integer")
-            native.simplify(target, verbose=bool(values.get("verbose", False)))
-            return self._asset(mesh, native, operation=operation)
-        if operation == "remesh":
-            unknown = set(values).difference({"center", "scale", "resolution", "band", "project_back", "verbose"})
-            if unknown or "resolution" not in values:
-                raise ValueError(
-                    "remesh requires resolution and accepts center, scale, band, project_back, and verbose"
-                )
-            center = values.get("center", mesh.vertices.mean(dim=0))
-            scale = float(values.get("scale", (mesh.vertices.amax(dim=0) - mesh.vertices.amin(dim=0)).max()))
-            remeshed = self._module.remeshing.remesh_narrow_band_dc(
-                mesh.vertices,
-                mesh.faces,
-                center=torch.as_tensor(center, device=mesh.device, dtype=torch.float32),
-                scale=scale,
-                resolution=int(values["resolution"]),
-                band=float(values.get("band", 1.0)),
-                project_back=float(values.get("project_back", 0.9)),
-                verbose=bool(values.get("verbose", False)),
-                bvh=self.build_bvh(mesh),
-            )
-            native.init(*remeshed)
-            return self._asset(mesh, native, operation=operation)
-        if operation == "uv_unwrap":
-            unknown = set(values).difference({"compute_charts_kwargs", "verbose"})
-            if unknown:
-                raise ValueError(f"unknown uv_unwrap parameters: {sorted(unknown)}")
-            result = native.uv_unwrap(
-                compute_charts_kwargs=dict(values.get("compute_charts_kwargs", {})),
-                return_vmaps=True,
-                verbose=bool(values.get("verbose", False)),
-            )
-            if not isinstance(result, tuple) or len(result) != 4:
-                raise RuntimeError("CuMesh.uv_unwrap() must return vertices, faces, uvs, and vertex maps")
-            vertices, faces, uvs, vertex_maps = result
-            native.init(vertices, faces)
-            return self._asset(
-                mesh,
-                native,
-                uvs=uvs,
-                extras={"cumesh_vertex_map": vertex_maps.to(dtype=torch.int64)},
-                operation=operation,
-            )
-        raise ValueError("CuMeshBackend supports 'repair', 'simplify', 'remesh', and 'uv_unwrap'")
+        _call(native, "remove_duplicate_faces")
+        _call(native, "repair_non_manifold_edges")
+        _call(native, "remove_small_connected_components", float(minimum_component_area))
+        _call(native, "fill_holes", max_hole_perimeter=float(max_hole_perimeter))
+        if unify_face_orientations:
+            _call(native, "unify_face_orientations")
+        return self._asset(mesh, native, operation="repair")
+
+    def simplify(self, mesh: MeshAsset, target_faces: int, *, verbose: bool = False) -> MeshAsset:
+        if not isinstance(target_faces, int) or isinstance(target_faces, bool) or target_faces <= 0:
+            raise ValueError("target_faces must be a positive integer")
+        native = self._native(mesh)
+        native.simplify(target_faces, verbose=verbose)
+        return self._asset(mesh, native, operation="simplify")
+
+    def remesh(
+        self,
+        mesh: MeshAsset,
+        resolution: int,
+        *,
+        center: torch.Tensor | None = None,
+        scale: float | None = None,
+        band: float = 1.0,
+        project_back: float = 0.9,
+        verbose: bool = False,
+    ) -> MeshAsset:
+        """Narrow-band dual-contouring remesh at ``resolution`` around ``center`` (default: the vertex mean)."""
+
+        native = self._native(mesh)
+        center = mesh.vertices.mean(dim=0) if center is None else center
+        scale = float((mesh.vertices.amax(dim=0) - mesh.vertices.amin(dim=0)).max()) if scale is None else scale
+        remeshed = self._module.remeshing.remesh_narrow_band_dc(
+            mesh.vertices,
+            mesh.faces,
+            center=torch.as_tensor(center, device=mesh.device, dtype=torch.float32),
+            scale=float(scale),
+            resolution=int(resolution),
+            band=float(band),
+            project_back=float(project_back),
+            verbose=verbose,
+            bvh=self.build_bvh(mesh),
+        )
+        native.init(*remeshed)
+        return self._asset(mesh, native, operation="remesh")
+
+    def unwrap_uv(
+        self, mesh: MeshAsset, *, compute_charts_kwargs: Mapping[str, Any] | None = None, verbose: bool = False
+    ) -> MeshAsset:
+        """UV-unwrap ``mesh``; ``extras["cumesh_vertex_map"]`` maps each output vertex to its input vertex."""
+
+        native = self._native(mesh)
+        result = native.uv_unwrap(
+            compute_charts_kwargs=dict(compute_charts_kwargs or {}), return_vmaps=True, verbose=verbose
+        )
+        if not isinstance(result, tuple) or len(result) != 4:
+            raise RuntimeError("CuMesh.uv_unwrap() must return vertices, faces, uvs, and vertex maps")
+        vertices, faces, uvs, vertex_maps = result
+        native.init(vertices, faces)
+        return self._asset(
+            mesh,
+            native,
+            uvs=uvs,
+            extras={"cumesh_vertex_map": vertex_maps.to(dtype=torch.int64)},
+            operation="uv_unwrap",
+        )
 
     def build_bvh(self, mesh: MeshAsset) -> Any:
         self._native(mesh)  # validates the mesh
@@ -202,4 +167,4 @@ class CuMeshBackend:
         return function(points, return_uvw=return_uvw)
 
 
-__all__ = ["CUMESH_SOURCE_REVISION", "CUMESH_SOURCE_URL", "CuMeshBackend"]
+__all__ = ["CuMeshBackend"]

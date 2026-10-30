@@ -15,6 +15,7 @@ import torch
 import torch.nn.functional as F
 from diffusers import ModelMixin  # noqa: F401 - required by external-component loading
 from diffusers.configuration_utils import register_to_config
+from diffusers.loaders import PeftAdapterMixin
 from diffusers.models.attention import AttentionModuleMixin
 from diffusers.models.attention_dispatch import dispatch_attention_fn
 from diffusers.models.embeddings import get_timestep_embedding
@@ -23,10 +24,7 @@ from diffusers.models.normalization import FP32LayerNorm
 from diffusers.utils import BaseOutput
 from torch import nn
 
-from ...execution.lora import Object3DPeftAdapterMixin
-from ...execution.metadata import ContributionStatus, ReviewStatus
 from ...execution.models import Object3DModel
-from ...objects import Object3DKind
 from ..trellis.sparse import TrellisSparseTensor
 
 
@@ -322,15 +320,9 @@ class _Trellis2FlowInitialization:
         nn.init.zeros_(self.out_layer.bias)
 
 
-class Trellis2SparseStructureFlowModel(_Trellis2FlowInitialization, Object3DModel, Object3DPeftAdapterMixin):
+class Trellis2SparseStructureFlowModel(_Trellis2FlowInitialization, Object3DModel, PeftAdapterMixin):
     """TRELLIS.2 sparse-structure flow transformer over the dense occupancy latent."""
 
-    family_id = "trellis2"
-    component_role = "sparse_structure_flow_model"
-    supported_object_kinds = (Object3DKind.SPARSE_VOXEL,)
-    required_backends = ()
-    contribution_status = ContributionStatus.REVIEWED_PACKAGE
-    review_status = ReviewStatus.REVIEWED
     _supports_gradient_checkpointing = True
     _no_split_modules = ["Trellis2ModulatedTransformerCrossBlock"]
     _repeated_blocks = ["Trellis2ModulatedTransformerCrossBlock"]
@@ -417,44 +409,6 @@ class Trellis2SparseStructureFlowModel(_Trellis2FlowInitialization, Object3DMode
         self._initialize_weights()
         self._convert_torso()
 
-    @classmethod
-    def production_config(cls) -> dict[str, Any]:
-        return {
-            "resolution": 16,
-            "in_channels": 8,
-            "out_channels": 8,
-            "model_channels": 1536,
-            "cond_channels": 1024,
-            "num_blocks": 30,
-            "num_heads": 12,
-            "mlp_ratio": 5.3334,
-            "pe_mode": "rope",
-            "share_mod": True,
-            "initialization": "scaled",
-            "qk_rms_norm": True,
-            "qk_rms_norm_cross": True,
-            "dtype": "bfloat16",
-        }
-
-    @classmethod
-    def tiny_config(cls) -> dict[str, Any]:
-        return {
-            "resolution": 2,
-            "in_channels": 2,
-            "out_channels": 2,
-            "model_channels": 12,
-            "cond_channels": 12,
-            "num_blocks": 2,
-            "num_heads": 3,
-            "mlp_ratio": 2,
-            "pe_mode": "rope",
-            "share_mod": True,
-            "initialization": "scaled",
-            "qk_rms_norm": True,
-            "qk_rms_norm_cross": True,
-            "dtype": "float32",
-        }
-
     def _block_context(self, encoder_hidden_states: Any, batch_size: int, dtype: torch.dtype) -> Any:
         """Validate the cross-attention context and cast it for the blocks; subclasses may pass richer contexts."""
 
@@ -513,7 +467,7 @@ class Trellis2SparseStructureFlowModel(_Trellis2FlowInitialization, Object3DMode
         return Trellis2SparseStructureFlowOutput(sample=hidden_states)
 
 
-class Trellis2SLatFlowModel(_Trellis2FlowInitialization, Object3DModel, Object3DPeftAdapterMixin):
+class Trellis2SLatFlowModel(_Trellis2FlowInitialization, Object3DModel, PeftAdapterMixin):
     """TRELLIS.2 shape / texture SLAT flow transformer (released ``SLatFlowModel`` layout).
 
     Unlike TRELLIS, there are no sparse-convolution stages: a linear input layer, RoPE full-attention DiT blocks
@@ -521,12 +475,6 @@ class Trellis2SLatFlowModel(_Trellis2FlowInitialization, Object3DModel, Object3D
     ``concat_cond``.
     """
 
-    family_id = "trellis2"
-    component_role = "slat_flow_model"
-    supported_object_kinds = (Object3DKind.SPARSE_VOXEL, Object3DKind.O_VOXEL)
-    required_backends = ()
-    contribution_status = ContributionStatus.REVIEWED_PACKAGE
-    review_status = ReviewStatus.REVIEWED
     _supports_gradient_checkpointing = True
     _no_split_modules = ["Trellis2ModulatedTransformerCrossBlock"]
     _repeated_blocks = ["Trellis2ModulatedTransformerCrossBlock"]
@@ -604,44 +552,6 @@ class Trellis2SLatFlowModel(_Trellis2FlowInitialization, Object3DModel, Object3D
         self._initialize_weights()
         self._convert_torso()
 
-    @classmethod
-    def production_config(cls, *, texture: bool = False) -> dict[str, Any]:
-        return {
-            "resolution": 32,
-            "in_channels": 64 if texture else 32,
-            "out_channels": 32,
-            "model_channels": 1536,
-            "cond_channels": 1024,
-            "num_blocks": 30,
-            "num_heads": 12,
-            "mlp_ratio": 5.3334,
-            "pe_mode": "rope",
-            "share_mod": True,
-            "initialization": "scaled",
-            "qk_rms_norm": True,
-            "qk_rms_norm_cross": True,
-            "dtype": "bfloat16",
-        }
-
-    @classmethod
-    def tiny_config(cls, *, texture: bool = False) -> dict[str, Any]:
-        return {
-            "resolution": 8,
-            "in_channels": 8 if texture else 4,
-            "out_channels": 4,
-            "model_channels": 12,
-            "cond_channels": 12,
-            "num_blocks": 2,
-            "num_heads": 3,
-            "mlp_ratio": 2,
-            "pe_mode": "rope",
-            "share_mod": True,
-            "initialization": "scaled",
-            "qk_rms_norm": True,
-            "qk_rms_norm_cross": True,
-            "dtype": "float32",
-        }
-
     def _validate_context(self, encoder_hidden_states: Any, hidden_states: TrellisSparseTensor) -> None:
         if encoder_hidden_states.ndim != 3 or encoder_hidden_states.shape != (
             hidden_states.batch_size,
@@ -715,7 +625,38 @@ class Trellis2SLatFlowModel(_Trellis2FlowInitialization, Object3DModel, Object3D
         return Trellis2SLatFlowOutput(sample=sample)
 
 
+# The gated DINOv3 repositories upstream loads, at pinned revisions (TRELLIS.2 and Pixal3D: ViT-L/16; IDOL and
+# TripoSplat: ViT-H/16+). Their weights load from these repositories and are never converted or redistributed.
+DINOV3_VITL16_REPO = "facebook/dinov3-vitl16-pretrain-lvd1689m"
+DINOV3_VITH16PLUS_REPO = "facebook/dinov3-vith16plus-pretrain-lvd1689m"
+DINOV3_REVISIONS = {
+    DINOV3_VITL16_REPO: "ea8dc2863c51be0a264bab82070e3e8836b02d51",
+    DINOV3_VITH16PLUS_REPO: "c807c9eeea853df70aec4069e6f56b28ddc82acc",
+}
+
+
+def load_dinov3(repository: str, *, revision: str | None = None, dtype: torch.dtype | None = None, **hub_kwargs: Any):
+    """Load a Transformers ``DINOv3ViTModel`` from its repository, in ``dtype`` (float32, as released, by default)."""
+
+    from transformers import DINOv3ViTModel
+
+    model, loading_info = DINOv3ViTModel.from_pretrained(
+        repository,
+        revision=revision if revision is not None else DINOV3_REVISIONS.get(repository),
+        dtype=torch.float32 if dtype is None else dtype,
+        output_loading_info=True,
+        **hub_kwargs,
+    )
+    if any(loading_info[name] for name in ("missing_keys", "unexpected_keys", "mismatched_keys")):
+        raise ValueError(f"the DINOv3 weights do not match its config: {loading_info}")
+    return model.eval()
+
+
 __all__ = [
+    "DINOV3_REVISIONS",
+    "DINOV3_VITH16PLUS_REPO",
+    "DINOV3_VITL16_REPO",
+    "load_dinov3",
     "Trellis2SLatFlowModel",
     "Trellis2SLatFlowOutput",
     "Trellis2SparseStructureFlowModel",

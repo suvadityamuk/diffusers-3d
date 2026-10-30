@@ -8,7 +8,6 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any
 
 import torch
 from diffusers import ModelMixin  # noqa: F401 - required by external-component loading
@@ -16,9 +15,7 @@ from diffusers.configuration_utils import register_to_config
 from diffusers.utils import BaseOutput
 from torch import nn
 
-from ...execution.metadata import ContributionStatus, ReviewStatus
 from ...execution.models import Object3DModel
-from ...objects import Object3DKind
 from .models import TripoSGTransformerBlock
 
 
@@ -38,12 +35,6 @@ class TripoSGVAEDecoder(Object3DModel):
     the surface at level 0.
     """
 
-    family_id = "triposg"
-    component_role = "vae"
-    supported_object_kinds = (Object3DKind.MESH,)
-    required_backends = ()
-    contribution_status = ContributionStatus.REVIEWED_PACKAGE
-    review_status = ReviewStatus.REVIEWED
     _no_split_modules = ["TripoSGTransformerBlock"]
 
     @register_to_config
@@ -79,30 +70,6 @@ class TripoSGVAEDecoder(Object3DModel):
         self.norm_out = nn.LayerNorm(width_decoder)
         self.proj_out = nn.Linear(width_decoder, 1)
 
-    @classmethod
-    def production_config(cls) -> dict[str, Any]:
-        return {
-            "in_channels": 3,
-            "latent_channels": 64,
-            "num_attention_heads": 8,
-            "width_decoder": 1024,
-            "num_layers_decoder": 16,
-            "embed_frequency": 8,
-            "embed_include_pi": False,
-        }
-
-    @classmethod
-    def tiny_config(cls) -> dict[str, Any]:
-        return {
-            "in_channels": 3,
-            "latent_channels": 4,
-            "num_attention_heads": 2,
-            "width_decoder": 16,
-            "num_layers_decoder": 2,
-            "embed_frequency": 2,
-            "embed_include_pi": False,
-        }
-
     def forward(
         self,
         latents: torch.Tensor,
@@ -122,7 +89,7 @@ class TripoSGVAEDecoder(Object3DModel):
         logits = []
         for chunk in queries.split(num_chunks or queries.shape[1], dim=1):
             chunk = chunk.to(latents)
-            embedding = (chunk[..., None] * self.frequencies).flatten(-2)
+            embedding = (chunk[..., None] * self.frequencies.to(chunk.dtype)).flatten(-2)
             query_states = self.proj_query(torch.cat([chunk, embedding.sin(), embedding.cos()], dim=-1))
             query_states = self.blocks[-1](query_states, latent_states)
             logits.append(self.proj_out(self.norm_out(query_states)))

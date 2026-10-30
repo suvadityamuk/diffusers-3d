@@ -4,6 +4,7 @@ import warnings
 
 import pytest
 import torch
+from moge.configs import tiny_moge_config
 
 from diffusers_3d import (
     AutoPipelineForImageTo3D,
@@ -15,6 +16,7 @@ from diffusers_3d import (
     SparseVoxelAsset,
     preprocess_sam3d_condition,
 )
+from diffusers_3d.families.moge import MoGeModel
 
 from .conftest import tiny_condition, tiny_sam3d_components, tiny_sam3d_pipeline
 
@@ -110,10 +112,13 @@ def test_generator_determinism_batching_and_tuple_output(tiny_pipeline):
     torch.testing.assert_close(batched.objects[0].transform, single.objects[0].transform, atol=1e-5, rtol=1e-5)
 
 
-def test_save_load_round_trip_and_auto_pipeline(tmp_path, tiny_pipeline):
+def test_save_load_round_trip_and_auto_pipeline(tmp_path, tiny_pipeline, local_external_components):
     condition, pointmap = tiny_condition()
     expected = _run(tiny_pipeline, condition, pointmap, formats=("gaussian",)).objects[0]
+    calls = local_external_components(Sam3DObjectsPipeline, image_encoder=tiny_pipeline.image_encoder)
     tiny_pipeline.save_pretrained(tmp_path / "full")
+    # The frozen DINOv2 is Meta's: never saved, loaded from facebook/dinov2-with-registers-large.
+    assert not (tmp_path / "full" / "image_encoder").exists()
     with warnings.catch_warnings():
         warnings.simplefilter("ignore", UserWarning)
         loaded = AutoPipelineForImageTo3D.from_pretrained(tmp_path / "full", local_files_only=True)
@@ -125,6 +130,24 @@ def test_save_load_round_trip_and_auto_pipeline(tmp_path, tiny_pipeline):
         tiny_sam3d_pipeline(include_slat=False).save_pretrained(tmp_path / "structure")
         structure_only = Sam3DObjectsPipeline.from_pretrained(tmp_path / "structure", local_files_only=True)
     assert structure_only.slat_flow_model is None
+    assert [call[1:3] for call in calls] == [
+        ("facebook/dinov2-with-registers-large", "e4c89a4e05589de9b3e188688a303d0f3c04d0f3")
+    ] * 2
     assert [type(asset) for asset in _run(structure_only, condition, pointmap).objects] == [SparseVoxelAsset]
     with pytest.raises(RuntimeError, match="structured-latent stage"):
         _run(structure_only, condition, pointmap, formats=("mesh",))
+
+
+def test_missing_pointmaps_come_from_the_depth_estimator(tiny_pipeline):
+    """Upstream ``compute_pointmap`` runs MoGe on the unmasked RGB image with ``force_projection=False``."""
+
+    torch.manual_seed(6)
+    estimator = MoGeModel(**tiny_moge_config()).eval()
+    tiny_pipeline.register_modules(depth_estimator=estimator)
+    condition, _ = tiny_condition(height=28, width=42)
+    expected = estimator.infer(condition.image, force_projection=False)["points"].permute(2, 0, 1)
+    estimated = tiny_pipeline.preprocess(condition)
+    given = tiny_pipeline.preprocess(condition, pointmap=expected)
+    assert estimated.keys() == given.keys() and "pointmaps" in estimated
+    for name, value in given.items():
+        torch.testing.assert_close(estimated[name], value, atol=0, rtol=0, equal_nan=True)

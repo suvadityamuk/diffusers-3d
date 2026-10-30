@@ -18,8 +18,9 @@ gaussians, mesh = pipeline(condition, pointmap=points, generator=torch.Generator
 ```
 
 - `mask` is required. The pipeline never segments, and the image itself is not masked.
-- `pointmap` is optional: `(3, H, W)` camera-space points in OpenCV axes, non-finite where invalid (for example MoGe's
-  output). Without it the shape is still generated, but the layout is scale-free.
+- `pointmap` is optional: `(3, H, W)` camera-space points in OpenCV axes, non-finite where invalid. Without it the
+  MoGe `depth_estimator` predicts it from the RGB image, as upstream does. A folder without the estimator
+  drops the pointmap tokens, and the layout is scale-free.
 - `formats` picks from `sparse_structure`, `gaussian`, and `mesh`. The default is every loaded decoder.
 - Defaults: 25 steps per stage, guidance 7.0 then 1.0, `rescale_t` 3.0 then 1.0, guidance in the noisier half.
 - Each asset's `transform` places it in the PyTorch3D camera frame (x left, y up, z forward), in pointmap units.
@@ -40,8 +41,10 @@ gaussians, mesh = pipeline(condition, pointmap=points, generator=torch.Generator
 
 ## Differences from upstream
 
-- MoGe depth estimation is not bundled. It is a separate model, so pass its pointmap instead.
-- Each component runs in its own dtype. Upstream runs the sparse-structure stage under float16 autocast on CUDA.
+- Each component runs in its own dtype. Upstream runs the sparse-structure stage and MoGe under an outer CUDA autocast
+  in the pipeline's dtype; that GPU path is not verified here.
+- Noise is drawn from `generator` in upstream's order. Upstream draws it from the global RNG on its device after
+  `torch.manual_seed(seed)`, so pass a generator on the same device as upstream ran on.
 - Not ported, all off in upstream's default inference: layout post-optimization, mesh simplification, hole filling,
   texture baking, and plane estimation.
 - Not ported, unused by default inference: the 4-Gaussian decoder, the sparse-structure encoder, and shortcut sampling.
@@ -54,7 +57,10 @@ diffusers-3d-convert-sam3d sam-3d-objects/checkpoints/ output/
 
 The source is the released `checkpoints/` folder with `pipeline.yaml`. The converter maps upstream keys onto the
 Transformers and package modules and loads every component with strict key checks. The release keeps four copies of
-DINOv2; the converter checks they match and writes one.
+DINOv2, equal tensor for tensor to `facebook/dinov2-with-registers-large`; the converter checks they match but
+writes none, and `from_pretrained` loads that repository at a pinned revision. The MoGe `depth_estimator`
+(`Ruicheng/moge-vitl`, pinned, MIT) is likewise only named in `model_index.json` and converted on load; it runs on
+the MoGe revision SAM 3D pins. `--no-depth-estimator` leaves it out.
 
 ## Verification
 

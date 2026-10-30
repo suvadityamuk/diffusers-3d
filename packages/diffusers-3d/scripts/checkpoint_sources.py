@@ -1,16 +1,16 @@
 """Fetch released 3D checkpoints and convert them into diffusers-3d pipeline folders.
 
 Shared by ``gpu_smoke.py`` and ``publish_hub_checkpoints.py``. Conversions are cached under ``work / "converted"``.
+Only each model's own weights are converted: third-party components a pipeline uses unchanged (DINOv3, DINOv2,
+NAF, MoGe, ...) are never downloaded here, since the pipelines load them from their original sources.
 """
 
 from __future__ import annotations
 
 import json
 import shutil
-import urllib.request
 from pathlib import Path
 
-NAF_RELEASE_URL = "https://github.com/valeoai/NAF/releases/download/model/naf_release.pth"
 SAM3D_REVISION = "2e73555018d2741ccd486e56c24fac41155a1dc6"
 
 
@@ -42,15 +42,16 @@ def materialize_shared_components(source: Path) -> None:
 def _convert_trellis(name: str, work: Path, target: Path) -> None:
     release = RELEASES[name]
     source = download(release["source"], work)
-    materialize_shared_components(source)
-    encoder = download(release["encoder"], work, release["encoder_patterns"])
     if name == "trellis2":
+        # TRELLIS.2's cross-repository sparse-structure decoder loads from TRELLIS-image-large; it is not fetched.
         from diffusers_3d.families.trellis2.conversion import convert_trellis2_checkpoint
 
-        convert_trellis2_checkpoint(source, target, image_encoder_path=encoder)
+        convert_trellis2_checkpoint(source, target)
     else:
         from diffusers_3d.families.trellis.conversion import convert_trellis_checkpoint
 
+        materialize_shared_components(source)
+        encoder = release["encoder"] and download(release["encoder"], work, release["encoder_patterns"])
         convert_trellis_checkpoint(source, target, encoder_path=encoder)
 
 
@@ -100,30 +101,24 @@ def _convert_pixal3d(work: Path, target: Path) -> None:
     from diffusers_3d.families.pixal3d.conversion import PIXAL3D_WEIGHTS_REVISION, convert_pixal3d_checkpoint
 
     source = download(RELEASES["pixal3d"]["source"], work, revision=PIXAL3D_WEIGHTS_REVISION)
-    encoder = download(RELEASES["pixal3d"]["encoder"], work)
-    naf = work / "naf_release.pth"
-    if not naf.is_file():
-        urllib.request.urlretrieve(NAF_RELEASE_URL, naf)
-    convert_pixal3d_checkpoint(source, target, image_encoder_path=encoder, naf_checkpoint_path=naf)
+    convert_pixal3d_checkpoint(source, target)
 
 
 RELEASES = {
     "trellis-image": {
         "source": "microsoft/TRELLIS-image-large",
-        "encoder": "facebook/dinov2-with-registers-large",
+        "encoder": None,  # the converter's pinned TRELLIS_ENCODER_CHECKPOINTS entry
         "encoder_patterns": None,
         "convert": lambda work, target: _convert_trellis("trellis-image", work, target),
     },
     "trellis-text": {
         "source": "microsoft/TRELLIS-text-large",
-        "encoder": "openai/clip-vit-large-patch14",
+        "encoder": None,  # the converter's pinned TRELLIS_ENCODER_CHECKPOINTS entry
         "encoder_patterns": ["*.json", "*.txt", "model.safetensors"],
         "convert": lambda work, target: _convert_trellis("trellis-text", work, target),
     },
     "trellis2": {
         "source": "microsoft/TRELLIS.2-4B",
-        "encoder": "facebook/dinov3-vitl16-pretrain-lvd1689m",
-        "encoder_patterns": None,
         "convert": lambda work, target: _convert_trellis("trellis2", work, target),
     },
     "triposg": {"source": "VAST-AI/TripoSG", "convert": _convert_triposg},
@@ -132,23 +127,32 @@ RELEASES = {
     "hunyuan3d": {"source": "tencent/Hunyuan3D-2.1", "convert": _convert_hunyuan3d},
     "hunyuan3d-paint": {"source": "tencent/Hunyuan3D-2.1", "convert": _convert_hunyuan3d_paint},
     "sam3d-objects": {"source": "facebook/sam-3d-objects", "convert": _convert_sam3d},
-    "pixal3d": {
-        "source": "TencentARC/Pixal3D",
-        "encoder": "facebook/dinov3-vitl16-pretrain-lvd1689m",
-        "convert": _convert_pixal3d,
-    },
+    "pixal3d": {"source": "TencentARC/Pixal3D", "convert": _convert_pixal3d},
 }
+
+
+def external_components(folder: Path) -> dict[str, str]:
+    """The third-party components the pipeline in ``folder`` loads from their own repositories: name -> repository."""
+
+    import diffusers_3d
+
+    index_path = folder / "model_index.json"
+    if not index_path.is_file():
+        return {}
+    pipeline = getattr(diffusers_3d, json.loads(index_path.read_text())["_class_name"])
+    return {name: component.repository for name, component in pipeline.external_components.items()}
 
 
 def convert_release(name: str, work: Path) -> Path:
     """Download and convert one of :data:`RELEASES`; returns the converted pipeline folder."""
 
     target = work / "converted" / name
-    if (target / "model_index.json").is_file() and not (target / "conditioner").exists():
+    stale = [target / folder for folder in ("conditioner", *external_components(target))]
+    if (target / "model_index.json").is_file() and not any(path.exists() for path in stale):
         return target
     shutil.rmtree(target, ignore_errors=True)
     RELEASES[name]["convert"](work, target)
     return target
 
 
-__all__ = ["RELEASES", "convert_release", "download", "materialize_shared_components"]
+__all__ = ["RELEASES", "convert_release", "download", "external_components", "materialize_shared_components"]

@@ -8,7 +8,9 @@
 from __future__ import annotations
 
 import dataclasses
+import math
 from collections.abc import Mapping, Sequence
+from functools import partial
 from typing import Any
 
 import numpy as np
@@ -18,19 +20,33 @@ from transformers import DINOv3ViTModel
 
 from ...data import ImageCondition, MultiViewCondition, preprocess_image_condition
 from ...data.image_processing import _quantized_rgba
-from ...execution.metadata import Object3DComponentSpec, ReviewStatus, fully_qualified_class_name
+from ...execution.pipelines import ExternalComponent
 from ...objects import CoordinateSystem, Latent3DOutput, Object3D, Object3DPipelineOutput, SparseVoxelAsset
+from ..moge.conversion import MOGE2_WEIGHTS_REPOSITORY, MOGE2_WEIGHTS_REVISION, load_moge_estimator
+from ..moge.models import MoGe2Model
 from ..trellis.sparse import TrellisSparseTensor
 from ..trellis2.decoders import Trellis2PBRSparseDecoder, Trellis2ShapeDualGridDecoder, Trellis2SparseStructureDecoder
 from ..trellis2.pipeline import _PIPELINE_TYPES as _TRELLIS2_PIPELINE_TYPES
-from ..trellis2.pipeline import Trellis2ImageTo3DPipeline, _sampler_parameters
+from ..trellis2.pipeline import (
+    TRELLIS2_REPO,
+    TRELLIS2_REVISION,
+    TRELLIS_IMAGE_LARGE_REPO,
+    TRELLIS_IMAGE_LARGE_REVISION,
+    Trellis2ImageTo3DPipeline,
+    _sampler_parameters,
+    load_released_component,
+    shrink_image_condition,
+)
 from ..trellis2.scheduler import Trellis2FlowEulerScheduler
 from .conditioner import (
+    NAF_CHECKPOINT_SHA256,
+    NAF_CHECKPOINT_URL,
     Pixal3DNAFUpsampler,
     blender_camera_to_world,
     camera_distance_from_fov,
     front_view_camera,
     horizontal_fov,
+    load_naf_upsampler,
     project_grid_features,
     relative_projection_cameras,
 )
@@ -79,6 +95,25 @@ def _multiview_images(condition: MultiViewCondition, image_size: int) -> torch.T
     return torch.stack(views)
 
 
+def _cropped_image(condition: ImageCondition) -> torch.Tensor:
+    """Upstream ``preprocess_image`` at native resolution: the ``alpha > 0.8`` box grown by 1.1 and premultiplied.
+
+    This is the image upstream estimates the field of view on. Inputs without transparency keep their full frame.
+    """
+
+    rgba = _quantized_rgba(condition)[1]
+    alpha = rgba[:, :, 3]
+    image = Image.fromarray(rgba)
+    if not np.all(alpha == 255):
+        rows, columns = np.nonzero(alpha > 0.8 * 255)
+        center_x, center_y = (columns.min() + columns.max()) / 2, (rows.min() + rows.max()) / 2
+        half = int(max(columns.max() - columns.min(), rows.max() - rows.min()) * _FOREGROUND_SCALE) // 2
+        image = image.crop((center_x - half, center_y - half, center_x + half, center_y + half))
+    pixels = np.asarray(image).astype(np.float32) / 255
+    pixels = (pixels[:, :, :3] * pixels[:, :, 3:] * 255).astype(np.uint8)
+    return torch.from_numpy(pixels).permute(2, 0, 1).float() / 255
+
+
 class Pixal3DImageTo3DPipeline(Trellis2ImageTo3DPipeline):
     """Pixal3D: TRELLIS.2's cascade with pixel-aligned projection conditioning, in plain PyTorch.
 
@@ -89,26 +124,30 @@ class Pixal3DImageTo3DPipeline(Trellis2ImageTo3DPipeline):
     ``ImageCondition`` inputs, multi-view ones posed ``MultiViewCondition`` inputs whose first view is the front view.
     """
 
-    family_id = "pixal3d"
-    component_specs = (
-        *(
-            dataclasses.replace(spec, expected_class=fully_qualified_class_name(_FLOW_COMPONENTS[spec.name]))
-            if spec.name in _FLOW_COMPONENTS
-            else spec
-            for spec in Trellis2ImageTo3DPipeline.component_specs
-        ),
-        Object3DComponentSpec(
-            name="feature_upsampler",
-            expected_class=fully_qualified_class_name(Pixal3DNAFUpsampler),
-            subfolder="feature_upsampler",
-            optional=False,
-            review_status=ReviewStatus.REVIEWED,
-            loading_eligible=True,
-        ),
-    )
     model_cpu_offload_seq = (
-        "image_encoder->feature_upsampler->" + Trellis2ImageTo3DPipeline.model_cpu_offload_seq.split("->", 1)[1]
+        "depth_estimator->image_encoder->feature_upsampler->"
+        + Trellis2ImageTo3DPipeline.model_cpu_offload_seq.split("->", 1)[1]
     )
+    _optional_components = [*Trellis2ImageTo3DPipeline._optional_components, "depth_estimator"]
+    # Third-party networks Pixal3D uses unchanged load from their original sources and are never saved with it:
+    # DINOv3 (gated), valeo.ai's NAF release, MoGe-2 (single-view checkpoints only), and the three decoders its
+    # release copies byte for byte from TRELLIS-image-large and TRELLIS.2-4B (converted on load as Pixal3D's
+    # converter did).
+    external_components = {
+        **Trellis2ImageTo3DPipeline.external_components,
+        **{
+            name: ExternalComponent(
+                repository, revision, partial(load_released_component, name=name, family="pixal3d")
+            )
+            for name, repository, revision in (
+                ("sparse_structure_decoder", TRELLIS_IMAGE_LARGE_REPO, TRELLIS_IMAGE_LARGE_REVISION),
+                ("shape_slat_decoder", TRELLIS2_REPO, TRELLIS2_REVISION),
+                ("pbr_decoder", TRELLIS2_REPO, TRELLIS2_REVISION),
+            )
+        },
+        "feature_upsampler": ExternalComponent(NAF_CHECKPOINT_URL, NAF_CHECKPOINT_SHA256, load_naf_upsampler),
+        "depth_estimator": ExternalComponent(MOGE2_WEIGHTS_REPOSITORY, MOGE2_WEIGHTS_REVISION, load_moge_estimator),
+    }
 
     def __init__(
         self,
@@ -136,6 +175,7 @@ class Pixal3DImageTo3DPipeline(Trellis2ImageTo3DPipeline):
         texture_slat_sampler_defaults: Mapping[str, Any] | None = None,
         multiview: bool = False,
         capability_limitations: Mapping[str, Any] | None = None,
+        depth_estimator: MoGe2Model | None = None,
     ) -> None:
         super().__init__(
             image_encoder=image_encoder,
@@ -173,8 +213,25 @@ class Pixal3DImageTo3DPipeline(Trellis2ImageTo3DPipeline):
                     raise ValueError(f"{name} projects DINOv3 and NAF-upsampled features ({2 * hidden_size} channels)")
         if not isinstance(multiview, bool):
             raise TypeError("multiview must be a bool")
-        self.register_modules(feature_upsampler=feature_upsampler)
+        self.register_modules(feature_upsampler=feature_upsampler, depth_estimator=depth_estimator)
         self.register_to_config(multiview=multiview)
+
+    @classmethod
+    def from_pretrained(cls, pretrained_model_name_or_path, **kwargs):
+        """Load like any pipeline, but keep DINOv3 and the NAF upsampler in float32 whatever ``dtype`` the rest loads
+        in, as upstream does (and MoGe-2, which runs under float16 autocast); a ``dtype`` dict that names any of them
+        overrides this."""
+
+        if "torch_dtype" in kwargs:
+            kwargs.setdefault("dtype", kwargs.pop("torch_dtype"))
+        dtype = kwargs.get("dtype")
+        # Without a dtype every component keeps its own precision: float32 encoders and the flows' bfloat16 torso.
+        if dtype is not None:
+            dtypes = dict(dtype) if isinstance(dtype, dict) else {"default": dtype}
+            kwargs["dtype"] = (
+                dict.fromkeys(("image_encoder", "feature_upsampler", "depth_estimator"), torch.float32) | dtypes
+            )
+        return super().from_pretrained(pretrained_model_name_or_path, **kwargs)
 
     @staticmethod
     def _validate_pipeline_type(pipeline_type: str) -> str:
@@ -197,15 +254,20 @@ class Pixal3DImageTo3DPipeline(Trellis2ImageTo3DPipeline):
     ) -> _Views:
         """Preprocess conditions at every DINOv3 side in ``image_sizes`` and build their projection cameras.
 
-        Single images get the released crop (``alpha > 0.8`` box grown by 1.1, premultiplied on black); their field of
-        view is ``camera_angle_x`` (radians, one value or one per image) or comes from the cropped condition camera,
-        and the camera sits on the canonical front view at the distance where the unit cube fills the image width.
+        Single images larger than 1024 px are shrunk first, then get the released crop (``alpha > 0.8`` box grown by
+        1.1, premultiplied on black). Their field of view is ``camera_angle_x`` (radians, one value or one per image),
+        else the cropped condition camera's, else the ``depth_estimator``'s MoGe-2 estimate as upstream; the camera sits on the canonical front view at the distance where the unit cube fills the image width.
         Multi-view conditions are not cropped; their cameras are re-expressed relative to the first view.
         """
 
-        if isinstance(image, torch.Tensor):
-            image = tuple(ImageCondition(image=value) for value in (image[None] if image.ndim == 3 else image))
-        conditions = (image,) if type(image) in (ImageCondition, MultiViewCondition) else tuple(image)
+        if isinstance(image, MultiViewCondition) or (
+            isinstance(image, (list, tuple))
+            and image
+            and all(isinstance(value, MultiViewCondition) for value in image)
+        ):
+            conditions = (image,) if isinstance(image, MultiViewCondition) else tuple(image)
+        else:
+            conditions = tuple(self.image_conditions(image))
         kinds = {type(condition) for condition in conditions}
         if not conditions or len(kinds) != 1 or not kinds <= {ImageCondition, MultiViewCondition}:
             raise TypeError("image must be ImageCondition or MultiViewCondition values of a single kind, or a tensor")
@@ -231,6 +293,7 @@ class Pixal3DImageTo3DPipeline(Trellis2ImageTo3DPipeline):
             )
             fov = torch.stack([horizontal_fov(c.cameras) for c in conditions])
         else:
+            conditions = tuple(shrink_image_condition(condition) for condition in conditions)
             processed = {
                 size: [
                     preprocess_image_condition(
@@ -248,12 +311,17 @@ class Pixal3DImageTo3DPipeline(Trellis2ImageTo3DPipeline):
             }
             if camera_angle_x is None:
                 cameras = [value.camera for value in next(iter(processed.values()))]
-                if any(camera is None for camera in cameras):
+                if any(camera is None for camera in cameras) and self.depth_estimator is None:
                     raise ValueError(
-                        "Pixal3D needs each image's horizontal field of view: pass camera_angle_x (radians) or an "
-                        "ImageCondition camera (upstream estimates it with MoGe-2)"
+                        "Pixal3D needs each image's horizontal field of view: pass camera_angle_x (radians), an "
+                        "ImageCondition camera, or load the MoGe-2 depth_estimator"
                     )
-                fov = torch.cat([horizontal_fov(camera) for camera in cameras])
+                fov = torch.cat(
+                    [
+                        horizontal_fov(camera) if camera is not None else self.estimate_camera_angle_x(condition)
+                        for camera, condition in zip(cameras, conditions)
+                    ]
+                )
             else:
                 values = (
                     [camera_angle_x] * len(conditions) if isinstance(camera_angle_x, (int, float)) else camera_angle_x
@@ -272,6 +340,19 @@ class Pixal3DImageTo3DPipeline(Trellis2ImageTo3DPipeline):
             camera_angle_x=fov.float(),
             mesh_scale=float(mesh_scale),
         )
+
+    @torch.no_grad()
+    def estimate_camera_angle_x(self, condition: ImageCondition) -> torch.Tensor:
+        """Horizontal field of view ``(1,)`` in radians, from MoGe-2 on the cropped image as upstream estimates it."""
+
+        image = _cropped_image(condition)
+        device = self.depth_estimator.device
+        # Upstream's default float16 autocast only runs on CUDA; elsewhere it raises, so run in float32 there.
+        intrinsics = self.depth_estimator.infer(image.to(device), use_fp16=device.type == "cuda")["intrinsics"]
+        # Upstream's ``get_camera_params_wild_moge``, in its NumPy float32 arithmetic.
+        width = image.shape[-1]
+        focal = intrinsics.squeeze().cpu().numpy()[0, 0] * width
+        return torch.tensor([2 * math.atan(width / (2 * focal))])
 
     def encode_views(self, images: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         """DINOv3 tokens of ``(batch, views, 3, side, side)`` images: view-averaged class + register tokens and the

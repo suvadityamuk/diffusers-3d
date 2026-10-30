@@ -1,13 +1,14 @@
 from __future__ import annotations
 
 import torch
+from _configs import production_config, tiny_config
 from accelerate import init_empty_weights
 
 from diffusers_3d import TripoSGTransformerModel, TripoSGVAEDecoder
 
 
 def test_transformer_forward_backward_checkpointing_and_save_load(tmp_path):
-    model = TripoSGTransformerModel(**TripoSGTransformerModel.tiny_config())
+    model = TripoSGTransformerModel(**tiny_config(TripoSGTransformerModel))
     generator = torch.Generator().manual_seed(0)
     latents = torch.randn(2, 5, 4, generator=generator)
     context = torch.randn(2, 3, 12, generator=generator)
@@ -30,7 +31,7 @@ def test_transformer_forward_backward_checkpointing_and_save_load(tmp_path):
 
 
 def test_vae_decoder_chunking_does_not_change_the_field(tmp_path):
-    model = TripoSGVAEDecoder(**TripoSGVAEDecoder.tiny_config()).eval()
+    model = TripoSGVAEDecoder(**tiny_config(TripoSGVAEDecoder)).eval()
     generator = torch.Generator().manual_seed(1)
     latents = torch.randn(1, 6, 4, generator=generator)
     points = torch.rand(1, 37, 3, generator=generator) * 2 - 1
@@ -47,8 +48,8 @@ def test_vae_decoder_chunking_does_not_change_the_field(tmp_path):
 def test_production_layouts_match_the_published_checkpoint_headers():
     # VAST-AI/TripoSG@2c1c516d safetensors headers: 554 transformer tensors; the VAE's 356 minus 125 encoder/quant.
     with init_empty_weights():
-        transformer = TripoSGTransformerModel(**TripoSGTransformerModel.production_config())
-        vae = TripoSGVAEDecoder(**TripoSGVAEDecoder.production_config())
+        transformer = TripoSGTransformerModel(**production_config(TripoSGTransformerModel))
+        vae = TripoSGVAEDecoder(**production_config(TripoSGVAEDecoder))
     transformer_state = transformer.state_dict()
     vae_state = vae.state_dict()
     assert len(transformer_state) == 554
@@ -60,3 +61,13 @@ def test_production_layouts_match_the_published_checkpoint_headers():
     assert vae_state["proj_query.weight"].shape == (1024, 51)
     assert vae_state["blocks.16.attn2.norm_cross.weight"].shape == (1024,)
     assert vae_state["post_quant.weight"].shape == (1024, 64)
+
+
+def test_vae_loaded_in_half_precision_embeds_queries_in_that_precision(tmp_path):
+    """``from_pretrained(torch_dtype=...)`` leaves the non-persistent frequency buffer in float32; the embedding
+    casts it, as upstream's ``.to(dtype)`` of the whole model does."""
+
+    TripoSGVAEDecoder(**tiny_config(TripoSGVAEDecoder)).save_pretrained(tmp_path)
+    vae = TripoSGVAEDecoder.from_pretrained(tmp_path, torch_dtype=torch.bfloat16)
+    latents = torch.randn(1, 6, vae.config.latent_channels, dtype=torch.bfloat16)
+    assert vae(latents, torch.rand(1, 5, 3)).sample.dtype == torch.bfloat16

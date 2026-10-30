@@ -56,27 +56,34 @@ def test_paints_a_uv_textured_mesh_with_a_pbr_material():
     assert [preview.shape for preview in output.previews] == [(6, 3, 16, 16)] * 2
 
 
+def _external(pipeline: Hunyuan3DPaintPipeline) -> dict:
+    """The third-party components, which save_pretrained leaves out and from_pretrained would download."""
+
+    return {name: getattr(pipeline, name) for name in Hunyuan3DPaintPipeline.external_components}
+
+
 def test_round_trips_through_save_pretrained_and_the_auto_pipeline(tmp_path):
     pipeline = make_tiny_paint_pipeline()
     expected = _paint(pipeline, return_dict=False)
     pipeline.save_pretrained(tmp_path)
+    assert sorted(path.name for path in tmp_path.iterdir()) == ["model_index.json", "scheduler", "unet"]
     with warnings.catch_warnings():
         warnings.filterwarnings("ignore", message="Hunyuan3D-2.1 weights", category=UserWarning)
-        loaded = AutoPipelineFor3D.from_pretrained(tmp_path)
+        loaded = AutoPipelineFor3D.from_pretrained(tmp_path, **_external(pipeline))
     assert type(loaded) is Hunyuan3DPaintPipeline
     actual = _paint(loaded, return_dict=False)
     torch.testing.assert_close(actual[0][0].materials[0].base_color, expected[0][0].materials[0].base_color)
     torch.testing.assert_close(actual[1].latents, expected[1].latents)
 
 
-def test_the_upscaler_can_be_left_out_when_saving_or_loading(tmp_path):
+def test_the_upscaler_can_be_left_out_when_loading(tmp_path):
+    pipeline = make_tiny_paint_pipeline()
+    pipeline.save_pretrained(tmp_path)
+    components = _external(pipeline) | {"upscaler": None}
     with warnings.catch_warnings():
         warnings.filterwarnings("ignore", message="Hunyuan3D-2.1 weights", category=UserWarning)
-        make_tiny_paint_pipeline(upscaler=False).save_pretrained(tmp_path / "without")
-        assert AutoPipelineFor3D.from_pretrained(tmp_path / "without").upscaler is None
-        assert Hunyuan3DPaintPipeline.from_pretrained(tmp_path / "without").upscaler is None
-        make_tiny_paint_pipeline().save_pretrained(tmp_path / "with")
-        assert Hunyuan3DPaintPipeline.from_pretrained(tmp_path / "with", upscaler=None).upscaler is None
+        assert AutoPipelineFor3D.from_pretrained(tmp_path, **components).upscaler is None
+        assert Hunyuan3DPaintPipeline.from_pretrained(tmp_path, **components).upscaler is None
 
 
 def test_paints_without_the_upscaler_or_guidance_and_exports_a_glb(tmp_path):
@@ -105,12 +112,18 @@ def test_construction_warns_about_the_territorial_license():
         Hunyuan3DPaintPipeline(**make_tiny_paint_pipeline().components)
 
 
-def test_prepare_mesh_merges_simplifies_and_unwraps():
-    pytest.importorskip("fast_simplification")
+def test_prepare_mesh_without_remeshing_reads_the_glb_frame_and_unwraps():
+    pytest.importorskip("xatlas")
     mesh = _mesh()
-    split = MeshAsset(
-        vertices=mesh.vertices[mesh.faces].reshape(-1, 3), faces=torch.arange(mesh.faces.numel()).view(-1, 3)
+    rotated = MeshAsset(
+        vertices=mesh.vertices, faces=mesh.faces, metadata={"export_rotation": [[1, 0, 0], [0, 0, 1], [0, -1, 0]]}
     )
-    prepared = make_tiny_paint_pipeline().prepare_mesh(split, max_faces=200)
-    assert prepared.faces.shape[0] <= 200 and prepared.uvs is not None
-    assert prepared.vertices.shape[0] < split.vertices.shape[0]
+    prepared = make_tiny_paint_pipeline().prepare_mesh(rotated, max_faces=None)
+    assert prepared.uvs is not None and prepared.faces.shape == mesh.faces.shape
+    assert prepared.vertices.dtype is torch.float32
+    # Every unwrapped vertex is an input vertex as the GLB export writes it (y, z) -> (z, -y).
+    expected = torch.stack([mesh.vertices[:, 0], mesh.vertices[:, 2], -mesh.vertices[:, 1]], dim=1)
+    assert torch.equal(
+        prepared.vertices[:, None].eq(expected[None]).all(-1).any(-1),
+        torch.ones(len(prepared.vertices), dtype=torch.bool),
+    )

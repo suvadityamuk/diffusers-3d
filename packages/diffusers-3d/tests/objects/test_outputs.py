@@ -4,12 +4,11 @@ import torch
 from diffusers_3d import (
     CoordinateSystem,
     Latent3DOutput,
-    Object3D,
     Object3DKind,
     Object3DPipelineOutput,
     Object3DValidationError,
-    TensorShapeError,
 )
+from diffusers_3d.objects import Object3D, TensorShapeError
 
 
 class StructuralMesh:

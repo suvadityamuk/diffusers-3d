@@ -12,6 +12,14 @@ import numpy as np
 import pytest
 import torch
 import torch.nn.functional as F
+from _configs import tiny_config
+from _reference import (
+    ReferenceCheckoutError,
+    import_reference_dependency,
+    reference_unavailable,
+    validate_reference_checkout,
+)
+from moge.configs import tiny_moge2_config
 from PIL import Image
 
 from diffusers_3d import (
@@ -24,12 +32,7 @@ from diffusers_3d import (
     Pixal3DSparseStructureFlowModel,
     TrellisSparseTensor,
 )
-from diffusers_3d._reference import (
-    ReferenceCheckoutError,
-    import_reference_dependency,
-    reference_unavailable,
-    validate_reference_checkout,
-)
+from diffusers_3d.families.moge import MoGe2Model
 from diffusers_3d.families.pixal3d.conditioner import camera_distance_from_fov, front_view_camera
 from diffusers_3d.families.pixal3d.conversion import NAF_REFERENCE_REVISION, _naf_block_key, _rope_phases
 from diffusers_3d.families.pixal3d.pipeline import _STAGE_CONDITIONING
@@ -198,7 +201,7 @@ def _random_naf(reference_naf, model: Pixal3DNAFUpsampler, *, seed: int) -> torc
 
 
 def test_tiny_projected_flows_match_pinned_reference(reference):
-    config = Pixal3DSparseStructureFlowModel.tiny_config()
+    config = tiny_config(Pixal3DSparseStructureFlowModel)
     torch.manual_seed(0)
     reference_dense = reference.SparseStructureFlowModel(**config, image_attn_mode="proj").eval()
     _randomize_state(reference_dense, seed=1)
@@ -218,7 +221,7 @@ def test_tiny_projected_flows_match_pinned_reference(reference):
         actual = dense(latents, timesteps, context).sample
     torch.testing.assert_close(actual, expected, atol=1e-6, rtol=1e-5)
 
-    config = Pixal3DSLatFlowModel.tiny_config(texture=True)
+    config = tiny_config(Pixal3DSLatFlowModel, texture=True)
     torch.manual_seed(3)
     reference_sparse = reference.SLatFlowModel(**config, image_attn_mode="proj").eval()
     _randomize_state(reference_sparse, seed=4)
@@ -407,3 +410,59 @@ def test_multi_view_projection_conditioning_matches_pinned_reference(reference_n
     extractor = reference["DinoV3ProjMultiViewFeatureExtractor"]
     for stage, grid, cells in (("sparse_structure", 4, DENSE_CELLS), ("texture", 8, SPARSE_CELLS)):
         _assert_stage(pipeline, views, encoded, extractor, naf, stage, grid, cells, images, **inputs)
+
+
+def test_large_inputs_shrink_like_pinned_preprocess_image(reference):
+    """Upstream shrinks a longer side above 1024 px with RGBA LANCZOS before it crops the foreground."""
+
+    preprocess = _definitions(
+        "pixal3d/pipelines/pixal3d_image_to_3d.py",
+        {"preprocess_image"},
+        {"Image": Image, "np": np},
+        owner="Pixal3DImageTo3DPipeline",
+    )["preprocess_image"]
+    rgba = np.zeros((1537, 1100, 4), dtype=np.uint8)
+    rgba[..., :3] = np.random.default_rng(4).integers(0, 256, (1537, 1100, 3), dtype=np.uint8)
+    rgba[300:1300, 200:900, 3] = np.random.default_rng(5).integers(1, 256, (1000, 700), dtype=np.uint8)
+    rgba[500:1000, 400:700, 3] = 255
+    cropped = preprocess(object(), Image.fromarray(rgba))
+    views = tiny_pipeline().prepare_views(
+        ImageCondition(torch.from_numpy(rgba).permute(2, 0, 1).float() / 255),
+        image_sizes=(TINY_IMAGE_SIZE,),
+        camera_angle_x=0.6,
+    )
+    expected = np.asarray(cropped.resize((TINY_IMAGE_SIZE,) * 2, Image.Resampling.LANCZOS), dtype=np.float32) / 255
+    actual = views.images[TINY_IMAGE_SIZE][0, 0]
+    torch.testing.assert_close(actual, torch.from_numpy(expected).permute(2, 0, 1), atol=0.0, rtol=0.0)
+
+
+def test_field_of_view_is_estimated_like_pinned_inference(reference, tmp_path):
+    """Upstream crops with ``preprocess_image``, saves a PNG, and reads MoGe-2's normalized focal length on it."""
+
+    preprocess = _definitions(
+        "pixal3d/pipelines/pixal3d_image_to_3d.py",
+        {"preprocess_image"},
+        {"Image": Image, "np": np},
+        owner="Pixal3DImageTo3DPipeline",
+    )["preprocess_image"]
+    inference = _definitions(
+        "inference.py",
+        {"compute_f_pixels", "distance_from_fov", "get_camera_params_wild_moge"},
+        {"Image": Image, "np": np, "torch": torch, "math": math},
+    )
+    torch.manual_seed(5)
+    estimator = MoGe2Model(**tiny_moge2_config()).eval()
+    pipeline = tiny_pipeline()
+    pipeline.register_modules(depth_estimator=estimator)
+
+    rgba = np.zeros((47, 61, 4), dtype=np.uint8)
+    rgba[..., :3] = np.random.default_rng(9).integers(0, 256, (47, 61, 3), dtype=np.uint8)
+    rgba[6:40, 9:50, 3] = np.linspace(30, 255, 34 * 41).astype(np.uint8).reshape(34, 41)
+    preprocess(object(), Image.fromarray(rgba)).save(tmp_path / "preprocessed.png")
+    # Upstream's default float16 autocast only runs on CUDA; on CPU both sides run in float32.
+    float32_estimator = types.SimpleNamespace(infer=lambda image: estimator.infer(image, use_fp16=False))
+    expected = inference["get_camera_params_wild_moge"](tmp_path / "preprocessed.png", float32_estimator, device="cpu")
+    condition = ImageCondition(torch.from_numpy(rgba).permute(2, 0, 1).float() / 255)
+    actual = pipeline.estimate_camera_angle_x(condition)
+    # The pipeline keeps fields of view in float32.
+    assert torch.equal(actual, torch.tensor([expected["camera_angle_x"]]))

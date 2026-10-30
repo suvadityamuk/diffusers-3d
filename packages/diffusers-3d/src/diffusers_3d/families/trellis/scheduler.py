@@ -32,8 +32,19 @@ def _replace(reference: torch.Tensor | TrellisSparseTensor, value: torch.Tensor)
     return reference.replace(value) if isinstance(reference, TrellisSparseTensor) else value
 
 
+def _validate_pair(
+    left: torch.Tensor | TrellisSparseTensor, right: torch.Tensor | TrellisSparseTensor, *, names: str
+) -> None:
+    if isinstance(left, TrellisSparseTensor) != isinstance(right, TrellisSparseTensor):
+        raise TypeError(f"{names} must both be dense tensors or both be TrellisSparseTensor values")
+    if _features(left).shape != _features(right).shape:
+        raise ValueError(f"{names} must have identical feature shapes")
+    if isinstance(left, TrellisSparseTensor) and not torch.equal(left.coordinates, right.coordinates):
+        raise ValueError(f"{names} must have identical sparse coordinates")
+
+
 class TrellisFlowEulerScheduler(SchedulerMixin, ConfigMixin):
-    """Euler integration for TRELLIS's ``t=1`` noise to ``t=0`` data flow."""
+    """Euler integration for TRELLIS's ``t=1`` noise to ``t=0`` data flow, on dense or sparse latents."""
 
     order = 1
     init_noise_sigma = 1.0
@@ -106,6 +117,7 @@ class TrellisFlowEulerScheduler(SchedulerMixin, ConfigMixin):
         velocity: torch.Tensor | TrellisSparseTensor,
         timestep: torch.Tensor | float,
     ) -> torch.Tensor | TrellisSparseTensor:
+        _validate_pair(sample, velocity, names="sample and velocity")
         sample_features = _features(sample)
         velocity_features = _features(velocity)
         timestep = torch.as_tensor(timestep, device=sample_features.device, dtype=sample_features.dtype)
@@ -124,14 +136,9 @@ class TrellisFlowEulerScheduler(SchedulerMixin, ConfigMixin):
     ) -> TrellisFlowEulerSchedulerOutput | tuple[torch.Tensor | TrellisSparseTensor]:
         if self.num_inference_steps is None or self._step_index >= len(self.timesteps):
             raise ValueError("set_timesteps must be called before each denoising run")
+        _validate_pair(sample, model_output, names="sample and model_output")
         sample_features = _features(sample)
         output_features = _features(model_output)
-        if sample_features.shape != output_features.shape:
-            raise ValueError("model_output and sample must have identical shapes")
-        if isinstance(sample, TrellisSparseTensor) != isinstance(model_output, TrellisSparseTensor):
-            raise TypeError("sparse scheduler steps require sparse sample and model_output values")
-        if isinstance(sample, TrellisSparseTensor) and not torch.equal(sample.coordinates, model_output.coordinates):
-            raise ValueError("sparse scheduler steps require identical coordinates")
 
         current = self.timesteps[self._step_index].to(device=sample_features.device, dtype=sample_features.dtype)
         supplied = torch.as_tensor(timestep, device=sample_features.device, dtype=sample_features.dtype)

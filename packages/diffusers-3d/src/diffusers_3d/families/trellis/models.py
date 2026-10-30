@@ -14,6 +14,7 @@ import torch
 import torch.nn.functional as F
 from diffusers import ModelMixin  # noqa: F401 - required by external-component loading
 from diffusers.configuration_utils import register_to_config
+from diffusers.loaders import PeftAdapterMixin
 from diffusers.models.attention import AttentionModuleMixin
 from diffusers.models.attention_dispatch import dispatch_attention_fn
 from diffusers.models.embeddings import get_timestep_embedding
@@ -22,10 +23,7 @@ from diffusers.models.normalization import FP32LayerNorm
 from diffusers.utils import BaseOutput
 from torch import nn
 
-from ...execution.lora import Object3DPeftAdapterMixin
-from ...execution.metadata import ContributionStatus, ReviewStatus
 from ...execution.models import Object3DModel
-from ...objects import Object3DKind
 from .sparse import TrellisSparseTensor
 from .sparse_ops import SparseConv3d, sparse_downsample, sparse_upsample, submanifold_neighbors
 
@@ -42,6 +40,22 @@ class TrellisSLatFlowOutput(BaseOutput):
     """Structured-latent velocity prediction with unchanged sparse coordinates."""
 
     sample: TrellisSparseTensor
+
+
+_TORSO_MODULES = (nn.Linear, nn.Conv3d, SparseConv3d)
+
+
+def _half_torso(*modules: nn.Module) -> None:
+    """Upstream ``convert_module_to_f16``: only convolution and linear layers go to float16; norms stay float32."""
+
+    for module in modules:
+        for submodule in module.modules():
+            if isinstance(submodule, _TORSO_MODULES):
+                submodule.half()
+
+
+def _torso_dtype(blocks: nn.Module) -> torch.dtype:
+    return next(module.weight.dtype for module in blocks.modules() if isinstance(module, _TORSO_MODULES))
 
 
 class TrellisLayerNorm32(FP32LayerNorm):
@@ -416,15 +430,8 @@ def _initialize_flow_weights(model: nn.Module) -> None:
     nn.init.constant_(model.out_layer.bias, 0)
 
 
-class TrellisSparseStructureFlowModel(Object3DModel, Object3DPeftAdapterMixin):
+class TrellisSparseStructureFlowModel(Object3DModel, PeftAdapterMixin):
     """TRELLIS sparse-structure flow transformer over the dense occupancy latent (``SparseStructureFlowModel``)."""
-
-    family_id = "trellis"
-    component_role = "sparse_structure_flow_model"
-    supported_object_kinds = (Object3DKind.SPARSE_VOXEL,)
-    required_backends = ()
-    contribution_status = ContributionStatus.REVIEWED_PACKAGE
-    review_status = ReviewStatus.REVIEWED
 
     _supports_gradient_checkpointing = True
     _no_split_modules = ["TrellisModulatedTransformerCrossBlock"]
@@ -507,41 +514,7 @@ class TrellisSparseStructureFlowModel(Object3DModel, Object3DPeftAdapterMixin):
         self.out_layer = nn.Linear(model_channels, out_channels * patch_size**3)
         _initialize_flow_weights(self)
         if use_fp16:
-            self.blocks.to(dtype=torch.float16)
-
-    @classmethod
-    def production_config(cls) -> dict[str, Any]:
-        return {
-            "resolution": 16,
-            "in_channels": 8,
-            "out_channels": 8,
-            "model_channels": 1024,
-            "cond_channels": 1024,
-            "num_blocks": 24,
-            "num_heads": 16,
-            "mlp_ratio": 4,
-            "patch_size": 1,
-            "pe_mode": "ape",
-            "qk_rms_norm": True,
-            "use_fp16": True,
-        }
-
-    @classmethod
-    def tiny_config(cls) -> dict[str, Any]:
-        return {
-            "resolution": 4,
-            "in_channels": 2,
-            "out_channels": 2,
-            "model_channels": 16,
-            "cond_channels": 12,
-            "num_blocks": 2,
-            "num_heads": 4,
-            "mlp_ratio": 2,
-            "patch_size": 2,
-            "pe_mode": "ape",
-            "qk_rms_norm": True,
-            "use_fp16": False,
-        }
+            _half_torso(self.blocks)
 
     def forward(
         self,
@@ -574,7 +547,7 @@ class TrellisSparseStructureFlowModel(Object3DModel, Object3DPeftAdapterMixin):
         modulation = self.t_embedder(timestep)
         if self.share_mod:
             modulation = self.adaLN_modulation(modulation)
-        inner_dtype = get_parameter_dtype(self.blocks)
+        inner_dtype = _torso_dtype(self.blocks)
         hidden_states = hidden_states.to(dtype=inner_dtype)
         modulation = modulation.to(dtype=inner_dtype)
         encoder_hidden_states = encoder_hidden_states.to(dtype=inner_dtype)
@@ -597,7 +570,7 @@ class TrellisSparseStructureFlowModel(Object3DModel, Object3DPeftAdapterMixin):
         return TrellisSparseStructureFlowOutput(sample=hidden_states)
 
 
-class TrellisSLatFlowModel(Object3DModel, Object3DPeftAdapterMixin):
+class TrellisSLatFlowModel(Object3DModel, PeftAdapterMixin):
     """TRELLIS structured-latent flow transformer with its sparse-convolution IO stages.
 
     Released ``SLatFlowModel`` layout: a linear input layer, ``num_io_res_blocks`` residual blocks per
@@ -605,13 +578,6 @@ class TrellisSLatFlowModel(Object3DModel, Object3DPeftAdapterMixin):
     resolution, and mirrored upsampling blocks with skip connections. ``io_block_channels=None`` gives the
     IO-free core used by the tiny tests.
     """
-
-    family_id = "trellis"
-    component_role = "slat-denoiser"
-    supported_object_kinds = (Object3DKind.SPARSE_VOXEL,)
-    required_backends = ()
-    contribution_status = ContributionStatus.REVIEWED_PACKAGE
-    review_status = ReviewStatus.REVIEWED
 
     _supports_gradient_checkpointing = True
     _no_split_modules = ["TrellisModulatedTransformerCrossBlock", "TrellisSparseResBlock3d"]
@@ -715,9 +681,7 @@ class TrellisSLatFlowModel(Object3DModel, Object3DPeftAdapterMixin):
         self.out_layer = nn.Linear(io_width, out_channels)
         _initialize_flow_weights(self)
         if use_fp16:
-            self.input_blocks.to(dtype=torch.float16)
-            self.blocks.to(dtype=torch.float16)
-            self.out_blocks.to(dtype=torch.float16)
+            _half_torso(self.input_blocks, self.blocks, self.out_blocks)
 
     @classmethod
     def production_config(cls) -> dict[str, Any]:
@@ -736,38 +700,6 @@ class TrellisSLatFlowModel(Object3DModel, Object3DPeftAdapterMixin):
             "pe_mode": "ape",
             "qk_rms_norm": True,
             "use_fp16": True,
-        }
-
-    @classmethod
-    def small_config(cls) -> dict[str, Any]:
-        """Production layout at toy width: exercises the IO stages, pooling, and skip connections on CPU."""
-
-        return {
-            **cls.tiny_config(),
-            "resolution": 8,
-            "model_channels": 16,
-            "patch_size": 2,
-            "num_io_res_blocks": 2,
-            "io_block_channels": [8],
-        }
-
-    @classmethod
-    def tiny_config(cls) -> dict[str, Any]:
-        return {
-            "resolution": 8,
-            "in_channels": 4,
-            "out_channels": 4,
-            "model_channels": 16,
-            "cond_channels": 12,
-            "num_blocks": 2,
-            "num_heads": 4,
-            "mlp_ratio": 2,
-            "patch_size": 1,
-            "num_io_res_blocks": 0,
-            "io_block_channels": None,
-            "pe_mode": "ape",
-            "qk_rms_norm": True,
-            "use_fp16": False,
         }
 
     def forward(
@@ -796,7 +728,7 @@ class TrellisSLatFlowModel(Object3DModel, Object3DPeftAdapterMixin):
             raise ValueError("timestep must be scalar or contain one value per batch item")
 
         output_dtype = hidden_states.dtype
-        inner_dtype = get_parameter_dtype(self.blocks)
+        inner_dtype = _torso_dtype(self.blocks)
         features = self.input_layer(hidden_states.features).to(dtype=inner_dtype)
         modulation = self.t_embedder(timestep)
         if self.share_mod:

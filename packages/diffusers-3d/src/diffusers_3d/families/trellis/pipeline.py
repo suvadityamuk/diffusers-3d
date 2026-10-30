@@ -8,25 +8,22 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
+from typing import Any
 
 import torch
 import torch.nn.functional as F
 from diffusers.utils.torch_utils import randn_tensor
 from transformers import CLIPTextModel, CLIPTokenizer, Dinov2WithRegistersModel
-from transformers.image_utils import IMAGENET_DEFAULT_MEAN, IMAGENET_DEFAULT_STD
 
-from ...data import ImageCondition, TextCondition, preprocess_image_condition
+from ...data import ImageInput, TextCondition, preprocess_image_condition
+from ...data.background import BackgroundRemoval, RembgBackgroundRemover, downscale_longest_side, lacks_alpha
+from ...data.image_processing import normalize_imagenet
 from ...execution.lora import Object3DLoraLoaderMixin
-from ...execution.metadata import ContributionStatus, Object3DComponentSpec, ReviewStatus, fully_qualified_class_name
-from ...execution.pipelines import Object3DPipeline
+from ...execution.pipelines import ExternalComponent, Object3DPipeline
 from ...objects import (
-    GaussianSplatAsset,
     Latent3DOutput,
-    MeshAsset,
     Object3D,
-    Object3DKind,
     Object3DPipelineOutput,
-    RadianceFieldAsset,
     SparseVoxelAsset,
 )
 from .decoders import (
@@ -39,16 +36,22 @@ from .models import TrellisSLatFlowModel, TrellisSparseStructureFlowModel
 from .scheduler import TrellisFlowEulerScheduler
 from .sparse import TrellisSparseTensor
 
+# The encoders upstream conditions on, at pinned revisions. The DINOv2 weights equal torch.hub's ``dinov2_vitl14_reg``
+# tensor for tensor; upstream loads the CLIP checkpoint from the Hub itself.
+DINOV2_REPO, DINOV2_REVISION = "facebook/dinov2-with-registers-large", "e4c89a4e05589de9b3e188688a303d0f3c04d0f3"
+CLIP_REPO, CLIP_REVISION = "openai/clip-vit-large-patch14", "32bd64288804d66eefd0ccbe215aa642df71cc41"
 
-def _component_spec(name: str, component_type: type, *, optional: bool = False) -> Object3DComponentSpec:
-    return Object3DComponentSpec(
-        name=name,
-        expected_class=fully_qualified_class_name(component_type),
-        subfolder=name,
-        optional=optional,
-        review_status=ReviewStatus.REVIEWED,
-        loading_eligible=True,
-    )
+
+def _encoder(model_type: type[Any]):
+    def load(repository: str, *, revision: str, dtype: torch.dtype | None = None, **hub_kwargs: Any) -> Any:
+        model = model_type.from_pretrained(repository, revision=revision, dtype=dtype or torch.float32, **hub_kwargs)
+        return model.eval()
+
+    return load
+
+
+def _tokenizer(repository: str, *, revision: str, dtype: torch.dtype | None = None, **hub_kwargs: Any) -> Any:
+    return CLIPTokenizer.from_pretrained(repository, revision=revision, **hub_kwargs)
 
 
 class _TrellisTwoStagePipeline(Object3DPipeline, Object3DLoraLoaderMixin):
@@ -59,28 +62,6 @@ class _TrellisTwoStagePipeline(Object3DPipeline, Object3DLoraLoaderMixin):
     runs in plain PyTorch.
     """
 
-    family_id = "trellis"
-    output_object_types = (SparseVoxelAsset, GaussianSplatAsset, MeshAsset, RadianceFieldAsset)
-    output_representations = ("sparse-structure", "slat", "gaussian-splat", "mesh", "radiance-field")
-    object_kinds = (
-        Object3DKind.SPARSE_VOXEL,
-        Object3DKind.GAUSSIAN_SPLAT,
-        Object3DKind.MESH,
-        Object3DKind.RADIANCE_FIELD,
-    )
-    required_backends = ()
-    contribution_status = ContributionStatus.REVIEWED_PACKAGE
-    review_status = ReviewStatus.REVIEWED
-    _shared_component_specs = (
-        _component_spec("sparse_structure_flow_model", TrellisSparseStructureFlowModel),
-        _component_spec("sparse_structure_decoder", TrellisSparseStructureDecoder),
-        _component_spec("sparse_structure_scheduler", TrellisFlowEulerScheduler),
-        _component_spec("slat_flow_model", TrellisSLatFlowModel, optional=True),
-        _component_spec("slat_scheduler", TrellisFlowEulerScheduler, optional=True),
-        _component_spec("gaussian_decoder", TrellisSLatGaussianDecoder, optional=True),
-        _component_spec("mesh_decoder", TrellisSLatMeshDecoder, optional=True),
-        _component_spec("radiance_field_decoder", TrellisSLatRadianceFieldDecoder, optional=True),
-    )
     _model_cpu_offload_seq = (
         "sparse_structure_flow_model->sparse_structure_decoder->slat_flow_model"
         "->gaussian_decoder->mesh_decoder->radiance_field_decoder"
@@ -155,6 +136,14 @@ class _TrellisTwoStagePipeline(Object3DPipeline, Object3DLoraLoaderMixin):
             slat_std=None if slat_std is None else [float(value) for value in slat_std],
         )
 
+    def _randn(
+        self, shape: tuple[int, ...], generator: torch.Generator | list[torch.Generator] | None, dtype: torch.dtype
+    ) -> torch.Tensor:
+        # Upstream draws float32 noise from the CPU RNG and then moves it, so ``torch.manual_seed`` reproduces it.
+        device = torch.device("cpu") if generator is None else self._execution_device
+        noise = randn_tensor(shape, generator=generator, device=device, dtype=torch.float32)
+        return noise.to(device=self._execution_device, dtype=dtype)
+
     def prepare_sparse_structure_latents(
         self,
         batch_size: int,
@@ -174,7 +163,7 @@ class _TrellisTwoStagePipeline(Object3DPipeline, Object3DLoraLoaderMixin):
         if isinstance(generator, list) and len(generator) != batch_size:
             raise ValueError("a generator list must contain one generator per batch item")
         if latents is None:
-            return randn_tensor(shape, generator=generator, device=self._execution_device, dtype=parameter.dtype)
+            return self._randn(shape, generator, parameter.dtype)
         if not isinstance(latents, torch.Tensor) or tuple(latents.shape) != shape:
             raise ValueError(f"sparse-structure latents must have shape {shape}")
         return latents.to(device=self._execution_device, dtype=parameter.dtype)
@@ -257,21 +246,11 @@ class _TrellisTwoStagePipeline(Object3DPipeline, Object3DLoraLoaderMixin):
             for batch_index, item_generator in enumerate(generator):
                 count = int((coordinates[:, 0] == batch_index).sum())
                 feature_parts.append(
-                    randn_tensor(
-                        (count, expected_channels),
-                        generator=item_generator,
-                        device=self._execution_device,
-                        dtype=self.slat_flow_model.dtype,
-                    )
+                    self._randn((count, expected_channels), item_generator, self.slat_flow_model.dtype)
                 )
             features = torch.cat(feature_parts)
         else:
-            features = randn_tensor(
-                (coordinates.shape[0], expected_channels),
-                generator=generator,
-                device=self._execution_device,
-                dtype=self.slat_flow_model.dtype,
-            )
+            features = self._randn((coordinates.shape[0], expected_channels), generator, self.slat_flow_model.dtype)
         return TrellisSparseTensor(coordinates.to(device=features.device), features)
 
     def sample_slat(
@@ -362,6 +341,9 @@ class _TrellisTwoStagePipeline(Object3DPipeline, Object3DLoraLoaderMixin):
         for name, decoder in decoders.items():
             if name in formats and decoder is None:
                 raise RuntimeError(f"format '{name}' requires {name}_decoder")
+        if generator is None:
+            # Upstream ``run`` seeds the global RNGs with its default seed, 42, right before sampling.
+            torch.manual_seed(42)
         sparse_structure_latents = self.prepare_sparse_structure_latents(
             conditional.shape[0], generator=generator, latents=sparse_structure_latents
         )
@@ -393,7 +375,7 @@ class _TrellisTwoStagePipeline(Object3DPipeline, Object3DLoraLoaderMixin):
             objects.extend(self.decode_slat(slat, formats=formats))
         latent_output = (
             Latent3DOutput(
-                latents=sparse_structure_latents, metadata={"family": self.family_id, "stage": "sparse_structure"}
+                latents=sparse_structure_latents, metadata={"family": "trellis", "stage": "sparse_structure"}
             )
             if return_latents
             else None
@@ -407,11 +389,11 @@ class _TrellisTwoStagePipeline(Object3DPipeline, Object3DLoraLoaderMixin):
 class TrellisImageTo3DPipeline(_TrellisTwoStagePipeline):
     """TRELLIS image-to-3D: DINOv2 image tokens condition the sparse-structure and SLAT flows."""
 
-    task_ids = ("image-to-3d",)
-    component_specs = (
-        _component_spec("image_encoder", Dinov2WithRegistersModel),
-        *_TrellisTwoStagePipeline._shared_component_specs,
-    )
+    # Upstream cuts out inputs without usable alpha with rembg (u2net) after shrinking them to at most 1024 px.
+    background_removal = BackgroundRemoval(RembgBackgroundRemover, trigger=lacks_alpha, resize=downscale_longest_side)
+    external_components = {
+        "image_encoder": ExternalComponent(DINOV2_REPO, DINOV2_REVISION, _encoder(Dinov2WithRegistersModel))
+    }
     model_cpu_offload_seq = "image_encoder->" + _TrellisTwoStagePipeline._model_cpu_offload_seq
 
     def __init__(
@@ -443,24 +425,10 @@ class TrellisImageTo3DPipeline(_TrellisTwoStagePipeline):
         )
         self.register_modules(image_encoder=image_encoder)
 
-    def preprocess(self, image: ImageCondition | Sequence[ImageCondition] | torch.Tensor) -> torch.Tensor:
+    def preprocess(self, image: ImageInput | list[ImageInput]) -> torch.Tensor:
         """Apply pinned foreground recentering without implicit background removal."""
 
-        if isinstance(image, torch.Tensor):
-            if image.ndim == 3:
-                conditions = (ImageCondition(image=image),)
-            elif image.ndim == 4:
-                conditions = tuple(ImageCondition(image=item) for item in image)
-            else:
-                raise ValueError("image tensor must have shape (channels, height, width) or be batched")
-        elif type(image) is ImageCondition:
-            conditions = (image,)
-        elif isinstance(image, Sequence) and not isinstance(image, (str, bytes)):
-            conditions = tuple(image)
-            if not conditions or any(type(condition) is not ImageCondition for condition in conditions):
-                raise TypeError("image sequences must contain exact ImageCondition values")
-        else:
-            raise TypeError("image must be an ImageCondition, a sequence of ImageCondition values, or a tensor")
+        conditions = self.image_conditions(image)
 
         processed = [
             preprocess_image_condition(
@@ -477,17 +445,17 @@ class TrellisImageTo3DPipeline(_TrellisTwoStagePipeline):
         images = images.to(device=self.image_encoder.device, dtype=self.image_encoder.dtype)
         if images.shape[-2:] != (size, size):
             images = F.interpolate(images, size=(size, size), mode="bilinear", align_corners=False, antialias=True)
-        mean = torch.tensor(IMAGENET_DEFAULT_MEAN).reshape(1, 3, 1, 1).to(images)
-        std = torch.tensor(IMAGENET_DEFAULT_STD).reshape(1, 3, 1, 1).to(images)
         # TRELLIS takes the class, register, and patch tokens before DINOv2's learned output norm.
-        hidden_states = self.image_encoder(pixel_values=(images - mean) / std, output_hidden_states=True).hidden_states
+        hidden_states = self.image_encoder(
+            pixel_values=normalize_imagenet(images), output_hidden_states=True
+        ).hidden_states
         conditional = F.layer_norm(hidden_states[-1], hidden_states[-1].shape[-1:])
         return conditional, torch.zeros_like(conditional)
 
     @torch.no_grad()
     def __call__(
         self,
-        image: ImageCondition | Sequence[ImageCondition] | torch.Tensor,
+        image: ImageInput | list[ImageInput],
         *,
         formats: tuple[str, ...] | list[str] | None = None,
         sparse_structure_num_inference_steps: int = 25,
@@ -529,13 +497,11 @@ class TrellisTextTo3DPipeline(_TrellisTwoStagePipeline):
     :class:`TextCondition` replaces it for that batch item.
     """
 
-    task_ids = ("text-to-3d",)
-    component_specs = (
-        _component_spec("text_encoder", CLIPTextModel),
-        _component_spec("tokenizer", CLIPTokenizer),
-        *_TrellisTwoStagePipeline._shared_component_specs,
-    )
     model_cpu_offload_seq = "text_encoder->" + _TrellisTwoStagePipeline._model_cpu_offload_seq
+    external_components = {
+        "text_encoder": ExternalComponent(CLIP_REPO, CLIP_REVISION, _encoder(CLIPTextModel)),
+        "tokenizer": ExternalComponent(CLIP_REPO, CLIP_REVISION, _tokenizer),
+    }
 
     def __init__(
         self,

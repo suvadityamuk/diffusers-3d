@@ -11,8 +11,8 @@ from diffusers_3d import (
     RadianceFieldAsset,
     SparseVoxelAsset,
     TrellisImageTo3DPipeline,
-    preprocess_image_condition,
 )
+from diffusers_3d.data import preprocess_image_condition
 
 pytestmark = pytest.mark.integration
 
@@ -50,8 +50,11 @@ def test_portable_sparse_structure_pipeline_is_deterministic(tiny_trellis_pipeli
     torch.testing.assert_close(first.latents.latents, second.latents.latents)
 
 
-def test_pipeline_save_load_auto_and_optional_components(tmp_path, tiny_trellis_pipeline):
+def test_pipeline_save_load_auto_and_optional_components(tmp_path, tiny_trellis_pipeline, local_external_components):
     tiny_trellis_pipeline.save_pretrained(tmp_path)
+    # DINOv2 is never redistributed: loading fetches it from its own repository.
+    assert not (tmp_path / "image_encoder").exists()
+    calls = local_external_components(TrellisImageTo3DPipeline, image_encoder=tiny_trellis_pipeline.image_encoder)
     loaded = TrellisImageTo3DPipeline.from_pretrained(tmp_path, local_files_only=True)
     automatic = AutoPipelineForImageTo3D.from_pretrained(tmp_path, local_files_only=True)
     assert type(loaded) is TrellisImageTo3DPipeline
@@ -63,6 +66,7 @@ def test_pipeline_save_load_auto_and_optional_components(tmp_path, tiny_trellis_
     assert loaded.radiance_field_decoder is None
     assert loaded.config.slat_mean is None
     assert automatic.config.slat_std is None
+    assert [name for name, *_ in calls] == ["image_encoder", "image_encoder"]
 
 
 def test_portable_full_attention_slat_and_gaussian_paths(tiny_trellis_full_pipeline):
@@ -106,3 +110,19 @@ def test_pipeline_rejects_unavailable_requested_formats(tiny_trellis_pipeline):
         tiny_trellis_pipeline(torch.zeros(3, 8, 8), formats=("radiance_field",))
     with pytest.raises(ValueError, match="unique"):
         tiny_trellis_pipeline(torch.zeros(3, 8, 8), formats=("nerf",))
+
+
+def test_default_generator_is_upstream_seed_42(tiny_trellis_full_pipeline):
+    kwargs = {
+        "formats": ("slat", "gaussian"),
+        "sparse_structure_num_inference_steps": 2,
+        "slat_num_inference_steps": 2,
+    }
+    image = torch.zeros(3, 8, 8)
+    torch.manual_seed(7)
+    default = tiny_trellis_full_pipeline(image, **kwargs)
+    seeded = tiny_trellis_full_pipeline(image, generator=torch.Generator().manual_seed(42), **kwargs)
+    torch.testing.assert_close(default.latents.latents, seeded.latents.latents, atol=0.0, rtol=0.0)
+    torch.testing.assert_close(default.objects[0].features, seeded.objects[0].features, atol=0.0, rtol=0.0)
+    # Upstream writes splats with ``save_ply``'s default transform and meshes with ``to_glb``'s.
+    assert default.objects[1].metadata["export_rotation"] == [[1.0, 0.0, 0.0], [0.0, 0.0, -1.0], [0.0, 1.0, 0.0]]

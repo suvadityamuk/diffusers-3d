@@ -8,33 +8,43 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
+from functools import partial
 from typing import Any
 
+import numpy as np
 import torch
 import torch.nn.functional as F
 from diffusers.utils.torch_utils import randn_tensor
+from PIL import Image
 from transformers import DINOv3ViTModel
-from transformers.image_utils import IMAGENET_DEFAULT_MEAN, IMAGENET_DEFAULT_STD
 
-from ...backends import Trellis2PBRPostprocessFacade, ovoxel_to_mesh
-from ...data import ImageCondition, preprocess_image_condition
+from ...backends import ovoxel_to_mesh, textured_mesh_from_ovoxel
+from ...data import ImageCondition, ImageInput, preprocess_image_condition
+from ...data.background import BackgroundRemoval, downscale_longest_side, lacks_alpha
+from ...data.birefnet import RMBG2_REPO, RMBG2_REVISION, BiRefNetBackgroundRemover
+from ...data.image_processing import _quantized_rgba, normalize_imagenet
 from ...execution.lora import Object3DLoraLoaderMixin
-from ...execution.metadata import ContributionStatus, Object3DComponentSpec, ReviewStatus, fully_qualified_class_name
-from ...execution.pipelines import Object3DPipeline
+from ...execution.pipelines import ExternalComponent, Object3DPipeline
 from ...objects import (
+    CameraRig,
     Latent3DOutput,
     MeshAsset,
     Object3D,
-    Object3DKind,
     Object3DPipelineOutput,
     OVoxelAsset,
     SparseVoxelAsset,
 )
 from ..trellis.sparse import TrellisSparseTensor, trellis_grid_transform
 from .decoders import Trellis2PBRSparseDecoder, Trellis2ShapeDualGridDecoder, Trellis2SparseStructureDecoder
-from .models import Trellis2SLatFlowModel, Trellis2SparseStructureFlowModel
+from .models import (
+    DINOV3_REVISIONS,
+    DINOV3_VITL16_REPO,
+    Trellis2SLatFlowModel,
+    Trellis2SparseStructureFlowModel,
+    load_dinov3,
+)
 from .scheduler import Trellis2FlowEulerScheduler
 
 _SPARSE_SAMPLER_DEFAULTS = {
@@ -86,15 +96,85 @@ _STAGE_IMAGE_SCALE = {"512": 1, "1024": 2}
 _UPSTREAM_CASCADE_STEP = 128
 
 
-def _component_spec(name: str, component_type: type, *, optional: bool = False) -> Object3DComponentSpec:
-    return Object3DComponentSpec(
-        name=name,
-        expected_class=fully_qualified_class_name(component_type),
-        subfolder=name,
-        optional=optional,
-        review_status=ReviewStatus.REVIEWED,
-        loading_eligible=True,
-    )
+# Released components TRELLIS.2 and Pixal3D use unchanged from Microsoft's TRELLIS releases (byte-identical files).
+TRELLIS_IMAGE_LARGE_REPO = "microsoft/TRELLIS-image-large"
+TRELLIS_IMAGE_LARGE_REVISION = "25e0d31ffbebe4b5a97464dd851910efc3002d96"
+TRELLIS2_REPO = "microsoft/TRELLIS.2-4B"
+TRELLIS2_REVISION = "af44b45f2e35a493886929c6d786e563ec68364d"
+RELEASED_STEMS = {
+    "sparse_structure_decoder": "ckpts/ss_dec_conv3d_16l8_fp16",
+    "shape_slat_decoder": "ckpts/shape_dec_next_dc_f16c32_fp16",
+    "pbr_decoder": "ckpts/tex_dec_next_dc_f16c32_fp16",
+}
+# Released ``pipeline.json`` model keys of those components.
+RELEASED_KEYS = {
+    "sparse_structure_decoder": "sparse_structure_decoder",
+    "shape_slat_decoder": "shape_slat_decoder",
+    "pbr_decoder": "tex_slat_decoder",
+}
+
+
+def load_released_component(
+    repository: str,
+    *,
+    revision: str | None = None,
+    dtype: torch.dtype | None = None,
+    name: str,
+    family: str = "trellis2",
+    **hub_kwargs: Any,
+):
+    """Download a released TRELLIS-layout component (``ckpts/<stem>.json`` and ``.safetensors``) and convert it on
+    load with the ``family`` converter (``"trellis2"`` or ``"pixal3d"``), so its tensors equal a converted folder's."""
+
+    import tempfile
+    from pathlib import Path
+
+    from huggingface_hub import hf_hub_download
+
+    names = ("token", "cache_dir", "local_files_only", "force_download")
+    download = {key: hub_kwargs[key] for key in names if hub_kwargs.get(key) is not None}
+    stem = RELEASED_STEMS[name]
+    paths = [
+        hf_hub_download(repository, stem + suffix, revision=revision, **download)
+        for suffix in (".json", ".safetensors")
+    ]
+    source = Path(paths[0]).with_suffix("")
+    if family == "pixal3d":
+        from ..pixal3d.conversion import _save_component as save
+    else:
+        from .conversion import _save_released_component as save
+    with tempfile.TemporaryDirectory(prefix="trellis2-component-") as directory:
+        model_type, _ = save(RELEASED_KEYS[name], source, Path(directory), safe_serialization=True)
+        # The default loading path, exactly as a pipeline loads a converted folder.
+        model = model_type.from_pretrained(directory, dtype=dtype)
+    return model.eval()
+
+
+def shrink_image_condition(condition: ImageCondition, max_size: int = 1024) -> ImageCondition:
+    """Shrink an image whose longer side exceeds ``max_size``, as upstream ``preprocess_image`` does before cropping.
+
+    The quantized RGBA image (alpha times the mask) is resized to ``int(side * max_size / longer side)`` with Pillow's
+    LANCZOS, which resamples RGBA premultiplied; a camera's intrinsics are scaled to the new size.
+    """
+
+    height, width = condition.image.shape[-2:]
+    scale = min(1, max_size / max(height, width))
+    if scale >= 1:
+        return condition
+    size = (int(width * scale), int(height * scale))
+    resized = np.asarray(Image.fromarray(_quantized_rgba(condition)[1], "RGBA").resize(size, Image.Resampling.LANCZOS))
+    image = torch.from_numpy(resized.copy()).permute(2, 0, 1).to(condition.image).div(255)
+    camera = condition.camera
+    if camera is not None:
+        resize = camera.intrinsics.new_tensor([size[0] / width, size[1] / height, 1.0]).diag()
+        camera = CameraRig(
+            world_to_camera=camera.world_to_camera,
+            intrinsics=resize @ camera.intrinsics,
+            image_sizes=camera.image_sizes.new_tensor([[size[1], size[0]]]),
+            coordinate_system=camera.coordinate_system,
+            metadata=camera.metadata,
+        )
+    return ImageCondition(image=image, camera=camera)
 
 
 def _sampler_parameters(defaults: Mapping[str, Any], overrides: Mapping[str, Any] | None) -> dict[str, Any]:
@@ -130,30 +210,29 @@ class Trellis2ImageTo3DPipeline(Object3DPipeline, Object3DLoraLoaderMixin):
     the cascades sample the 512 shape model, grow its coordinates with the shape decoder, and sample the 1024
     models on the grown grid. ``shape_slat_flow_model`` / ``texture_slat_flow_model`` are the 512 models and the
     ``*_1024`` components the 1024 ones. Only the textured-mesh postprocess needs CuMesh.
+
+    The DINOv3 ``image_encoder`` and the background remover's RMBG-2.0 weights are gated third-party weights: they
+    load from their own repositories (accept their licenses on the Hub and log in first) and are never saved with
+    the pipeline. The ``sparse_structure_decoder`` is TRELLIS-image-large's and likewise loads from that repository.
     """
 
-    family_id = "trellis2"
-    task_ids = ("image-to-3d",)
-    output_object_types = (SparseVoxelAsset, OVoxelAsset, MeshAsset)
-    output_representations = ("sparse-structure", "slat", "o-voxel", "mesh")
-    object_kinds = (Object3DKind.SPARSE_VOXEL, Object3DKind.O_VOXEL, Object3DKind.MESH)
-    required_backends = ()
-    contribution_status = ContributionStatus.REVIEWED_PACKAGE
-    review_status = ReviewStatus.REVIEWED
-    component_specs = (
-        _component_spec("image_encoder", DINOv3ViTModel),
-        _component_spec("sparse_structure_flow_model", Trellis2SparseStructureFlowModel),
-        _component_spec("sparse_structure_decoder", Trellis2SparseStructureDecoder),
-        _component_spec("sparse_structure_scheduler", Trellis2FlowEulerScheduler),
-        _component_spec("shape_slat_flow_model", Trellis2SLatFlowModel, optional=True),
-        _component_spec("shape_slat_flow_model_1024", Trellis2SLatFlowModel, optional=True),
-        _component_spec("shape_slat_scheduler", Trellis2FlowEulerScheduler, optional=True),
-        _component_spec("shape_slat_decoder", Trellis2ShapeDualGridDecoder, optional=True),
-        _component_spec("texture_slat_flow_model", Trellis2SLatFlowModel, optional=True),
-        _component_spec("texture_slat_flow_model_1024", Trellis2SLatFlowModel, optional=True),
-        _component_spec("texture_slat_scheduler", Trellis2FlowEulerScheduler, optional=True),
-        _component_spec("pbr_decoder", Trellis2PBRSparseDecoder, optional=True),
+    # As upstream: inputs without usable alpha are shrunk to at most 1024 px in their own mode and cut out with
+    # BiRefNet using briaai/RMBG-2.0 weights (gated, non-commercial).
+    background_removal = BackgroundRemoval(
+        partial(BiRefNetBackgroundRemover, resize="pil", repository=RMBG2_REPO, revision=RMBG2_REVISION),
+        trigger=lacks_alpha,
+        resize=downscale_longest_side,
+        resize_in_source_mode=True,
     )
+    # TRELLIS.2 reuses TRELLIS-image-large's sparse-structure decoder, which loads (and converts) from there.
+    external_components = {
+        "image_encoder": ExternalComponent(DINOV3_VITL16_REPO, DINOV3_REVISIONS[DINOV3_VITL16_REPO], load_dinov3),
+        "sparse_structure_decoder": ExternalComponent(
+            TRELLIS_IMAGE_LARGE_REPO,
+            TRELLIS_IMAGE_LARGE_REVISION,
+            partial(load_released_component, name="sparse_structure_decoder"),
+        ),
+    }
     model_cpu_offload_seq = (
         "image_encoder->sparse_structure_flow_model->sparse_structure_decoder->"
         "shape_slat_flow_model->shape_slat_flow_model_1024->shape_slat_decoder->"
@@ -316,24 +395,8 @@ class Trellis2ImageTo3DPipeline(Object3DPipeline, Object3DLoraLoaderMixin):
     def _stage_image_size(self, stage: str) -> int:
         return self.config.image_size * _STAGE_IMAGE_SCALE[stage]
 
-    def preprocess(
-        self, image: ImageCondition | Sequence[ImageCondition] | torch.Tensor, *, image_size: int | None = None
-    ) -> torch.Tensor:
-        if isinstance(image, torch.Tensor):
-            if image.ndim == 3:
-                conditions = (ImageCondition(image=image),)
-            elif image.ndim == 4:
-                conditions = tuple(ImageCondition(image=value) for value in image)
-            else:
-                raise ValueError("image tensor must have shape (channels, height, width) or be batched")
-        elif type(image) is ImageCondition:
-            conditions = (image,)
-        elif isinstance(image, Sequence) and not isinstance(image, (str, bytes)):
-            conditions = tuple(image)
-            if not conditions or any(type(condition) is not ImageCondition for condition in conditions):
-                raise TypeError("image sequences must contain exact ImageCondition values")
-        else:
-            raise TypeError("image must be an ImageCondition, sequence of ImageCondition values, or tensor")
+    def preprocess(self, image: ImageInput | list[ImageInput], *, image_size: int | None = None) -> torch.Tensor:
+        conditions = [shrink_image_condition(condition) for condition in self.image_conditions(image)]
         image_size = self.config.image_size if image_size is None else image_size
         processed = [
             preprocess_image_condition(
@@ -352,9 +415,7 @@ class Trellis2ImageTo3DPipeline(Object3DPipeline, Object3DLoraLoaderMixin):
             images = F.interpolate(
                 images, size=(image_size, image_size), mode="bilinear", align_corners=False, antialias=True
             )
-        mean = torch.tensor(IMAGENET_DEFAULT_MEAN).reshape(1, 3, 1, 1).to(images)
-        std = torch.tensor(IMAGENET_DEFAULT_STD).reshape(1, 3, 1, 1).to(images)
-        output = self.image_encoder(pixel_values=(images - mean) / std, output_hidden_states=True)
+        output = self.image_encoder(pixel_values=normalize_imagenet(images), output_hidden_states=True)
         return F.layer_norm(output.hidden_states[-1], output.hidden_states[-1].shape[-1:])
 
     def encode_conditioning(
@@ -626,7 +687,7 @@ class Trellis2ImageTo3DPipeline(Object3DPipeline, Object3DLoraLoaderMixin):
         asset: OVoxelAsset,
         *,
         output_format: str,
-        pbr_postprocess: Trellis2PBRPostprocessFacade | None = None,
+        texturer: Callable[..., MeshAsset] = textured_mesh_from_ovoxel,
         **kwargs: Any,
     ) -> MeshAsset:
         """Mesh an O-Voxel (``"mesh"``) or bake it into a PBR-textured mesh (``"textured_mesh"``, needs CuMesh)."""
@@ -634,8 +695,7 @@ class Trellis2ImageTo3DPipeline(Object3DPipeline, Object3DLoraLoaderMixin):
         if output_format == "mesh":
             return ovoxel_to_mesh(asset)
         if output_format == "textured_mesh":
-            facade = Trellis2PBRPostprocessFacade() if pbr_postprocess is None else pbr_postprocess
-            return facade.to_textured_mesh(asset, **kwargs)
+            return texturer(asset, **kwargs)
         raise ValueError("output_format must be 'mesh' or 'textured_mesh'")
 
     def _require_stage_components(self, preset: _PipelineType, *, needs_texture: bool) -> None:
@@ -651,7 +711,7 @@ class Trellis2ImageTo3DPipeline(Object3DPipeline, Object3DLoraLoaderMixin):
     @torch.no_grad()
     def __call__(
         self,
-        image: ImageCondition | Sequence[ImageCondition] | torch.Tensor,
+        image: ImageInput | list[ImageInput],
         *,
         formats: tuple[str, ...] | list[str] | None = None,
         pipeline_type: str | None = None,
@@ -775,4 +835,12 @@ class Trellis2ImageTo3DPipeline(Object3DPipeline, Object3DLoraLoaderMixin):
         return Object3DPipelineOutput(objects=tuple(objects), latents=latent_output, previews=None)
 
 
-__all__ = ["Trellis2ImageTo3DPipeline"]
+__all__ = [
+    "TRELLIS2_REPO",
+    "TRELLIS2_REVISION",
+    "TRELLIS_IMAGE_LARGE_REPO",
+    "TRELLIS_IMAGE_LARGE_REVISION",
+    "Trellis2ImageTo3DPipeline",
+    "load_released_component",
+    "shrink_image_condition",
+]

@@ -14,8 +14,13 @@ FAMILIES = {
     "step1x3d": "LICENSE-APACHE-2.0",
     "pixal3d": "LICENSE-MIT",
     "hunyuan3d": "LICENSE-TENCENT-HUNYUAN-3D-2.1",
+    "moge": "LICENSE-MIT",
+    "idol": "LICENSE-APACHE-2.0",
+    "triposplat": "LICENSE-MIT",
+    "triposr": "LICENSE-MIT",
+    "hunyuan3d_omni": "LICENSE-TENCENT-HUNYUAN-3D-OMNI",
 }
-LICENSE_EXPRESSION = "Apache-2.0 AND MIT AND LicenseRef-SAM-License AND LicenseRef-Tencent-Hunyuan-3D-2.1-Community"
+LICENSE_EXPRESSION = "Apache-2.0 AND MIT AND LicenseRef-SAM-License AND LicenseRef-Tencent-Hunyuan-3D-2.1-Community AND LicenseRef-Tencent-Hunyuan-3D-Omni-Community AND BSD-3-Clause"
 LICENSE_FILES = {
     "LICENSE-APACHE-2.0",
     "src/diffusers_3d/families/trellis/LICENSE-MIT",
@@ -33,6 +38,17 @@ LICENSE_FILES = {
     "src/diffusers_3d/families/pixal3d/NOTICE",
     "src/diffusers_3d/families/hunyuan3d/LICENSE-TENCENT-HUNYUAN-3D-2.1",
     "src/diffusers_3d/families/hunyuan3d/NOTICE",
+    "src/diffusers_3d/families/moge/LICENSE-BSD-3-CLAUSE-SCIPY",
+    "src/diffusers_3d/families/moge/LICENSE-MIT",
+    "src/diffusers_3d/families/moge/NOTICE",
+    "src/diffusers_3d/families/idol/LICENSE-APACHE-2.0",
+    "src/diffusers_3d/families/idol/NOTICE",
+    "src/diffusers_3d/families/triposplat/LICENSE-MIT",
+    "src/diffusers_3d/families/triposplat/NOTICE",
+    "src/diffusers_3d/families/triposr/LICENSE-MIT",
+    "src/diffusers_3d/families/triposr/NOTICE",
+    "src/diffusers_3d/families/hunyuan3d_omni/LICENSE-TENCENT-HUNYUAN-3D-OMNI",
+    "src/diffusers_3d/families/hunyuan3d_omni/NOTICE",
 }
 ENTRY_POINTS = {
     "diffusers-3d-convert-sam3d": "diffusers_3d.families.sam3d_objects.conversion:main",
@@ -42,9 +58,13 @@ ENTRY_POINTS = {
     "diffusers-3d-convert-trellis": "diffusers_3d.families.trellis.conversion:main",
     "diffusers-3d-convert-trellis2": "diffusers_3d.families.trellis2.conversion:main",
     "diffusers-3d-convert-triposg": "diffusers_3d.families.triposg.conversion:main",
+    "diffusers-3d-convert-moge": "diffusers_3d.families.moge.conversion:main",
+    "diffusers-3d-convert-idol": "diffusers_3d.families.idol.conversion:main",
+    "diffusers-3d-convert-triposplat": "diffusers_3d.families.triposplat.conversion:main",
+    "diffusers-3d-convert-triposr": "diffusers_3d.families.triposr.conversion:main",
+    "diffusers-3d-convert-hunyuan3d-omni": "diffusers_3d.families.hunyuan3d_omni.conversion:main",
     "diffusers-3d-convert-step1x3d": "diffusers_3d.families.step1x3d.conversion:main",
     "diffusers-3d-convert-step1x3d-texture": "diffusers_3d.families.step1x3d.texture_conversion:main",
-    "diffusers-3d-report": "diffusers_3d.compatibility:main",
 }
 
 

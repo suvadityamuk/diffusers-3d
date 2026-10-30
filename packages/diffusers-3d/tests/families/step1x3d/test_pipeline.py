@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import sys
+
 import pytest
 import torch
+from _configs import tiny_config
 
 from diffusers_3d import (
     AutoPipelineForImageTo3D,
@@ -80,37 +83,49 @@ def test_latent_preparation_validates_shapes_and_generators(tiny_step1x3d_pipeli
         pipeline.prepare_latents(1, latents=torch.zeros(1, 7, 4))
     with pytest.raises(ValueError, match="one generator per batch item"):
         pipeline.prepare_latents(2, generator=[torch.Generator()])
-    with pytest.raises(TypeError, match="ImageCondition"):
-        pipeline.preprocess(["image.png"])
+    with pytest.raises(TypeError, match="expected an image"):
+        pipeline.preprocess([42])
 
 
 @pytest.mark.portable
-def test_mesh_extraction_follows_released_marching_cubes_mapping(tiny_step1x3d_pipeline, sphere_field, monkeypatch):
+def test_mesh_extraction_follows_released_marching_cubes_mapping(tiny_step1x3d_pipeline, sphere_field):
     measure = pytest.importorskip("skimage.measure")
+    trimesh = pytest.importorskip("trimesh")
     pipeline = tiny_step1x3d_pipeline
-    field = sphere_field(16)
-    monkeypatch.setattr(
-        pipeline.vae, "decode_grid", lambda latents, **kwargs: field.expand(latents.shape[0], -1, -1, -1)
-    )
+    field = sphere_field(16)[0]
 
-    mesh = pipeline.extract_meshes(torch.zeros(1, 8, 4), octree_resolution=16)[0]
-    vertices, faces, _, _ = measure.marching_cubes(field[0].numpy(), 0.0, method="lewiner")
-    expected_vertices = torch.from_numpy(vertices / [17, 17, 17] * 2.1 - 1.05).float()
-    expected_faces = torch.from_numpy(faces[:, [2, 1, 0]].copy()).long()
+    mesh = pipeline.extract_mesh(field, do_remove_floater=False, do_reduce_face=False, do_shade_smooth=False)
+    vertices, faces, _, _ = measure.marching_cubes(field.numpy(), 0.0, method="lewiner")
+    expected = trimesh.Trimesh((vertices / [17, 17, 17] * 2.1 - 1.05).astype("float32"), faces[:, [2, 1, 0]])
+    expected.fix_normals()
 
     assert type(mesh) is MeshAsset and mesh.coordinate_system is CoordinateSystem.RIGHT_HANDED_Y_UP
-    assert torch.equal(mesh.vertices, expected_vertices)
-    assert torch.equal(mesh.faces, expected_faces)
+    assert torch.equal(mesh.vertices, torch.from_numpy(expected.vertices).float())
+    assert torch.equal(mesh.faces, torch.from_numpy(expected.faces))
     triangles = mesh.vertices[mesh.faces]
     signed_volume = torch.linalg.det(triangles.double()).sum() / 6
     assert signed_volume > 0, "faces must wind outward"
 
     output = pipeline(
-        ImageCondition(torch.rand(3, 8, 8)), num_inference_steps=2, octree_resolution=16, generator=torch.Generator()
+        ImageCondition(torch.rand(3, 8, 8)),
+        num_inference_steps=2,
+        octree_resolution=16,
+        generator=torch.Generator(),
+        do_remove_floater=False,
+        do_reduce_face=False,
     )
     assert type(output) is Object3DPipelineOutput
-    assert torch.equal(output.objects[0].faces, expected_faces)
+    assert output.objects[0].metadata["octree_resolution"] == 16
     assert output.latents.latents.shape == (1, 8, 4)
+
+
+@pytest.mark.portable
+def test_mesh_clean_up_needs_pymeshlab(tiny_step1x3d_pipeline, sphere_field, monkeypatch):
+    monkeypatch.setitem(sys.modules, "pymeshlab", None)
+    with pytest.raises(ImportError, match=r"diffusers-3d\[meshlab\]"):
+        tiny_step1x3d_pipeline.extract_mesh(sphere_field(16)[0])
+    smooth = tiny_step1x3d_pipeline.extract_mesh(sphere_field(16)[0], do_remove_floater=False, do_reduce_face=False)
+    assert len(smooth.vertices) > 0
 
 
 def test_pipeline_save_load_auto_and_metadata(tmp_path, tiny_step1x3d_pipeline):
@@ -123,22 +138,11 @@ def test_pipeline_save_load_auto_and_metadata(tmp_path, tiny_step1x3d_pipeline):
         for key, value in getattr(tiny_step1x3d_pipeline, name).state_dict().items():
             torch.testing.assert_close(getattr(automatic, name).state_dict()[key], value, atol=0.0, rtol=0.0)
 
-    metadata = Step1X3DImageTo3DPipeline.object3d_model_index()
-    assert metadata.task_ids == ("image-to-3d",)
-    assert metadata.output_representations == ("mesh",)
-    assert metadata.required_backends == ("scikit-image",)
-    assert {component.name for component in metadata.components} == {
-        "image_encoder",
-        "transformer",
-        "vae",
-        "scheduler",
-    }
-
 
 def test_mismatched_components_are_rejected(tiny_step1x3d_components):
     from diffusers_3d import Step1X3DShapeDecoder
 
     components = dict(tiny_step1x3d_components)
-    components["vae"] = Step1X3DShapeDecoder(**{**Step1X3DShapeDecoder.tiny_config(), "latent_channels": 3})
+    components["vae"] = Step1X3DShapeDecoder(**{**tiny_config(Step1X3DShapeDecoder), "latent_channels": 3})
     with pytest.raises(ValueError, match="latent_channels"):
         Step1X3DImageTo3DPipeline(**components)

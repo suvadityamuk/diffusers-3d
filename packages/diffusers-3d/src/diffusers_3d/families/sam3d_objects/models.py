@@ -14,16 +14,14 @@ import torch
 import torch.nn.functional as F
 from diffusers import ModelMixin  # noqa: F401 - required by external-component loading
 from diffusers.configuration_utils import register_to_config
+from diffusers.loaders import PeftAdapterMixin
 from diffusers.models.attention import AttentionModuleMixin
 from diffusers.models.attention_dispatch import dispatch_attention_fn
 from diffusers.models.modeling_utils import get_parameter_dtype
 from diffusers.utils import BaseOutput
 from torch import nn
 
-from ...execution.lora import Object3DPeftAdapterMixin
-from ...execution.metadata import ContributionStatus, ReviewStatus
 from ...execution.models import Object3DModel
-from ...objects import Object3DKind
 from ..trellis.models import (
     TrellisAbsolutePositionEmbedder,
     TrellisAttention,
@@ -155,20 +153,13 @@ class Sam3DLatentProjection(nn.Module):
             self.register_buffer("pos_emb", position_embedding)
 
 
-class Sam3DSparseStructureFlowModel(Object3DModel, Object3DPeftAdapterMixin):
+class Sam3DSparseStructureFlowModel(Object3DModel, PeftAdapterMixin):
     """SAM 3D Objects geometry model: a shortcut flow over the 16^3 shape latent and the object layout.
 
     The dense shape latent is the TRELLIS sparse-structure latent, flattened to ``resolution**3`` tokens. The layout
     modalities (6D rotation, translation, log-scale, log translation scale) share a second "pose" stream; both
     streams run every block with their own weights and a single timestep modulation.
     """
-
-    family_id = "sam3d_objects"
-    component_role = "sparse_structure_flow_model"
-    supported_object_kinds = (Object3DKind.SPARSE_VOXEL,)
-    required_backends = ()
-    contribution_status = ContributionStatus.REVIEWED_PACKAGE
-    review_status = ReviewStatus.REVIEWED
 
     _supports_gradient_checkpointing = True
     _no_split_modules = ["Sam3DMoTBlock"]
@@ -244,20 +235,6 @@ class Sam3DSparseStructureFlowModel(Object3DModel, Object3DPeftAdapterMixin):
             "num_blocks": 24,
             "num_heads": 16,
             "mlp_ratio": 4,
-            "qk_rms_norm": True,
-        }
-
-    @classmethod
-    def tiny_config(cls) -> dict[str, Any]:
-        return {
-            "resolution": 2,
-            "in_channels": 2,
-            "pose_latents": cls.production_pose_latents(),
-            "model_channels": 16,
-            "cond_channels": 12,
-            "num_blocks": 2,
-            "num_heads": 4,
-            "mlp_ratio": 2,
             "qk_rms_norm": True,
         }
 

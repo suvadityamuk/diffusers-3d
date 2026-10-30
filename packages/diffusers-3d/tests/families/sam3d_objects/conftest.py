@@ -1,11 +1,15 @@
 from __future__ import annotations
 
+import copy
+import dataclasses
 import warnings
 
 import pytest
 import torch
+from _configs import tiny_config
 from transformers import Dinov2WithRegistersConfig, Dinov2WithRegistersModel
 
+import diffusers_3d.execution.pipelines as pipelines
 from diffusers_3d import (
     ImageCondition,
     Sam3DConditionEmbedder,
@@ -33,27 +37,27 @@ def tiny_dinov2_config() -> Dinov2WithRegistersConfig:
 
 def tiny_sam3d_components(*, include_slat: bool = True) -> dict:
     torch.manual_seed(0)
-    decoder = TrellisSparseStructureDecoder(**TrellisSparseStructureDecoder.tiny_config())
+    decoder = TrellisSparseStructureDecoder(**tiny_config(TrellisSparseStructureDecoder))
     with torch.no_grad():
         decoder.out_layer[-1].weight.zero_()
         decoder.out_layer[-1].bias.fill_(1.0)
     components = {
         "image_encoder": Dinov2WithRegistersModel(tiny_dinov2_config()).eval(),
-        "sparse_structure_conditioner": Sam3DConditionEmbedder(**Sam3DConditionEmbedder.tiny_config()),
-        "sparse_structure_flow_model": Sam3DSparseStructureFlowModel(**Sam3DSparseStructureFlowModel.tiny_config()),
+        "sparse_structure_conditioner": Sam3DConditionEmbedder(**tiny_config(Sam3DConditionEmbedder)),
+        "sparse_structure_flow_model": Sam3DSparseStructureFlowModel(**tiny_config(Sam3DSparseStructureFlowModel)),
         "sparse_structure_decoder": decoder,
         "sparse_structure_scheduler": TrellisFlowEulerScheduler(sigma_min=0.0),
     }
     if include_slat:
-        slat_flow = TrellisSLatFlowModel(**TrellisSLatFlowModel.tiny_config())
+        slat_flow = TrellisSLatFlowModel(**tiny_config(TrellisSLatFlowModel))
         components |= {
             "slat_conditioner": Sam3DConditionEmbedder(
-                **{**Sam3DConditionEmbedder.tiny_config(), "prenorm_features": True, "pointmap_config": None}
+                **{**tiny_config(Sam3DConditionEmbedder), "prenorm_features": True, "pointmap_config": None}
             ),
             "slat_flow_model": slat_flow,
             "slat_scheduler": TrellisFlowEulerScheduler(sigma_min=0.0),
-            "gaussian_decoder": TrellisSLatGaussianDecoder(**TrellisSLatGaussianDecoder.tiny_config()),
-            "mesh_decoder": TrellisSLatMeshDecoder(**TrellisSLatMeshDecoder.tiny_config()),
+            "gaussian_decoder": TrellisSLatGaussianDecoder(**tiny_config(TrellisSLatGaussianDecoder)),
+            "mesh_decoder": TrellisSLatMeshDecoder(**tiny_config(TrellisSLatMeshDecoder)),
             "slat_mean": [0.5] * slat_flow.config.out_channels,
             "slat_std": [2.0] * slat_flow.config.out_channels,
         }
@@ -81,3 +85,33 @@ def tiny_condition(seed: int = 0, *, height: int = 12, width: int = 10) -> tuple
 @pytest.fixture
 def tiny_pipeline():
     return tiny_sam3d_pipeline()
+
+
+@pytest.fixture
+def local_external_components(monkeypatch):
+    """Load a pipeline class's gated external components from local modules instead of their repositories.
+
+    ``use(pipeline_class, image_encoder=module, ...)`` returns the list of ``(name, repository, revision, dtype)``
+    loads; each load returns a copy of the module in the requested dtype.
+    """
+
+    def use(pipeline_class, **modules):
+        calls = []
+
+        def loader(name):
+            def load(repository, *, revision, dtype, **hub_kwargs):
+                calls.append((name, repository, revision, dtype))
+                module = copy.deepcopy(modules[name])
+                return module if dtype is None else module.to(dtype)
+
+            return load
+
+        external = {
+            name: dataclasses.replace(component, load=loader(name))
+            for name, component in pipeline_class.external_components.items()
+        }
+        monkeypatch.setattr(pipeline_class, "external_components", external)
+        monkeypatch.setattr(pipelines.huggingface_hub, "auth_check", lambda *args, **kwargs: None)
+        return calls
+
+    return use

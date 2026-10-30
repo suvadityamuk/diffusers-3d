@@ -8,11 +8,11 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any
 
 import torch
 from diffusers import ModelMixin  # noqa: F401 - required by external-component loading
 from diffusers.configuration_utils import register_to_config
+from diffusers.loaders import PeftAdapterMixin
 from diffusers.models.attention import JointTransformerBlock
 from diffusers.models.attention_dispatch import dispatch_attention_fn
 from diffusers.models.attention_processor import Attention
@@ -21,10 +21,7 @@ from diffusers.models.normalization import AdaLayerNormContinuous, AdaLayerNormZ
 from diffusers.utils import BaseOutput
 from torch import nn
 
-from ...execution.lora import Object3DPeftAdapterMixin
-from ...execution.metadata import ContributionStatus, ReviewStatus
 from ...execution.models import Object3DModel
-from ...objects import Object3DKind
 
 
 @dataclass
@@ -106,19 +103,13 @@ class Step1X3DSingleTransformerBlock(nn.Module):
         return hidden_states
 
 
-class Step1X3DTransformer1DModel(Object3DModel, Object3DPeftAdapterMixin):
+class Step1X3DTransformer1DModel(Object3DModel, PeftAdapterMixin):
     """Step1X-3D rectified-flow transformer over the shape VAE's latent token set.
 
     A Flux-style stack without positional embeddings: ``num_layers`` dual-stream blocks over latent and condition
     tokens, then ``num_single_layers`` single-stream blocks over their concatenation (conditions first).
     """
 
-    family_id = "step1x3d"
-    component_role = "transformer"
-    supported_object_kinds = (Object3DKind.MESH,)
-    required_backends = ()
-    contribution_status = ContributionStatus.REVIEWED_PACKAGE
-    review_status = ReviewStatus.REVIEWED
     _no_split_modules = ["JointTransformerBlock", "Step1X3DSingleTransformerBlock"]
     _repeated_blocks = ["JointTransformerBlock", "Step1X3DSingleTransformerBlock"]
     _skip_layerwise_casting_patterns = ["time_embedding", "norm"]
@@ -154,17 +145,6 @@ class Step1X3DTransformer1DModel(Object3DModel, Object3DPeftAdapterMixin):
         )
         self.norm_out = AdaLayerNormContinuous(width, width, elementwise_affine=False, eps=1e-6)
         self.proj_out = nn.Linear(width, in_channels)
-
-    @classmethod
-    def tiny_config(cls) -> dict[str, Any]:
-        return {
-            "in_channels": 4,
-            "width": 16,
-            "num_layers": 1,
-            "num_single_layers": 1,
-            "num_attention_heads": 2,
-            "cross_attention_dim": 12,
-        }
 
     def forward(
         self,

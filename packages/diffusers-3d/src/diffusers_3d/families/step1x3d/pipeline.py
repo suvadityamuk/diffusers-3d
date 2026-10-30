@@ -3,11 +3,12 @@
 # Revision: cb5ac944709c6c913109070c7b90c3447f57f3d4
 #
 # Apache License 2.0. Copyright (c) StepFun.
-# Modified for typed image conditions, a dense occupancy grid, and the package marching-cubes backend.
+# Modified for typed image conditions and MeshAsset outputs.
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+import os
+import tempfile
 
 import numpy as np
 import torch
@@ -15,15 +16,15 @@ import torch.nn.functional as F
 from diffusers.utils.torch_utils import randn_tensor
 from PIL import Image
 from transformers import Dinov2WithRegistersModel
-from transformers.image_utils import IMAGENET_DEFAULT_MEAN, IMAGENET_DEFAULT_STD
 
-from ...backends import ScikitImageBackend
-from ...data import ImageCondition
-from ...data.image_processing import _quantized_rgba, validate_image_condition_pixels
+from ...backends._optional import require
+from ...backends.occupancy import hierarchical_occupancy, octree_resolutions
+from ...data import ImageCondition, ImageInput
+from ...data.background import BackgroundRemoval, RembgBackgroundRemover, lacks_alpha
+from ...data.image_processing import _quantized_rgba, normalize_imagenet, validate_image_condition_pixels
 from ...execution.lora import Object3DLoraLoaderMixin
-from ...execution.metadata import ContributionStatus, Object3DComponentSpec, ReviewStatus, fully_qualified_class_name
 from ...execution.pipelines import Object3DPipeline
-from ...objects import CoordinateSystem, Latent3DOutput, MeshAsset, Object3DKind, Object3DPipelineOutput
+from ...objects import CoordinateSystem, Latent3DOutput, MeshAsset, Object3DPipelineOutput
 from .models import Step1X3DTransformer1DModel
 from .scheduler import Step1X3DFlowMatchEulerScheduler
 from .vae import Step1X3DShapeDecoder
@@ -65,38 +66,80 @@ def preprocess_step1x3d_image(
     return torch.from_numpy(canvas).permute(2, 0, 1).to(device=pixels.device, dtype=pixels.dtype) / 255
 
 
-class Step1X3DImageTo3DPipeline(Object3DPipeline, Object3DLoraLoaderMixin):
-    """Step1X-3D image-to-geometry: DINOv2 tokens condition a rectified-flow transformer over the shape VAE's latent
-    set, the VAE decoder evaluates occupancy on a dense grid, and marching cubes extracts a watertight mesh.
+def _to_meshset(mesh, directory: str, pymeshlab):
+    """Upstream's ``trimesh2pymeshlab``: a PLY written by trimesh, read back by pymeshlab."""
 
-    Meshes are returned raw. The released pipeline's pymeshlab clean-up (floater removal, quadric decimation to 200k
-    faces) and trimesh smooth shading are not applied.
+    path = os.path.join(directory, "trimesh.ply")
+    mesh.export(path)
+    meshset = pymeshlab.MeshSet()
+    meshset.load_new_mesh(path)
+    return meshset
+
+
+def _to_trimesh(meshset, directory: str, trimesh):
+    """Upstream's ``pymeshlab2trimesh``: a PLY written by pymeshlab, loaded (and processed) by trimesh."""
+
+    path = os.path.join(directory, "pymeshlab.ply")
+    meshset.save_current_mesh(path)
+    return trimesh.load(path)
+
+
+def postprocess_step1x3d_mesh(
+    mesh,
+    *,
+    do_remove_floater: bool = True,
+    do_reduce_face: bool = True,
+    max_facenum: int = 200000,
+    do_shade_smooth: bool = True,
+):
+    """The released clean-up of a ``trimesh.Trimesh``: pymeshlab floater removal and quadric decimation to
+    ``max_facenum`` faces, then trimesh smooth shading.
+
+    Each pymeshlab step round-trips through PLY files as upstream does, so trimesh re-merges vertices after it.
+    Floater removal drops connected components with fewer than 0.1% of the faces; decimation keeps boundaries,
+    normals and topology. pymeshlab (GPL) is needed for either: ``pip install "diffusers-3d[meshlab]"``.
     """
 
-    family_id = "step1x3d"
-    task_ids = ("image-to-3d",)
-    output_object_types = (MeshAsset,)
-    output_representations = ("mesh",)
-    object_kinds = (Object3DKind.MESH,)
-    required_backends = ("scikit-image",)
-    contribution_status = ContributionStatus.REVIEWED_PACKAGE
-    review_status = ReviewStatus.REVIEWED
-    component_specs = tuple(
-        Object3DComponentSpec(
-            name=name,
-            expected_class=fully_qualified_class_name(component_type),
-            subfolder=name,
-            optional=False,
-            review_status=ReviewStatus.REVIEWED,
-            loading_eligible=True,
-        )
-        for name, component_type in (
-            ("image_encoder", Dinov2WithRegistersModel),
-            ("transformer", Step1X3DTransformer1DModel),
-            ("vae", Step1X3DShapeDecoder),
-            ("scheduler", Step1X3DFlowMatchEulerScheduler),
-        )
-    )
+    if do_remove_floater or (do_reduce_face and max_facenum > 0):
+        pymeshlab = require("pymeshlab", "meshlab")
+        trimesh = require("trimesh", "portable")
+        with tempfile.TemporaryDirectory() as directory:
+            if do_remove_floater:
+                meshset = _to_meshset(mesh, directory, pymeshlab)
+                meshset.apply_filter("compute_selection_by_small_disconnected_components_per_face", nbfaceratio=0.001)
+                meshset.apply_filter("compute_selection_transfer_face_to_vertex", inclusive=False)
+                meshset.apply_filter("meshing_remove_selected_vertices_and_faces")
+                mesh = _to_trimesh(meshset, directory, trimesh)
+            if do_reduce_face and max_facenum > 0:
+                meshset = _to_meshset(mesh, directory, pymeshlab)
+                if max_facenum <= meshset.current_mesh().face_number():
+                    meshset.apply_filter(
+                        "meshing_decimation_quadric_edge_collapse",
+                        targetfacenum=max_facenum,
+                        qualitythr=1.0,
+                        preserveboundary=True,
+                        boundaryweight=3,
+                        preservenormal=True,
+                        preservetopology=True,
+                        autoclean=True,
+                    )
+                mesh = _to_trimesh(meshset, directory, trimesh)
+    if do_shade_smooth:
+        mesh = mesh.smooth_shaded
+    return mesh
+
+
+class Step1X3DImageTo3DPipeline(Object3DPipeline, Object3DLoraLoaderMixin):
+    """Step1X-3D image-to-geometry: DINOv2 tokens condition a rectified-flow transformer over the shape VAE's latent
+    set, the VAE decoder evaluates occupancy on the released hierarchical grid, and marching cubes extracts a mesh.
+
+    Meshes go through the released clean-up (see :func:`postprocess_step1x3d_mesh`): trimesh merges duplicate
+    vertices and fixes the winding, pymeshlab removes floaters and decimates to 200k faces, and trimesh smooth-shades
+    the result. The pymeshlab steps need ``pip install "diffusers-3d[meshlab]"`` (GPL) unless they are turned off.
+    """
+
+    # Upstream cuts out inputs without usable alpha with rembg (u2net) at full size.
+    background_removal = BackgroundRemoval(RembgBackgroundRemover, trigger=lacks_alpha)
     model_cpu_offload_seq = "image_encoder->transformer->vae"
     _lora_loadable_modules = ["transformer"]
 
@@ -114,21 +157,8 @@ class Step1X3DImageTo3DPipeline(Object3DPipeline, Object3DLoraLoaderMixin):
             raise ValueError("transformer in_channels must match the VAE latent_channels")
         self.register_modules(image_encoder=image_encoder, transformer=transformer, vae=vae, scheduler=scheduler)
 
-    def preprocess(
-        self, image: ImageCondition | Sequence[ImageCondition] | torch.Tensor, *, foreground_ratio: float = 0.95
-    ) -> torch.Tensor:
-        if isinstance(image, torch.Tensor):
-            if image.ndim not in (3, 4):
-                raise ValueError("image tensor must have shape (channels, height, width) or be batched")
-            conditions = tuple(ImageCondition(image=value) for value in (image[None] if image.ndim == 3 else image))
-        elif type(image) is ImageCondition:
-            conditions = (image,)
-        elif isinstance(image, Sequence) and not isinstance(image, (str, bytes)):
-            conditions = tuple(image)
-            if not conditions or any(type(condition) is not ImageCondition for condition in conditions):
-                raise TypeError("image sequences must contain exact ImageCondition values")
-        else:
-            raise TypeError("image must be an ImageCondition, sequence of ImageCondition values, or tensor")
+    def preprocess(self, image: ImageInput | list[ImageInput], *, foreground_ratio: float = 0.95) -> torch.Tensor:
+        conditions = self.image_conditions(image)
         images = [
             preprocess_step1x3d_image(
                 condition, image_size=self.image_encoder.config.image_size, foreground_ratio=foreground_ratio
@@ -150,9 +180,7 @@ class Step1X3DImageTo3DPipeline(Object3DPipeline, Object3DLoraLoaderMixin):
         images = images.to(device=self.image_encoder.device, dtype=self.image_encoder.dtype)
         if images.shape[-2:] != (size, size):
             images = F.interpolate(images, size=size, mode="bicubic", align_corners=False, antialias=True)
-        mean = torch.tensor(IMAGENET_DEFAULT_MEAN).reshape(1, 3, 1, 1).to(images)
-        std = torch.tensor(IMAGENET_DEFAULT_STD).reshape(1, 3, 1, 1).to(images)
-        hidden_states = self.image_encoder((images - mean) / std).last_hidden_state
+        hidden_states = self.image_encoder(normalize_imagenet(images)).last_hidden_state
         registers = self.image_encoder.config.num_register_tokens
         conditional = torch.cat([hidden_states[:, :1], hidden_states[:, 1 + registers :]], dim=1)
         return conditional, torch.zeros_like(conditional)
@@ -204,7 +232,7 @@ class Step1X3DImageTo3DPipeline(Object3DPipeline, Object3DLoraLoaderMixin):
             latents = self.scheduler.step(velocity, timestep, latents).prev_sample
         return latents
 
-    def extract_meshes(
+    def decode_occupancy(
         self,
         latents: torch.Tensor,
         *,
@@ -212,34 +240,84 @@ class Step1X3DImageTo3DPipeline(Object3DPipeline, Object3DLoraLoaderMixin):
         octree_resolution: int = 384,
         mc_level: float = 0.0,
         chunk_size: int = 65536,
-    ) -> tuple[MeshAsset, ...]:
-        """Decode a dense occupancy grid per latent set and run Lewiner marching cubes at ``mc_level``.
+    ) -> list[torch.Tensor]:
+        """One occupancy-logit grid per latent set, on the released hierarchical grid.
 
-        Vertices use the released mapping ``index / (octree_resolution + 1) * 2 * bounds - bounds``.
+        The batch is decoded at once and the grid is held, and refined points computed, in the VAE dtype, as
+        upstream (which first moves a bfloat16 VAE to float16). Samples away from the surface are never evaluated and
+        hold NaN.
         """
 
-        backend = ScikitImageBackend()
-        grids = self.vae.decode_grid(
-            latents.to(dtype=self.vae.dtype), bounds=bounds, resolution=octree_resolution, chunk_size=chunk_size
-        )
-        meshes = []
-        for grid in grids:
-            surface = backend.extract_surface(grid, level=mc_level, gradient_direction="ascent", allow_degenerate=True)
-            vertices = surface.vertices.double() / (octree_resolution + 1) * (2 * bounds) - bounds
-            meshes.append(
-                MeshAsset(
-                    vertices=vertices.to(device=latents.device, dtype=torch.float32),
-                    faces=surface.faces.to(device=latents.device),
-                    coordinate_system=CoordinateSystem.RIGHT_HANDED_Y_UP,
-                    metadata={"family": "step1x3d", "representation": "mesh", "octree_resolution": octree_resolution},
+        if self.vae.dtype == torch.bfloat16:
+            # Upstream moves a bfloat16 VAE to float16 before decoding.
+            self.vae.to(torch.float16)
+        dtype = self.vae.dtype
+        resolutions = octree_resolutions(octree_resolution)
+        grids = []
+        for tokens in self.vae.decode(latents.to(dtype=dtype)).split(1):
+            grids.append(
+                hierarchical_occupancy(
+                    lambda points, tokens=tokens: self.vae.query(points, tokens)[..., 0],
+                    (-bounds,) * 3 + (bounds,) * 3,
+                    resolutions,
+                    dtype=dtype,
+                    device=latents.device,
+                    level=mc_level,
+                    num_chunks=chunk_size,
                 )
             )
-        return tuple(meshes)
+        return grids
+
+    @staticmethod
+    def extract_mesh(
+        grid: torch.Tensor,
+        *,
+        bounds: float = 1.05,
+        mc_level: float = 0.0,
+        do_remove_floater: bool = True,
+        do_reduce_face: bool = True,
+        max_facenum: int = 200000,
+        do_shade_smooth: bool = True,
+    ) -> MeshAsset:
+        """Lewiner marching cubes at ``mc_level``, then the released trimesh and pymeshlab steps.
+
+        Vertices use the released mapping ``index / (octree_resolution + 1) * 2 * bounds - bounds``. Trimesh merges
+        duplicate vertices (dropping any interpolated from unevaluated samples) and makes the winding consistent
+        and outward (``fix_normals``); :func:`postprocess_step1x3d_mesh` follows.
+        """
+
+        marching_cubes = require("skimage.measure", "portable").marching_cubes
+        trimesh = require("trimesh", "portable")
+        vertices, faces, _, _ = marching_cubes(grid.float().cpu().numpy(), mc_level, method="lewiner")
+        vertices = vertices.astype(np.float64) / grid.shape[0] * (2 * bounds) - bounds
+        mesh = trimesh.Trimesh(vertices.astype(np.float32), faces[:, ::-1])
+        mesh.fix_normals()
+        # Upstream caches the normals (so its PLY round trips carry them) and attaches a white PBR material.
+        mesh.face_normals
+        mesh.vertex_normals
+        mesh.visual = trimesh.visual.TextureVisuals(
+            material=trimesh.visual.material.PBRMaterial(
+                baseColorFactor=(255, 255, 255), main_color=(255, 255, 255), metallicFactor=0.05, roughnessFactor=1.0
+            )
+        )
+        mesh = postprocess_step1x3d_mesh(
+            mesh,
+            do_remove_floater=do_remove_floater,
+            do_reduce_face=do_reduce_face,
+            max_facenum=max_facenum,
+            do_shade_smooth=do_shade_smooth,
+        )
+        return MeshAsset(
+            vertices=torch.from_numpy(mesh.vertices).to(device=grid.device, dtype=torch.float32),
+            faces=torch.from_numpy(mesh.faces).to(device=grid.device, dtype=torch.int64),
+            coordinate_system=CoordinateSystem.RIGHT_HANDED_Y_UP,
+            metadata={"family": "step1x3d", "representation": "mesh", "octree_resolution": grid.shape[0] - 1},
+        )
 
     @torch.no_grad()
     def __call__(
         self,
-        image: ImageCondition | Sequence[ImageCondition] | torch.Tensor,
+        image: ImageInput | list[ImageInput],
         *,
         num_inference_steps: int = 50,
         guidance_scale: float = 7.5,
@@ -250,10 +328,18 @@ class Step1X3DImageTo3DPipeline(Object3DPipeline, Object3DLoraLoaderMixin):
         octree_resolution: int = 384,
         mc_level: float = 0.0,
         chunk_size: int = 65536,
+        do_remove_floater: bool = True,
+        do_reduce_face: bool = True,
+        max_facenum: int = 200000,
+        do_shade_smooth: bool = True,
         return_latents: bool = True,
         return_dict: bool = True,
     ) -> Object3DPipelineOutput | tuple[tuple[MeshAsset, ...], Latent3DOutput | None]:
-        """Generate one mesh per input image (defaults follow the released ``inference.py``)."""
+        """Generate one mesh per input image (defaults follow the released ``inference.py``).
+
+        ``do_remove_floater``, ``do_reduce_face`` (to ``max_facenum`` faces) and ``do_shade_smooth`` are the released
+        mesh clean-up steps, all on by default; the first two need pymeshlab.
+        """
 
         images = self.preprocess(image, foreground_ratio=foreground_ratio)
         conditional, negative = self.encode_conditioning(images)
@@ -261,8 +347,20 @@ class Step1X3DImageTo3DPipeline(Object3DPipeline, Object3DLoraLoaderMixin):
         latents = self.sample_latents(
             latents, conditional, negative, num_inference_steps=num_inference_steps, guidance_scale=guidance_scale
         )
-        meshes = self.extract_meshes(
+        grids = self.decode_occupancy(
             latents, bounds=bounds, octree_resolution=octree_resolution, mc_level=mc_level, chunk_size=chunk_size
+        )
+        meshes = tuple(
+            self.extract_mesh(
+                grid,
+                bounds=bounds,
+                mc_level=mc_level,
+                do_remove_floater=do_remove_floater,
+                do_reduce_face=do_reduce_face,
+                max_facenum=max_facenum,
+                do_shade_smooth=do_shade_smooth,
+            )
+            for grid in grids
         )
         latent_output = Latent3DOutput(latents=latents, metadata={"family": "step1x3d"}) if return_latents else None
         self.maybe_free_model_hooks()
@@ -271,4 +369,4 @@ class Step1X3DImageTo3DPipeline(Object3DPipeline, Object3DLoraLoaderMixin):
         return Object3DPipelineOutput(objects=meshes, latents=latent_output, previews=None)
 
 
-__all__ = ["Step1X3DImageTo3DPipeline", "preprocess_step1x3d_image"]
+__all__ = ["Step1X3DImageTo3DPipeline", "postprocess_step1x3d_mesh", "preprocess_step1x3d_image"]

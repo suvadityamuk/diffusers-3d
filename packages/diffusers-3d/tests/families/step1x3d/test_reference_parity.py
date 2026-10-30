@@ -13,6 +13,12 @@ from pathlib import Path
 import numpy as np
 import pytest
 import torch
+from _reference import (
+    ReferenceCheckoutError,
+    import_reference_dependency,
+    reference_unavailable,
+    validate_reference_checkout,
+)
 from diffusers import ModelMixin
 from PIL import Image
 from transformers import Dinov2WithRegistersConfig, Dinov2WithRegistersModel
@@ -25,18 +31,12 @@ from diffusers_3d import (
     Step1X3DTransformer1DModel,
     preprocess_step1x3d_image,
 )
-from diffusers_3d._reference import (
-    ReferenceCheckoutError,
-    import_reference_dependency,
-    reference_unavailable,
-    validate_reference_checkout,
-)
+from diffusers_3d.backends.occupancy import dense_grid_points, hierarchical_occupancy, octree_resolutions
 from diffusers_3d.families.step1x3d.conversion import (
     STEP1X3D_REFERENCE_REVISION,
     convert_step1x3d_transformer_state_dict,
     convert_step1x3d_vae_state_dict,
 )
-from diffusers_3d.families.step1x3d.vae import step1x3d_grid_points
 
 pytestmark = pytest.mark.reference_parity
 
@@ -190,9 +190,12 @@ def _upstream_import_environment():
         "timm": _module("timm"),
         "timm.models": _module("timm.models"),
         "timm.models.vision_transformer": _module("timm.models.vision_transformer", Attention=None),
-        "pymeshlab": _module("pymeshlab", MeshSet=None),
         "rembg": _module("rembg"),
     }
+    try:
+        importlib.import_module("pymeshlab")
+    except ImportError:  # only the mesh clean-up calls it; those tests require it
+        stubs["pymeshlab"] = _module("pymeshlab", MeshSet=None)
     for package in (
         "models",
         "models/autoencoders",
@@ -268,6 +271,7 @@ def _load_pinned_reference() -> types.SimpleNamespace:
                     prefix + "autoencoders.surface_extractors"
                 ).MCSurfaceExtractor,
                 Dinov2Encoder=importlib.import_module(prefix + "conditional_encoders.dinov2_encoder").Dinov2Encoder,
+                pipeline_utils=importlib.import_module(prefix + "pipelines.pipeline_utils"),
                 preprocess_image=importlib.import_module(prefix + "pipelines.pipeline_utils").preprocess_image,
                 Step1X3DGeometryPipeline=importlib.import_module(
                     prefix + "pipelines.pipeline"
@@ -345,7 +349,7 @@ def test_flow_transformer_matches_pinned_reference():
     torch.testing.assert_close(actual, expected, atol=0.0, rtol=0.0)
 
 
-def test_shape_decoder_and_dense_grid_match_pinned_reference():
+def test_shape_decoder_matches_pinned_reference():
     reference = _load_pinned_reference()
     upstream = _reference_vae(reference)
     ours = _converted_vae(upstream)
@@ -358,35 +362,114 @@ def test_shape_decoder_and_dense_grid_match_pinned_reference():
             ours.query(points, ours.decode(latents)), upstream.query(points, tokens), atol=0.0, rtol=0.0
         )
 
-        vanilla = reference.volume_decoders.VanillaVolumeDecoder()(
-            tokens, upstream.query, bounds=1.05, octree_resolution=16, num_chunks=1000, enable_pbar=False
-        )[0]
-        dense = ours.decode_grid(latents, bounds=1.05, resolution=16, chunk_size=1000)
-        torch.testing.assert_close(dense, vanilla, atol=0.0, rtol=0.0)
 
-        # The released hierarchical decoder evaluates a near-surface band (|logit| < 0.95 or a sign change) and
-        # leaves the rest NaN; the dense grid must agree wherever it evaluated (fine levels place points at
-        # index * step rather than linspace, hence the tolerance). Steeper logits make that band a real subset.
+@pytest.mark.parametrize("dtype", [torch.float32, torch.float16])
+@pytest.mark.parametrize("octree_resolution", [16, 127, 252])
+def test_hierarchical_occupancy_matches_pinned_reference_bitwise(dtype, octree_resolution):
+    """The released default decoder: one dense level below 63, else a dense coarse level refined near the surface."""
+
+    reference = _load_pinned_reference()
+    upstream = _reference_vae(reference)
+    ours = _converted_vae(upstream)
+    torch.manual_seed(2)
+    latents = torch.randn(1, 8, 4)
+    # Steeper logits make the near-surface band a real subset of the grid.
+    with torch.no_grad():
         for projection in (upstream.decoder.output_proj, ours.proj_out):
             projection.weight *= 40
             projection.bias *= 40
-        hierarchical = reference.volume_decoders.HierarchicalVolumeDecoder()(
-            upstream.decode(latents), upstream.query, bounds=1.05, octree_resolution=128, enable_pbar=False
+    upstream, ours, latents = upstream.to(dtype), ours.to(dtype), latents.to(dtype)
+    with torch.no_grad():
+        expected = reference.volume_decoders.HierarchicalVolumeDecoder()(
+            upstream.decode(latents),
+            upstream.query,
+            bounds=1.05,
+            octree_resolution=octree_resolution,
+            num_chunks=5000,
+            enable_pbar=False,
+        )[0]
+        tokens = ours.decode(latents)
+        actual = hierarchical_occupancy(
+            lambda points: ours.query(points, tokens)[..., 0],
+            (-1.05,) * 3 + (1.05,) * 3,
+            octree_resolutions(octree_resolution),
+            dtype=dtype,
+            device="cpu",
+            num_chunks=5000,
         )
-        dense = ours.decode_grid(latents, bounds=1.05, resolution=128)
-        evaluated = torch.isfinite(hierarchical)
-        assert 0.01 < evaluated.float().mean() < 0.6
-        torch.testing.assert_close(dense[evaluated], hierarchical[evaluated], atol=2e-5, rtol=1e-5)
+    assert actual.dtype == expected.dtype == dtype
+    evaluated = torch.isfinite(expected)
+    assert torch.equal(torch.isfinite(actual), evaluated)
+    if octree_resolution > 63:
+        assert 0.005 < evaluated.float().mean() < 0.6
+    assert torch.equal(actual[evaluated], expected[evaluated])
 
 
-def test_surface_extraction_matches_pinned_reference_bitwise(tiny_step1x3d_pipeline, sphere_field, monkeypatch):
+def test_surface_extraction_matches_pinned_reference_bitwise(tiny_step1x3d_pipeline, sphere_field):
     reference = _load_pinned_reference()
-    field = sphere_field(32) + 0.013 * torch.sin(7 * step1x3d_grid_points(1.05, 32)).sum(-1).view(1, 33, 33, 33)
-    monkeypatch.setattr(tiny_step1x3d_pipeline.vae, "decode_grid", lambda latents, **kwargs: field)
-    expected = reference.MCSurfaceExtractor()(field, mc_level=0.0, bounds=1.05, octree_resolution=32)[0]
-    actual = tiny_step1x3d_pipeline.extract_meshes(torch.zeros(1, 8, 4), octree_resolution=32)[0]
-    assert torch.equal(actual.vertices, expected.verts)
-    assert torch.equal(actual.faces, expected.faces)
+    trimesh = import_reference_dependency("trimesh")
+    field = sphere_field(32) + 0.013 * torch.sin(7 * dense_grid_points((-1.05,) * 3 + (1.05,) * 3, 32)).sum(-1).view(
+        1, 33, 33, 33
+    )
+    # Unevaluated samples (NaN) and samples exactly on the level, which make marching cubes emit duplicates.
+    field[0, :, :, :10] = float("nan")
+    field[0, :, :, 16] = 0.0
+    raw = reference.MCSurfaceExtractor()(field, mc_level=0.0, bounds=1.05, octree_resolution=32)[0]
+    finite = raw.verts[torch.isfinite(raw.verts).all(dim=1)]
+    assert len(finite) < len(raw.verts), "the field must exercise unevaluated samples"
+    assert len(torch.unique(finite, dim=0)) < len(finite), "the field must exercise vertex merging"
+    # The released ``output_type="trimesh"`` steps before the pymeshlab clean-up.
+    expected = trimesh.Trimesh(vertices=raw.verts.cpu().numpy(), faces=raw.faces.cpu().numpy())
+    expected.fix_normals()
+    actual = tiny_step1x3d_pipeline.extract_mesh(
+        field[0], do_remove_floater=False, do_reduce_face=False, do_shade_smooth=False
+    )
+    assert torch.equal(actual.vertices, torch.from_numpy(expected.vertices).float())
+    assert torch.equal(actual.faces, torch.from_numpy(expected.faces))
+
+
+def _released_trimesh(trimesh, raw):
+    """The released ``output_type="trimesh"`` mesh before its clean-up, built as upstream's pipeline does."""
+
+    mesh = trimesh.Trimesh(vertices=raw.verts.cpu().numpy(), faces=raw.faces.cpu().numpy())
+    mesh.fix_normals()
+    mesh.face_normals
+    mesh.vertex_normals
+    mesh.visual = trimesh.visual.TextureVisuals(
+        material=trimesh.visual.material.PBRMaterial(
+            baseColorFactor=(255, 255, 255), main_color=(255, 255, 255), metallicFactor=0.05, roughnessFactor=1.0
+        )
+    )
+    return mesh
+
+
+@pytest.mark.parametrize("max_facenum", [1500, 200000])
+def test_mesh_clean_up_matches_pinned_reference_bitwise(tiny_step1x3d_pipeline, max_facenum):
+    """Floater removal, quadric decimation (when the mesh has more than ``max_facenum`` faces), smooth shading."""
+
+    reference = _load_pinned_reference()
+    trimesh = import_reference_dependency("trimesh")
+    import_reference_dependency("pymeshlab")
+    points = dense_grid_points((-1.05,) * 3 + (1.05,) * 3, 64).view(65, 65, 65, 3)
+    # A wavy body and two detached blobs: floaters below 0.1% of the faces are removed, larger ones stay. The small
+    # blob covers a single sample, an 8-face octahedron.
+    body = 0.6 - points.norm(dim=-1) + 0.05 * torch.sin(9 * points).sum(-1)
+    small = 0.02 - (points - points[53, 53, 32]).norm(dim=-1)
+    large = 0.12 - (points - torch.tensor([-0.85, 0.0, 0.8])).norm(dim=-1)
+    field = torch.maximum(body, torch.maximum(small, large))[None]
+    raw = reference.MCSurfaceExtractor()(field, mc_level=0.0, bounds=1.05, octree_resolution=64)[0]
+    mesh = _released_trimesh(trimesh, raw)
+    utils = reference.pipeline_utils
+    expected = utils.reduce_face(utils.remove_floater(mesh), max_facenum).smooth_shaded
+    actual = tiny_step1x3d_pipeline.extract_mesh(field[0], max_facenum=max_facenum)
+    cleaned = {"do_reduce_face": False, "do_shade_smooth": False}
+    kept = tiny_step1x3d_pipeline.extract_mesh(field[0], **cleaned)
+    everything = tiny_step1x3d_pipeline.extract_mesh(field[0], do_remove_floater=False, **cleaned)
+    assert len(everything.faces) - len(kept.faces) == 8, "only the octahedron is a floater"
+    if max_facenum < 200000:
+        assert len(mesh.faces) > max_facenum and len(expected.faces) <= max_facenum
+    assert torch.equal(actual.vertices, torch.from_numpy(expected.vertices).float())
+    assert torch.equal(actual.faces, torch.from_numpy(expected.faces))
 
 
 def test_conditioner_and_preprocessing_match_pinned_reference(tmp_path, tiny_step1x3d_components):
@@ -414,6 +497,7 @@ def test_image_to_mesh_pipeline_matches_pinned_reference(tmp_path):
     from diffusers import FlowMatchEulerDiscreteScheduler
 
     reference = _load_pinned_reference()
+    import_reference_dependency("pymeshlab")
     encoder, image_encoder = _reference_dinov2_encoder(reference, tmp_path)
     torch.manual_seed(3)
     transformer = reference.FluxDenoiser(TINY_TRANSFORMER).eval()
@@ -448,7 +532,6 @@ def test_image_to_mesh_pipeline_matches_pinned_reference(tmp_path):
     expected_mesh = upstream(
         str(image_path),
         generator=torch.Generator().manual_seed(2025),
-        output_type="raw",
         octree_resolution=16,
         bounds=1.05,
         **arguments,
@@ -460,5 +543,5 @@ def test_image_to_mesh_pipeline_matches_pinned_reference(tmp_path):
         **arguments,
     )
     torch.testing.assert_close(actual.latents.latents, expected_latents, atol=0.0, rtol=0.0)
-    assert torch.equal(actual.objects[0].faces, expected_mesh.faces)
-    assert torch.equal(actual.objects[0].vertices, expected_mesh.verts)
+    assert torch.equal(actual.objects[0].faces, torch.from_numpy(expected_mesh.faces))
+    assert torch.equal(actual.objects[0].vertices, torch.from_numpy(expected_mesh.vertices).float())

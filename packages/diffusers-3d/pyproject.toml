@@ -8,7 +8,7 @@ version = "0.1.0.dev0"
 description = "Object-native 3D generation built on Diffusers"
 readme = "README.md"
 requires-python = ">=3.10"
-license = "Apache-2.0 AND MIT AND LicenseRef-SAM-License AND LicenseRef-Tencent-Hunyuan-3D-2.1-Community"
+license = "Apache-2.0 AND MIT AND LicenseRef-SAM-License AND LicenseRef-Tencent-Hunyuan-3D-2.1-Community AND LicenseRef-Tencent-Hunyuan-3D-Omni-Community AND BSD-3-Clause"
 license-files = [
     "LICENSE-APACHE-2.0",
     "src/diffusers_3d/families/trellis/LICENSE-MIT",
@@ -26,6 +26,17 @@ license-files = [
     "src/diffusers_3d/families/pixal3d/NOTICE",
     "src/diffusers_3d/families/hunyuan3d/LICENSE-TENCENT-HUNYUAN-3D-2.1",
     "src/diffusers_3d/families/hunyuan3d/NOTICE",
+    "src/diffusers_3d/families/moge/LICENSE-BSD-3-CLAUSE-SCIPY",
+    "src/diffusers_3d/families/moge/LICENSE-MIT",
+    "src/diffusers_3d/families/moge/NOTICE",
+    "src/diffusers_3d/families/idol/LICENSE-APACHE-2.0",
+    "src/diffusers_3d/families/idol/NOTICE",
+    "src/diffusers_3d/families/triposplat/LICENSE-MIT",
+    "src/diffusers_3d/families/triposplat/NOTICE",
+    "src/diffusers_3d/families/triposr/LICENSE-MIT",
+    "src/diffusers_3d/families/triposr/NOTICE",
+    "src/diffusers_3d/families/hunyuan3d_omni/LICENSE-TENCENT-HUNYUAN-3D-OMNI",
+    "src/diffusers_3d/families/hunyuan3d_omni/NOTICE",
 ]
 authors = [{ name = "The Diffusers 3D contributors" }]
 classifiers = [
@@ -43,9 +54,13 @@ dependencies = [
     "diffusers>=0.40.0.dev0,<0.42",
     "huggingface-hub",
     "numpy",
+    "opencv-python-headless",
     "Pillow",
+    "rembg[cpu]",
+    "scikit-image",
     "safetensors",
     "torch>=2.6",
+    "torchvision",
     "transformers>=5.5.0",
 ]
 
@@ -59,7 +74,11 @@ diffusers-3d-convert-step1x3d-texture = "diffusers_3d.families.step1x3d.texture_
 diffusers-3d-convert-trellis = "diffusers_3d.families.trellis.conversion:main"
 diffusers-3d-convert-trellis2 = "diffusers_3d.families.trellis2.conversion:main"
 diffusers-3d-convert-triposg = "diffusers_3d.families.triposg.conversion:main"
-diffusers-3d-report = "diffusers_3d.compatibility:main"
+diffusers-3d-convert-moge = "diffusers_3d.families.moge.conversion:main"
+diffusers-3d-convert-idol = "diffusers_3d.families.idol.conversion:main"
+diffusers-3d-convert-triposplat = "diffusers_3d.families.triposplat.conversion:main"
+diffusers-3d-convert-triposr = "diffusers_3d.families.triposr.conversion:main"
+diffusers-3d-convert-hunyuan3d-omni = "diffusers_3d.families.hunyuan3d_omni.conversion:main"
 
 [project.optional-dependencies]
 portable = [
@@ -68,9 +87,15 @@ portable = [
     "trimesh",
     "xatlas",
 ]
+meshlab = ["pymeshlab"]
 gaussian = ["gsplat"]
 lora = ["peft>=0.17.0"]
 reference-test = [
+    "plyfile",
+    "tensordict",
+    "torchvision",
+    "omegaconf",
+    "torchdiffeq",
     "einops",
     "optree",
     "scikit-image",
@@ -115,6 +140,21 @@ diffusers_3d = [
     "families/triposg/*.md",
     "families/triposg/LICENSE*",
     "families/triposg/NOTICE",
+    "families/moge/*.md",
+    "families/moge/LICENSE*",
+    "families/moge/NOTICE",
+    "families/idol/*.md",
+    "families/idol/LICENSE*",
+    "families/idol/NOTICE",
+    "families/triposplat/*.md",
+    "families/triposplat/LICENSE*",
+    "families/triposplat/NOTICE",
+    "families/triposr/*.md",
+    "families/triposr/LICENSE*",
+    "families/triposr/NOTICE",
+    "families/hunyuan3d_omni/*.md",
+    "families/hunyuan3d_omni/LICENSE*",
+    "families/hunyuan3d_omni/NOTICE",
 ]
 
 [tool.pytest.ini_options]
@@ -122,10 +162,10 @@ addopts = "-ra --strict-markers"
 markers = [
     "portable: requires the optional portable geometry backends",
     "accelerated: requires an actual GPU or compiled accelerated backend",
-    "research_only: requires an explicitly accepted research-only backend or license",
     "reference_parity: compares against a pinned upstream reference checkout",
     "integration: exercises multiple package subsystems together",
     "release: verifies release metadata or built distribution contents",
+    "real_weights: downloads released checkpoints; opt in with its environment variable",
 ]
 testpaths = ["tests"]
 

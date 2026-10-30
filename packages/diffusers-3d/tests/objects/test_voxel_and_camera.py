@@ -7,9 +7,8 @@ from diffusers_3d import (
     Object3DValidationError,
     OVoxelAsset,
     SparseVoxelAsset,
-    TensorDTypeError,
-    TensorShapeError,
 )
+from diffusers_3d.objects import TensorDTypeError, TensorShapeError
 
 
 def test_sparse_voxel_channels_and_to(sparse_voxel):

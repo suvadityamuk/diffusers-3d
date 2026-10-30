@@ -12,7 +12,7 @@ from accelerate import init_empty_weights
 from diffusers import FlowMatchEulerDiscreteScheduler
 from huggingface_hub import snapshot_download
 from safetensors.torch import load_file
-from transformers import BitImageProcessorPil, Dinov2Model
+from transformers import BitImageProcessorPil, Dinov2Config, Dinov2Model
 
 from .models import TripoSGTransformerModel
 from .pipeline import TripoSGImageTo3DPipeline
@@ -48,9 +48,9 @@ def convert_triposg_checkpoint(
     """Convert a local TripoSG snapshot, or download ``source`` from the Hub at ``revision``.
 
     Transformer weights load unchanged. The VAE keeps its decoder: ``encoder.*`` and ``quant.*`` are dropped and
-    the ``decoder.`` prefix is removed. The DINOv2 encoder and its preprocessor are re-saved as stock Transformers
-    components (the preprocessor as the PIL-backed ``BitImageProcessorPil`` that the release was made with), and
-    the rectified-flow scheduler becomes an equivalent ``FlowMatchEulerDiscreteScheduler``.
+    the ``decoder.`` prefix is removed. The DINOv2 encoder and its preprocessor equal Meta's ``facebook/dinov2-large``
+    and are not written; the pipeline loads them from there. The rectified-flow scheduler becomes an equivalent
+    ``FlowMatchEulerDiscreteScheduler``.
     """
 
     root = Path(source)
@@ -91,9 +91,13 @@ def convert_triposg_checkpoint(
         shift=float(scheduler_config.get("shift", 1.0)),
     )
 
+    # The release's DINOv2 and its preprocessor equal Meta's facebook/dinov2-large, so neither is written: the
+    # pipeline loads them from Meta's repository.
+    with init_empty_weights():
+        image_encoder = Dinov2Model(Dinov2Config.from_pretrained(root / "image_encoder_dinov2"))
     pipeline = TripoSGImageTo3DPipeline(
         feature_extractor=BitImageProcessorPil.from_pretrained(root / "feature_extractor_dinov2"),
-        image_encoder=Dinov2Model.from_pretrained(root / "image_encoder_dinov2").eval(),
+        image_encoder=image_encoder,
         scheduler=scheduler,
         transformer=transformer,
         vae=vae,

@@ -9,7 +9,6 @@
 from __future__ import annotations
 
 import math
-from typing import Any
 
 import torch
 from diffusers import ModelMixin  # noqa: F401 - required by external-component loading
@@ -18,9 +17,7 @@ from diffusers.models.attention_dispatch import dispatch_attention_fn
 from diffusers.models.attention_processor import Attention
 from torch import nn
 
-from ...execution.metadata import ContributionStatus, ReviewStatus
 from ...execution.models import Object3DModel
-from ...objects import Object3DKind
 
 STEP1X3D_NUM_VIEWS = 6
 
@@ -153,13 +150,6 @@ class Step1X3DMultiViewAdapter(Object3DModel):
     file.
     """
 
-    family_id = "step1x3d"
-    component_role = "multiview_adapter"
-    supported_object_kinds = (Object3DKind.MESH,)
-    required_backends = ()
-    contribution_status = ContributionStatus.REVIEWED_PACKAGE
-    review_status = ReviewStatus.REVIEWED
-
     @register_to_config
     def __init__(self, hidden_sizes: dict[str, int]) -> None:
         super().__init__()
@@ -189,10 +179,6 @@ class Step1X3DMultiViewAdapter(Object3DModel):
             name: self.get_submodule(name) if name in self.config.hidden_sizes else Step1X3DMultiViewAttnProcessor()
             for name in unet.attn_processors
         }
-
-    @classmethod
-    def tiny_config(cls) -> dict[str, Any]:
-        return {"hidden_sizes": {"down_blocks.0.attentions.0.transformer_blocks.0.attn1.processor": 8}}
 
 
 __all__ = ["STEP1X3D_NUM_VIEWS", "Step1X3DMultiViewAdapter", "Step1X3DMultiViewAttnProcessor"]

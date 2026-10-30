@@ -19,9 +19,7 @@ from diffusers.models.attention import BasicTransformerBlock, FeedForward
 from diffusers.utils import BaseOutput
 from torch import nn
 
-from ...execution.metadata import ContributionStatus, ReviewStatus
 from ...execution.models import Object3DModel
-from ...objects import Object3DKind
 
 
 @dataclass
@@ -103,12 +101,6 @@ class Sam3DConditionEmbedder(Object3DModel):
     structured-latent embedder takes its pre-norm tokens under an unparameterized layer norm (``prenorm_features``).
     """
 
-    family_id = "sam3d_objects"
-    component_role = "conditioner"
-    supported_object_kinds = (Object3DKind.SPARSE_VOXEL, Object3DKind.GAUSSIAN_SPLAT, Object3DKind.MESH)
-    required_backends = ()
-    contribution_status = ContributionStatus.REVIEWED_PACKAGE
-    review_status = ReviewStatus.REVIEWED
     _no_split_modules = ["BasicTransformerBlock"]
 
     @register_to_config
@@ -143,15 +135,6 @@ class Sam3DConditionEmbedder(Object3DModel):
             "prenorm_features": prenorm_features,
             "projection_hidden_multiplier": 4.0,
             "pointmap_config": cls.production_pointmap_config() if pointmap else None,
-        }
-
-    @classmethod
-    def tiny_config(cls) -> dict[str, Any]:
-        return {
-            "image_embed_dim": 12,
-            "prenorm_features": False,
-            "projection_hidden_multiplier": 1.0,
-            "pointmap_config": {"embed_dim": 8, "input_size": 8, "patch_size": 4, "num_heads": 2, "mlp_ratio": 2.0},
         }
 
     def forward(
@@ -190,4 +173,36 @@ class Sam3DConditionEmbedder(Object3DModel):
         return Sam3DConditionerOutput(embeddings=embeddings)
 
 
-__all__ = ["Sam3DConditionEmbedder", "Sam3DConditionerOutput", "Sam3DPointmapEmbedder"]
+# The frozen DINOv2 SAM 3D Objects conditions on: its released checkpoints hold four copies of Meta's
+# ``dinov2_vitl14_reg``, equal tensor for tensor to this repository, so the pipeline loads it from here instead.
+DINOV2_REGISTERS_REPO = "facebook/dinov2-with-registers-large"
+DINOV2_REGISTERS_REVISION = "e4c89a4e05589de9b3e188688a303d0f3c04d0f3"
+
+
+def load_dinov2_with_registers(
+    repository: str, *, revision: str | None = None, dtype: torch.dtype | None = None, **hub_kwargs: Any
+):
+    """Load a Transformers ``Dinov2WithRegistersModel`` from its repository, float32 (as released) by default."""
+
+    from transformers import Dinov2WithRegistersModel
+
+    model, loading_info = Dinov2WithRegistersModel.from_pretrained(
+        repository,
+        revision=revision,
+        dtype=torch.float32 if dtype is None else dtype,
+        output_loading_info=True,
+        **hub_kwargs,
+    )
+    if any(loading_info[name] for name in ("missing_keys", "unexpected_keys", "mismatched_keys")):
+        raise ValueError(f"the DINOv2 weights do not match its config: {loading_info}")
+    return model.eval()
+
+
+__all__ = [
+    "DINOV2_REGISTERS_REPO",
+    "DINOV2_REGISTERS_REVISION",
+    "load_dinov2_with_registers",
+    "Sam3DConditionEmbedder",
+    "Sam3DConditionerOutput",
+    "Sam3DPointmapEmbedder",
+]

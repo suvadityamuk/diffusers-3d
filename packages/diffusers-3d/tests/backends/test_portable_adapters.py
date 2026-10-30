@@ -8,11 +8,9 @@ import torch
 
 from diffusers_3d import (
     CoordinateSystem,
-    GeometryProcessingBackend,
     MeshAsset,
     PBRMaterial,
     ScikitImageBackend,
-    SurfaceExtractionBackend,
     TrimeshBackend,
     XAtlasBackend,
 )
@@ -115,7 +113,6 @@ def test_trimesh_native_roundtrip_preserves_owned_channels(cube):
     assert torch.equal(restored.materials[0].roughness, material.roughness)
     assert restored.materials[0].opacity is None
     assert not restored.vertices.requires_grad
-    assert isinstance(backend, GeometryProcessingBackend)
 
 
 @pytest.mark.parametrize("file_type", ["obj", "ply", "glb", "stl"])
@@ -188,7 +185,7 @@ def test_trimesh_remove_unreferenced_vertices_remaps_vertex_channels(cube):
     weights = torch.arange(vertices.shape[0], dtype=torch.float32).unsqueeze(1)
     mesh = MeshAsset(vertices, cube.faces, extras={"weights": weights})
 
-    processed = TrimeshBackend().process_geometry(mesh, operation="remove_unreferenced_vertices")
+    processed = TrimeshBackend().remove_unreferenced_vertices(mesh)
 
     assert processed.vertices.shape[0] == cube.vertices.shape[0]
     assert torch.equal(processed.extras["weights"], weights[:-1])
@@ -204,7 +201,6 @@ def test_scikit_image_marching_cubes_topology_bounds_and_winding():
 
     mesh = backend.extract_surface(field.requires_grad_(True), level=0.0, spacing=spacing)
 
-    assert isinstance(backend, SurfaceExtractionBackend)
     assert mesh.vertices.shape[0] > 0
     assert mesh.faces.shape[0] > 0
     assert int(mesh.faces.min()) >= 0
@@ -232,7 +228,7 @@ def test_xatlas_unwraps_plane_and_remaps_vertex_channels():
         metadata={"shape": "plane"},
     )
 
-    unwrapped = XAtlasBackend().process_geometry(plane, operation="unwrap_uv")
+    unwrapped = XAtlasBackend().unwrap_uv(plane)
 
     assert unwrapped.faces.shape == plane.faces.shape
     assert unwrapped.uvs.shape == (unwrapped.vertices.shape[0], 2)
@@ -240,7 +236,6 @@ def test_xatlas_unwraps_plane_and_remaps_vertex_channels():
     assert unwrapped.extras["weights"].shape[0] == unwrapped.vertices.shape[0]
     assert bool(((unwrapped.uvs >= 0.0) & (unwrapped.uvs <= 1.0)).all())
     assert unwrapped.metadata == plane.metadata
-    assert isinstance(XAtlasBackend(), GeometryProcessingBackend)
 
 
 def test_xatlas_duplicates_cube_seams_and_remaps_channels(cube):
@@ -249,7 +244,7 @@ def test_xatlas_duplicates_cube_seams_and_remaps_channels(cube):
     weights = cube.vertices.sum(dim=1)
     mesh = MeshAsset(cube.vertices, cube.faces, colors=colors, extras={"weights": weights})
 
-    unwrapped = XAtlasBackend().process_geometry(mesh, operation="unwrap_uv")
+    unwrapped = XAtlasBackend().unwrap_uv(mesh)
 
     assert unwrapped.vertices.shape[0] > mesh.vertices.shape[0]
     assert torch.equal(unwrapped.colors, (unwrapped.vertices + 1.0) * 0.5)
@@ -265,4 +260,4 @@ def test_xatlas_rejects_alignment_ambiguous_extra_when_vertices_duplicate():
     )
 
     with pytest.raises(ValueError, match="alignment-ambiguous"):
-        XAtlasBackend().process_geometry(tetrahedron, operation="unwrap_uv")
+        XAtlasBackend().unwrap_uv(tetrahedron)

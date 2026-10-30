@@ -12,7 +12,6 @@ from typing import Any
 import torch
 from diffusers import __version__ as diffusers_version
 from safetensors.torch import load_file
-from transformers import CLIPTextModel, CLIPTokenizer, Dinov2WithRegistersModel
 
 from .decoders import (
     TrellisSLatGaussianDecoder,
@@ -21,7 +20,14 @@ from .decoders import (
     TrellisSparseStructureDecoder,
 )
 from .models import TrellisSLatFlowModel, TrellisSparseStructureFlowModel
-from .pipeline import TrellisImageTo3DPipeline, TrellisTextTo3DPipeline
+from .pipeline import (
+    CLIP_REPO,
+    CLIP_REVISION,
+    DINOV2_REPO,
+    DINOV2_REVISION,
+    TrellisImageTo3DPipeline,
+    TrellisTextTo3DPipeline,
+)
 from .scheduler import TrellisFlowEulerScheduler
 
 TRELLIS_REFERENCE_REVISION = "442aa1e1afb9014e80681d3bf604e8d728a86ee7"
@@ -56,6 +62,16 @@ _PIPELINES = {
     "TrellisImageTo3DPipeline": (TrellisImageTo3DPipeline, "image_cond_model", "dinov2_vitl14_reg"),
     "TrellisTextTo3DPipeline": (TrellisTextTo3DPipeline, "text_cond_model", "openai/clip-vit-large-patch14"),
 }
+_ENCODER_CLASSES = {
+    "image_encoder": "Dinov2WithRegistersModel",
+    "text_encoder": "CLIPTextModel",
+    "tokenizer": "CLIPTokenizer",
+}
+# Encoder checkpoints (Hub id, revision) the pipelines load at run time; conversion never writes them.
+TRELLIS_ENCODER_CHECKPOINTS = {
+    TrellisImageTo3DPipeline: (DINOV2_REPO, DINOV2_REVISION),
+    TrellisTextTo3DPipeline: (CLIP_REPO, CLIP_REVISION),
+}
 
 
 def _load_json(path: Path) -> dict[str, Any]:
@@ -77,13 +93,20 @@ def _load_component_descriptor(path: Path) -> tuple[str, dict[str, Any]]:
 
 
 def _save_component(
-    component_key: str, source_stem: Path, destination: Path, *, safe_serialization: bool
+    component_key: str,
+    source_stem: Path,
+    destination: Path,
+    *,
+    model_types: Mapping[str, type[Any]],
+    family: str,
+    safe_serialization: bool,
 ) -> tuple[type[Any], dict[str, Any]]:
+    """Build the upstream component on the meta device, load its weights strictly, and save it in Diffusers layout."""
+
     model_name, model_config = _load_component_descriptor(source_stem.with_suffix(".json"))
-    model_types = _COMPONENT_TYPES[component_key]
     if model_name not in model_types:
         raise ValueError(
-            f"unsupported TRELLIS model {model_name!r} for {component_key!r}; expected {sorted(model_types)}"
+            f"unsupported {family} model {model_name!r} for {component_key!r}; expected {sorted(model_types)}"
         )
     weights_path = source_stem.with_suffix(".safetensors")
     if not weights_path.is_file():
@@ -109,7 +132,7 @@ def _component_source(root: Path, reference: str) -> Path:
     direct = Path(reference)
     if direct.with_suffix(".json").is_file() and direct.with_suffix(".safetensors").is_file():
         return direct
-    raise FileNotFoundError(f"TRELLIS component pair does not exist for reference {reference!r}")
+    raise FileNotFoundError(f"component pair does not exist for reference {reference!r}")
 
 
 def _validate_sampler(value: object, *, name: str) -> tuple[float, dict[str, Any]]:
@@ -151,53 +174,36 @@ def _validate_sampler(value: object, *, name: str) -> tuple[float, dict[str, Any
     return sigma_min, normalized
 
 
-def _validate_normalization(value: object) -> tuple[list[float], list[float]]:
+def _validate_normalization(value: object, *, name: str = "slat_normalization") -> tuple[list[float], list[float]]:
     if not isinstance(value, Mapping) or set(value) != {"mean", "std"}:
-        raise ValueError("slat_normalization must contain exact mean/std arrays")
+        raise ValueError(f"{name} must contain exact mean/std arrays")
     try:
         mean = [float(item) for item in value["mean"]]
         std = [float(item) for item in value["std"]]
     except (TypeError, ValueError) as error:
-        raise ValueError("slat_normalization mean/std must be numeric arrays") from error
+        raise ValueError(f"{name} mean/std must be numeric arrays") from error
     if (
         not mean
         or len(mean) != len(std)
         or not all(math.isfinite(item) for item in mean)
         or not all(math.isfinite(item) and item > 0 for item in std)
     ):
-        raise ValueError("slat_normalization must contain matching finite means and positive standard deviations")
+        raise ValueError(f"{name} must contain matching finite means and positive standard deviations")
     return mean, std
-
-
-def _load_encoder(model_type: type[Any], path: str) -> Any:
-    model, loading_info = model_type.from_pretrained(path, output_loading_info=True)
-    # Unexpected keys are fine: a full CLIP checkpoint also holds the vision tower.
-    if loading_info["missing_keys"] or loading_info["mismatched_keys"]:
-        raise ValueError(f"{path} does not match {model_type.__name__}: {loading_info}")
-    return model.eval()
-
-
-def _load_encoders(path: str, pipeline_type: type[Any]) -> dict[str, Any]:
-    """Image pipelines take a DINOv2-with-registers checkpoint; text pipelines take a CLIP one with its tokenizer."""
-
-    if pipeline_type is TrellisTextTo3DPipeline:
-        return {"text_encoder": _load_encoder(CLIPTextModel, path), "tokenizer": CLIPTokenizer.from_pretrained(path)}
-    return {"image_encoder": _load_encoder(Dinov2WithRegistersModel, path)}
 
 
 def convert_trellis_checkpoint(
     source_directory: str | Path,
     output_directory: str | Path,
     *,
-    encoder_path: str | Path,
     safe_serialization: bool = True,
 ) -> Path:
     """Convert a local upstream image or text pipeline without importing TRELLIS at runtime.
 
-    ``pipeline.json`` selects the target: ``TrellisImageTo3DPipeline`` (DINOv2 image encoder) or
-    ``TrellisTextTo3DPipeline`` (CLIP text encoder and tokenizer). ``encoder_path`` is a Hub id or folder of the
-    matching Transformers checkpoint. Every released component is converted: the sparse-structure
-    flow and decoder, the SLAT flow model, and the Gaussian, mesh, and radiance-field decoders.
+    ``pipeline.json`` selects the target: ``TrellisImageTo3DPipeline`` or ``TrellisTextTo3DPipeline``. Every released
+    TRELLIS network is converted: the sparse-structure flow and decoder, the SLAT flow model, and the Gaussian, mesh,
+    and radiance-field decoders. The DINOv2 or CLIP encoders are not: ``model_index.json`` names them, and the
+    pipeline loads them from their own repositories at the pinned ``TRELLIS_ENCODER_CHECKPOINTS`` revisions.
     """
 
     source = Path(source_directory)
@@ -211,15 +217,11 @@ def convert_trellis_checkpoint(
     args = pipeline_config["args"]
     if not isinstance(args, Mapping):
         raise ValueError("pipeline args must be a mapping")
-    # The released microsoft/TRELLIS-text-large pipeline.json omits ``text_cond_model``; upstream hard-codes CLIP.
-    optional_encoder = pipeline_type is TrellisTextTo3DPipeline
-    if set(args) - {encoder_argument} != _SHARED_PIPELINE_ARGUMENTS or (
-        encoder_argument not in args and not optional_encoder
-    ):
+    if set(args) != _SHARED_PIPELINE_ARGUMENTS | {encoder_argument}:
         raise ValueError(
             f"pipeline args must contain exactly {sorted(_SHARED_PIPELINE_ARGUMENTS | {encoder_argument})}"
         )
-    if args.get(encoder_argument, released_encoder) != released_encoder:
+    if args[encoder_argument] != released_encoder:
         raise ValueError(f"only the released {released_encoder!r} encoder is supported")
     models = args.get("models")
     if not isinstance(models, Mapping):
@@ -241,6 +243,8 @@ def convert_trellis_checkpoint(
             component_key,
             _component_source(source, reference),
             destination / output_name,
+            model_types=_COMPONENT_TYPES[component_key],
+            family="TRELLIS",
             safe_serialization=safe_serialization,
         )
         component_index[output_name] = [model_type.__module__, model_type.__name__]
@@ -251,9 +255,8 @@ def convert_trellis_checkpoint(
             "config": model_config,
         }
 
-    for name, component in _load_encoders(str(encoder_path), pipeline_type).items():
-        component.save_pretrained(destination / name)
-        component_index[name] = ["transformers", type(component).__name__]
+    for name in pipeline_type.external_components:
+        component_index[name] = ["transformers", _ENCODER_CLASSES[name]]
 
     sigma_min, sparse_sampler_params = _validate_sampler(
         args["sparse_structure_sampler"], name="sparse_structure_sampler"
@@ -280,11 +283,6 @@ def convert_trellis_checkpoint(
     (destination / "model_index.json").write_text(
         json.dumps(model_index, indent=2, sort_keys=True) + "\n", encoding="utf-8"
     )
-    metadata = pipeline_type.object3d_model_index()
-    metadata.validate_diffusers_model_index(
-        destination / "model_index.json", pipeline_class_name=pipeline_type.__name__, enforce_loading_eligibility=False
-    )
-    metadata.save_pretrained(destination)
     report = {
         "components": component_report,
         "reference_revision": TRELLIS_REFERENCE_REVISION,
@@ -303,13 +301,11 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("source_directory", type=Path)
     parser.add_argument("output_directory", type=Path)
-    parser.add_argument("--encoder-path", required=True)
     parser.add_argument("--no-safe-serialization", action="store_true")
     args = parser.parse_args(argv)
     convert_trellis_checkpoint(
         args.source_directory,
         args.output_directory,
-        encoder_path=args.encoder_path,
         safe_serialization=not args.no_safe_serialization,
     )
     return 0
@@ -319,4 +315,4 @@ if __name__ == "__main__":
     raise SystemExit(main())
 
 
-__all__ = ["TRELLIS_REFERENCE_REVISION", "convert_trellis_checkpoint", "main"]
+__all__ = ["TRELLIS_ENCODER_CHECKPOINTS", "TRELLIS_REFERENCE_REVISION", "convert_trellis_checkpoint", "main"]

@@ -1,16 +1,20 @@
 from __future__ import annotations
 
+import json
 import re
 import warnings
 
 import pytest
 import torch
 import yaml
+from _configs import tiny_config
+from moge.configs import tiny_moge_config
 from safetensors.torch import save_file
 
 from diffusers_3d import (
     AutoPipelineForImageTo3D,
     Sam3DConditionEmbedder,
+    Sam3DObjectsPipeline,
     Sam3DSparseStructureFlowModel,
     TrellisSLatFlowModel,
     TrellisSLatGaussianDecoder,
@@ -18,6 +22,7 @@ from diffusers_3d import (
     TrellisSparseStructureDecoder,
     convert_sam3d_checkpoint,
 )
+from diffusers_3d.families.moge import MoGeModel
 from diffusers_3d.families.sam3d_objects import conversion
 
 from .conftest import tiny_condition, tiny_dinov2_config, tiny_sam3d_pipeline
@@ -114,8 +119,8 @@ def tiny_production(monkeypatch):
         TrellisSLatGaussianDecoder,
         TrellisSLatMeshDecoder,
     ):
-        monkeypatch.setattr(model_type, "production_config", classmethod(lambda cls: cls.tiny_config()))
-    tiny_embedder = Sam3DConditionEmbedder.tiny_config()
+        monkeypatch.setattr(model_type, "production_config", classmethod(lambda cls: tiny_config(cls)))
+    tiny_embedder = tiny_config(Sam3DConditionEmbedder)
     monkeypatch.setattr(
         Sam3DConditionEmbedder,
         "production_config",
@@ -131,7 +136,7 @@ def tiny_production(monkeypatch):
         Sam3DConditionEmbedder, "production_pointmap_config", staticmethod(lambda: tiny_embedder["pointmap_config"])
     )
     monkeypatch.setattr(conversion, "_dinov2_config", tiny_dinov2_config)
-    representation = TrellisSLatGaussianDecoder.tiny_config()["representation_config"]
+    representation = tiny_config(TrellisSLatGaussianDecoder)["representation_config"]
     monkeypatch.setattr(
         TrellisSLatGaussianDecoder, "production_representation_config", staticmethod(lambda: representation)
     )
@@ -221,17 +226,29 @@ def _write_release(root, pipeline) -> None:
         torch.save(component.state_dict(), root / f"{name}.ckpt")
 
 
-def test_released_layout_converts_and_reproduces_the_pipeline(tmp_path, tiny_production):
+def test_released_layout_converts_and_reproduces_the_pipeline(tmp_path, tiny_production, local_external_components):
     pipeline = tiny_sam3d_pipeline()
     source = tmp_path / "checkpoints"
     source.mkdir()
     _write_release(source, pipeline)
+    # The released MoGe is 1.3 GB; a tiny one stands in for it.
+    estimator = MoGeModel(**tiny_moge_config()).eval()
+    calls = local_external_components(
+        Sam3DObjectsPipeline, image_encoder=pipeline.image_encoder, depth_estimator=estimator
+    )
     with warnings.catch_warnings():
         warnings.simplefilter("ignore", UserWarning)
         convert_sam3d_checkpoint(source, tmp_path / "converted")
+        # DINOv2 and MoGe are third-party: named in model_index.json, never converted or saved.
+        index = json.loads((tmp_path / "converted" / "model_index.json").read_text())
+        assert index["image_encoder"] == ["transformers", "Dinov2WithRegistersModel"]
+        assert index["depth_estimator"] == [MoGeModel.__module__, "MoGeModel"]
+        assert not (tmp_path / "converted" / "image_encoder").exists()
+        assert not (tmp_path / "converted" / "depth_estimator").exists()
         converted = AutoPipelineForImageTo3D.from_pretrained(tmp_path / "converted", local_files_only=True)
-    assert (tmp_path / "converted" / "object3d_model_index.json").is_file()
     assert converted.sparse_structure_scheduler.config.sigma_min == 0.0
+    assert [call[1] for call in calls] == ["facebook/dinov2-with-registers-large", "Ruicheng/moge-vitl"]
+    torch.testing.assert_close(converted.depth_estimator.state_dict(), estimator.state_dict(), atol=0, rtol=0)
 
     condition, pointmap = tiny_condition()
     arguments = {

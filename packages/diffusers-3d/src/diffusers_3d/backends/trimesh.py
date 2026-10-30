@@ -8,10 +8,7 @@ from typing import Any, BinaryIO, TextIO
 import torch
 
 from ..objects import CoordinateSystem, MeshAsset, PBRMaterial
-from ._optional import load_selected_backend
-from .defaults import BACKEND_REGISTRY
-from .registry import BackendRegistry
-from .types import BackendCapability
+from ._optional import require
 
 _METADATA_KEY = "_diffusers_3d"
 _COLOR_ATTRIBUTE = "_diffusers_3d_vertex_colors"
@@ -89,17 +86,8 @@ class TrimeshBackend:
     Conversion goes through NumPy, so it is not differentiable, and raises rather than silently drop a channel.
     """
 
-    def __init__(self, *, registry: BackendRegistry = BACKEND_REGISTRY) -> None:
-        self._trimesh = load_selected_backend(
-            "trimesh",
-            "trimesh",
-            (
-                BackendCapability.CONVERSION,
-                BackendCapability.SERIALIZATION,
-                BackendCapability.GEOMETRY_PROCESSING,
-            ),
-            registry=registry,
-        )
+    def __init__(self) -> None:
+        self._trimesh = require("trimesh", "portable")
 
     def _to_trimesh_material(self, material: PBRMaterial) -> Any:
         if material.extras:
@@ -442,8 +430,8 @@ class TrimeshBackend:
             raise ValueError(f"unsupported mesh file type {file_type!r}; expected one of: {choices}")
         return normalized
 
-    def _validate_export_channels(self, mesh: MeshAsset, file_type: str) -> None:
-        if mesh.coordinate_system is not CoordinateSystem.RIGHT_HANDED_Y_UP:
+    def _validate_export_channels(self, mesh: MeshAsset, file_type: str, *, raw_coordinates: bool = False) -> None:
+        if not raw_coordinates and mesh.coordinate_system is not CoordinateSystem.RIGHT_HANDED_Y_UP:
             raise ValueError(
                 f"{file_type.upper()} export cannot preserve coordinate system {mesh.coordinate_system.value!r}; "
                 "convert with mesh.to_coordinate_system(CoordinateSystem.RIGHT_HANDED_Y_UP) first"
@@ -498,11 +486,15 @@ class TrimeshBackend:
         file_obj: str | os.PathLike[str] | BinaryIO | TextIO,
         *,
         file_type: str | None = None,
+        raw_coordinates: bool = False,
     ) -> Any:
-        """Export OBJ, PLY, GLB, or STL after checking format lossiness."""
+        """Export OBJ, PLY, GLB, or STL after checking format lossiness.
+
+        ``raw_coordinates`` writes the vertices as they are; otherwise the mesh must be right-handed Y-up.
+        """
 
         normalized_type = self._file_type(file_obj, file_type)
-        self._validate_export_channels(mesh, normalized_type)
+        self._validate_export_channels(mesh, normalized_type, raw_coordinates=raw_coordinates)
         native_mesh = self.to_trimesh(mesh)
         if normalized_type == "glb":
             scene = self._trimesh.Scene()
@@ -533,71 +525,71 @@ class TrimeshBackend:
         )
         return self.from_trimesh(native_mesh, coordinate_system=coordinate_system)
 
-    def process_geometry(
-        self,
-        mesh: MeshAsset,
-        *,
-        operation: str,
-        parameters: Mapping[str, object] | None = None,
-    ) -> MeshAsset:
-        """Run a conservative named trimesh operation and return detached CPU tensors."""
-
-        if not isinstance(operation, str):
-            raise TypeError("operation must be a string")
-        options = {} if parameters is None else dict(parameters)
+    def _process(self, mesh: MeshAsset, operation: Any) -> MeshAsset:
         native_mesh = self.to_trimesh(mesh).copy()
-        if operation == "remove_unreferenced_vertices":
-            if options:
-                raise ValueError("remove_unreferenced_vertices does not accept parameters")
-            native_mesh.remove_unreferenced_vertices()
-        elif operation == "fix_normals":
-            unknown = set(options) - {"multibody"}
-            if unknown:
-                raise ValueError(f"unsupported fix_normals parameters: {sorted(unknown)}")
-            native_mesh.fix_normals(multibody=bool(options.get("multibody", False)))
-            package_metadata = native_mesh.metadata[_METADATA_KEY]
-            package_metadata["has_normals"] = True
-        elif operation == "recompute_vertex_normals":
-            if options:
-                raise ValueError("recompute_vertex_normals does not accept parameters")
-            native_mesh._cache.clear()
-            package_metadata = native_mesh.metadata[_METADATA_KEY]
-            package_metadata["has_normals"] = True
-        elif operation == "merge_vertices":
-            vertex_aligned = mesh.normals is not None or mesh.colors is not None or mesh.uvs is not None
-            vertex_aligned = vertex_aligned or any(
-                value.shape[0] == mesh.vertices.shape[0] for value in mesh.extras.values()
-            )
-            if vertex_aligned:
-                raise ValueError("merge_vertices cannot safely merge a mesh with vertex-aligned channels")
-            native_mesh.merge_vertices(**options)
-        elif operation == "cleanup":
-            if options:
-                raise ValueError("cleanup does not accept parameters")
-            if mesh.face_material_ids is not None or mesh.extras:
-                raise ValueError("cleanup cannot safely remap face material IDs or custom extras")
-            native_mesh.update_faces(native_mesh.nondegenerate_faces() & native_mesh.unique_faces())
-            native_mesh.remove_unreferenced_vertices()
-            native_mesh.fix_normals()
-            package_metadata = native_mesh.metadata[_METADATA_KEY]
-            package_metadata["has_normals"] = True
-        elif operation == "simplify_quadric_decimation":
-            if set(options) != {"face_count"}:
-                raise ValueError("simplify_quadric_decimation takes exactly one parameter, face_count")
-            channels = (mesh.normals, mesh.colors, mesh.uvs, mesh.face_material_ids)
-            if any(channel is not None for channel in channels) or mesh.materials or mesh.extras:
-                raise ValueError("simplify_quadric_decimation cannot carry vertex, face, or material channels")
-            # Needs the fast-simplification package.
-            simplified = native_mesh.simplify_quadric_decimation(face_count=int(options["face_count"]))
-            simplified.metadata = native_mesh.metadata
-            native_mesh = simplified
-        else:
-            choices = (
-                "cleanup, fix_normals, merge_vertices, recompute_vertex_normals, remove_unreferenced_vertices, "
-                "simplify_quadric_decimation"
-            )
-            raise ValueError(f"unsupported trimesh geometry operation {operation!r}; expected one of: {choices}")
+        native_mesh = operation(native_mesh) or native_mesh
         return self.from_trimesh(native_mesh)
+
+    @staticmethod
+    def _mark_normals(native_mesh: Any) -> None:
+        native_mesh.metadata[_METADATA_KEY]["has_normals"] = True
+
+    def remove_unreferenced_vertices(self, mesh: MeshAsset) -> MeshAsset:
+        return self._process(mesh, lambda native: native.remove_unreferenced_vertices())
+
+    def fix_normals(self, mesh: MeshAsset, *, multibody: bool = False) -> MeshAsset:
+        """Make face winding consistent and outward, and store vertex normals."""
+
+        def operation(native: Any) -> None:
+            native.fix_normals(multibody=multibody)
+            self._mark_normals(native)
+
+        return self._process(mesh, operation)
+
+    def recompute_vertex_normals(self, mesh: MeshAsset) -> MeshAsset:
+        def operation(native: Any) -> None:
+            native._cache.clear()
+            self._mark_normals(native)
+
+        return self._process(mesh, operation)
+
+    def merge_vertices(self, mesh: MeshAsset, **kwargs: Any) -> MeshAsset:
+        """Weld duplicate vertices (``trimesh.Trimesh.merge_vertices`` keyword arguments)."""
+
+        vertex_count = mesh.vertices.shape[0]
+        if any(channel is not None for channel in (mesh.normals, mesh.colors, mesh.uvs)) or any(
+            value.shape[0] == vertex_count for value in mesh.extras.values()
+        ):
+            raise ValueError("merge_vertices cannot safely merge a mesh with vertex-aligned channels")
+        return self._process(mesh, lambda native: native.merge_vertices(**kwargs))
+
+    def cleanup(self, mesh: MeshAsset) -> MeshAsset:
+        """Drop degenerate and duplicate faces and unreferenced vertices, then fix normals."""
+
+        if mesh.face_material_ids is not None or mesh.extras:
+            raise ValueError("cleanup cannot safely remap face material IDs or custom extras")
+
+        def operation(native: Any) -> None:
+            native.update_faces(native.nondegenerate_faces() & native.unique_faces())
+            native.remove_unreferenced_vertices()
+            native.fix_normals()
+            self._mark_normals(native)
+
+        return self._process(mesh, operation)
+
+    def simplify(self, mesh: MeshAsset, face_count: int) -> MeshAsset:
+        """Quadric decimation to about ``face_count`` faces (needs ``fast-simplification``). Geometry only."""
+
+        channels = (mesh.normals, mesh.colors, mesh.uvs, mesh.face_material_ids)
+        if any(channel is not None for channel in channels) or mesh.materials or mesh.extras:
+            raise ValueError("simplify keeps geometry only; drop vertex, face, and material channels first")
+
+        def operation(native: Any) -> Any:
+            simplified = native.simplify_quadric_decimation(face_count=int(face_count))
+            simplified.metadata = native.metadata
+            return simplified
+
+        return self._process(mesh, operation)
 
 
 __all__ = ["TrimeshBackend"]

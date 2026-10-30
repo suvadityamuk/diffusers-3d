@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import pytest
 import torch
+from _configs import tiny_config
 from transformers import Dinov2WithRegistersConfig, Dinov2WithRegistersModel
 
 from diffusers_3d import (
@@ -27,9 +28,9 @@ def tiny_step1x3d_components():
         )
     )
     torch.manual_seed(1)
-    transformer = Step1X3DTransformer1DModel(**Step1X3DTransformer1DModel.tiny_config())
+    transformer = Step1X3DTransformer1DModel(**tiny_config(Step1X3DTransformer1DModel))
     torch.manual_seed(2)
-    vae = Step1X3DShapeDecoder(**Step1X3DShapeDecoder.tiny_config())
+    vae = Step1X3DShapeDecoder(**tiny_config(Step1X3DShapeDecoder))
     return {
         "image_encoder": image_encoder.eval(),
         "transformer": transformer.eval(),
@@ -40,7 +41,9 @@ def tiny_step1x3d_components():
 
 @pytest.fixture
 def tiny_step1x3d_pipeline(tiny_step1x3d_components):
-    return Step1X3DImageTo3DPipeline(**tiny_step1x3d_components)
+    pipeline = Step1X3DImageTo3DPipeline(**tiny_step1x3d_components)
+    pipeline.disable_background_removal()  # upstream's default rembg would download u2net
+    return pipeline
 
 
 @pytest.fixture
@@ -59,10 +62,10 @@ def rgba_condition():
 def sphere_field():
     """Build an occupancy-style field (positive inside a sphere) on the released grid."""
 
-    from diffusers_3d.families.step1x3d.vae import step1x3d_grid_points
+    from diffusers_3d.backends.occupancy import dense_grid_points
 
     def make(resolution: int, *, radius: float = 0.6, bounds: float = 1.05) -> torch.Tensor:
-        points = step1x3d_grid_points(bounds, resolution)
+        points = dense_grid_points((-bounds,) * 3 + (bounds,) * 3, resolution)
         return (radius - points.norm(dim=-1)).view(1, *([resolution + 1] * 3))
 
     return make
@@ -132,7 +135,9 @@ def make_tiny_step1x3d_texture_components(tokenizer) -> dict:
 def tiny_step1x3d_texture_pipeline(tiny_clip_tokenizer):
     from diffusers_3d import Step1X3DMeshTexturePipeline
 
-    return Step1X3DMeshTexturePipeline(**make_tiny_step1x3d_texture_components(tiny_clip_tokenizer))
+    pipeline = Step1X3DMeshTexturePipeline(**make_tiny_step1x3d_texture_components(tiny_clip_tokenizer))
+    pipeline.disable_background_removal()  # upstream's default BiRefNet would download its weights
+    return pipeline
 
 
 @pytest.fixture

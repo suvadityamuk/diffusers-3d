@@ -19,13 +19,11 @@ from diffusers.models.modeling_utils import get_parameter_dtype
 from diffusers.utils import BaseOutput
 from torch import nn
 
-from ...execution.metadata import ContributionStatus, ReviewStatus
 from ...execution.models import Object3DModel
 from ...objects import (
     CoordinateSystem,
     GaussianSplatAsset,
     MeshAsset,
-    Object3DKind,
     RadianceFieldAsset,
     SparseVoxelAsset,
 )
@@ -125,12 +123,6 @@ class TrellisUpsampleBlock3d(nn.Module):
 class TrellisSparseStructureDecoder(Object3DModel):
     """TRELLIS dense sparse-structure decoder: latent grid -> occupancy logits (``SparseStructureDecoder``)."""
 
-    family_id = "trellis"
-    component_role = "sparse_structure_decoder"
-    supported_object_kinds = (Object3DKind.SPARSE_VOXEL,)
-    required_backends = ()
-    contribution_status = ContributionStatus.REVIEWED_PACKAGE
-    review_status = ReviewStatus.REVIEWED
     _no_split_modules = ["TrellisResBlock3d"]
 
     @register_to_config
@@ -183,18 +175,6 @@ class TrellisSparseStructureDecoder(Object3DModel):
             "channels": [512, 128, 32],
             "norm_type": "layer",
             "use_fp16": True,
-        }
-
-    @classmethod
-    def tiny_config(cls) -> dict[str, Any]:
-        return {
-            "out_channels": 1,
-            "latent_channels": 2,
-            "num_res_blocks": 1,
-            "num_res_blocks_middle": 1,
-            "channels": [8, 4],
-            "norm_type": "layer",
-            "use_fp16": False,
         }
 
     def forward(
@@ -327,10 +307,6 @@ def _hammersley_3d(index: int, count: int) -> tuple[float, float, float]:
 class _TrellisSLatDecoderBase(Object3DModel):
     """Transformer torso shared by the SLAT decoders (upstream ``SparseTransformerBase``)."""
 
-    family_id = "trellis"
-    required_backends = ()
-    contribution_status = ContributionStatus.REVIEWED_PACKAGE
-    review_status = ReviewStatus.REVIEWED
     _supports_gradient_checkpointing = True
     _no_split_modules = ["TrellisSparseTransformerBlock"]
     _repeated_blocks = ["TrellisSparseTransformerBlock"]
@@ -443,9 +419,6 @@ class _TrellisSLatDecoderBase(Object3DModel):
 class TrellisSLatGaussianDecoder(_TrellisSLatDecoderBase):
     """SLAT Gaussian parameter decoder (released layout: 12 shifted-window attention blocks, 32 splats/voxel)."""
 
-    component_role = "slat-gaussian-decoder"
-    supported_object_kinds = (Object3DKind.GAUSSIAN_SPLAT,)
-
     @register_to_config
     def __init__(
         self,
@@ -540,24 +513,6 @@ class TrellisSLatGaussianDecoder(_TrellisSLatDecoderBase):
             "representation_config": cls.production_representation_config(),
         }
 
-    @classmethod
-    def tiny_config(cls) -> dict[str, Any]:
-        representation_config = cls.production_representation_config()
-        representation_config["num_gaussians"] = 2
-        representation_config["perturb_offset"] = False
-        return {
-            "resolution": 8,
-            "model_channels": 16,
-            "latent_channels": 4,
-            "num_blocks": 2,
-            "num_heads": 4,
-            "mlp_ratio": 2,
-            "attn_mode": "full",
-            "window_size": 2,
-            "use_fp16": False,
-            "representation_config": representation_config,
-        }
-
     def _to_assets(
         self, hidden_states: TrellisSparseTensor, parameters: torch.Tensor
     ) -> tuple[GaussianSplatAsset, ...]:
@@ -624,6 +579,8 @@ class TrellisSLatGaussianDecoder(_TrellisSLatDecoderBase):
                         "representation": "gaussian",
                         "resolution": self.resolution,
                         "num_gaussians_per_voxel": count,
+                        # Upstream ``Gaussian.save_ply`` writes ``xyz @ T.T`` with this default ``transform``.
+                        "export_rotation": [[1.0, 0.0, 0.0], [0.0, 0.0, -1.0], [0.0, 1.0, 0.0]],
                     },
                 )
             )
@@ -716,9 +673,6 @@ class TrellisSLatMeshDecoder(_TrellisSLatDecoderBase):
     as ``colors``) and the predicted normal map (stored under ``extras["normal_map"]``, ``[0, 1]``-encoded).
     """
 
-    component_role = "slat-mesh-decoder"
-    supported_object_kinds = (Object3DKind.MESH,)
-
     @register_to_config
     def __init__(
         self,
@@ -787,22 +741,6 @@ class TrellisSLatMeshDecoder(_TrellisSLatDecoderBase):
             "representation_config": {"use_color": True},
         }
 
-    @classmethod
-    def tiny_config(cls) -> dict[str, Any]:
-        return {
-            "resolution": 8,
-            "model_channels": 32,
-            "latent_channels": 4,
-            "num_blocks": 2,
-            "num_heads": 4,
-            "mlp_ratio": 2,
-            "attn_mode": "full",
-            "window_size": 2,
-            "use_fp16": False,
-            "representation_config": {"use_color": True},
-            "num_groups": 4,
-        }
-
     def _to_assets(self, coordinates: torch.Tensor, features: torch.Tensor, batch_size: int) -> tuple[MeshAsset, ...]:
         # Half-precision vertices would snap to the 256^3 grid, so extract in float32 (wider dtypes are kept).
         if features.dtype.itemsize < 4:
@@ -832,6 +770,8 @@ class TrellisSLatMeshDecoder(_TrellisSLatDecoderBase):
                         "representation": "mesh",
                         "resolution": self.mesh_resolution,
                         "extraction": "flexicubes",
+                        # Upstream ``to_glb`` writes ``vertices @ [[1, 0, 0], [0, 0, -1], [0, 1, 0]]``.
+                        "export_rotation": [[1.0, 0.0, 0.0], [0.0, 0.0, 1.0], [0.0, -1.0, 0.0]],
                     },
                 )
             )
@@ -860,9 +800,6 @@ class TrellisSLatRadianceFieldDecoder(_TrellisSLatDecoderBase):
     offset by one, as upstream does. Rendering is not part of the model: use
     :func:`diffusers_3d.backends.radiance_field.render_radiance_field`.
     """
-
-    component_role = "slat-radiance-field-decoder"
-    supported_object_kinds = (Object3DKind.RADIANCE_FIELD,)
 
     @register_to_config
     def __init__(
@@ -910,36 +847,6 @@ class TrellisSLatRadianceFieldDecoder(_TrellisSLatDecoderBase):
         self._initialize_weights()
         if use_fp16:
             self.blocks.to(dtype=torch.float16)
-
-    @classmethod
-    def production_config(cls) -> dict[str, Any]:
-        return {
-            "resolution": 64,
-            "model_channels": 768,
-            "latent_channels": 8,
-            "num_blocks": 12,
-            "num_heads": 12,
-            "mlp_ratio": 4,
-            "attn_mode": "swin",
-            "window_size": 8,
-            "use_fp16": True,
-            "representation_config": {"rank": 16, "dim": 8},
-        }
-
-    @classmethod
-    def tiny_config(cls) -> dict[str, Any]:
-        return {
-            "resolution": 8,
-            "model_channels": 32,
-            "latent_channels": 4,
-            "num_blocks": 2,
-            "num_heads": 4,
-            "mlp_ratio": 2,
-            "attn_mode": "full",
-            "window_size": 2,
-            "use_fp16": False,
-            "representation_config": {"rank": 2, "dim": 4},
-        }
 
     def _to_assets(
         self, hidden_states: TrellisSparseTensor, parameters: torch.Tensor

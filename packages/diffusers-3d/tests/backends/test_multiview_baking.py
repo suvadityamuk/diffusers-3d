@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import math
 
 import numpy as np
@@ -17,6 +18,7 @@ from diffusers_3d.backends import (
     rasterize_texels,
     splat_view,
 )
+from diffusers_3d.backends.multiview_baking import mesh_vertex_inpaint
 
 VIEWS = ((0, 0), (0, 90), (0, 180), (0, 270), (90, 0), (-90, 180))
 FACE_COLORS = torch.tensor(
@@ -178,3 +180,69 @@ def test_baking_is_deterministic():
         if _ == 0:
             first = projected + splatted
     assert all(torch.equal(a, b) for a, b in zip(first, projected + splatted))
+
+
+def _inpaint_case(size: int = 64):
+    """A ring mesh with jittered UVs, a random texture, and a mask with a hole (no xatlas, so on every platform)."""
+
+    rng = np.random.default_rng(7)
+    rings, segments = 9, 14
+    theta = np.linspace(0.15, np.pi - 0.15, rings)
+    phi = np.linspace(0, 2 * np.pi, segments, endpoint=False)
+    t, p = np.meshgrid(theta, phi, indexing="ij")
+    vertices = np.stack([np.sin(t) * np.cos(p), np.cos(t), np.sin(t) * np.sin(p)], -1).reshape(-1, 3)
+    vertices = (vertices * (0.4 + 0.05 * rng.random((len(vertices), 1)))).astype(np.float32)
+    faces = []
+    for i in range(rings - 1):
+        for j in range(segments):
+            a, b = i * segments + j, i * segments + (j + 1) % segments
+            c, d = a + segments, b + segments
+            faces += [[a, c, b], [b, c, d]]
+    faces = np.array(faces, dtype=np.int32)
+    uvs = np.stack([(p / (2 * np.pi)).reshape(-1), (1 - t / np.pi).reshape(-1)], -1)
+    uvs = (uvs * 0.9 + 0.05 + rng.random(uvs.shape) * 0.004).astype(np.float32)
+    texture = rng.random((size, size, 3), dtype=np.float32)
+    mask = np.where(rng.random((size, size)) < 0.6, 255, 0).astype(np.uint8)
+    mask[: size // 2, : size // 3] = 0
+    return texture, mask, vertices, faces, uvs
+
+
+# SHA-256 of the texture and mask that the pinned upstream code returns for _inpaint_case(): Step1X-3D's NumPy
+# meshVerticeInpaint under NumPy 1.26.4, and Hunyuan3D-2.1's C++ extension built as compile_mesh_painter.sh does
+# (g++ -O3, x86-64; HF Jobs run 6ae42feec78863f9c62e4967).
+UPSTREAM_VERTEX_INPAINT = {
+    "numpy": (
+        "6b9051d4e10f47e24c96da8e5ec6a3b1154d57302357485d3fcd4e3592c1b532",
+        "246160e95c31982dfdfe109b2f753a24c4009650a120660e7147cac547449414",
+    ),
+    "cpp": (
+        "13f0e820adfda40faa0c85f789404f1e15df95e182d01c9a6f0f2029fdbae7a6",
+        "246160e95c31982dfdfe109b2f753a24c4009650a120660e7147cac547449414",
+    ),
+}
+
+
+@pytest.mark.parametrize("arithmetic", ["numpy", "cpp"])
+def test_mesh_vertex_inpaint_matches_the_upstream_implementations_bit_for_bit(arithmetic):
+    texture, mask, vertices, faces, uvs = _inpaint_case()
+    filled, filled_mask = mesh_vertex_inpaint(texture, mask, vertices, faces, uvs, arithmetic=arithmetic)
+    assert (filled_mask != mask).sum() > 50  # vertices in the hole were coloured
+    digests = (hashlib.sha256(filled.tobytes()).hexdigest(), hashlib.sha256(filled_mask.tobytes()).hexdigest())
+    assert digests == UPSTREAM_VERTEX_INPAINT[arithmetic]
+
+
+def test_inpaint_texture_matches_the_released_cv2_inpaint():
+    # cv2.inpaint(INPAINT_NS, radius 3) of the C++ result above, from opencv-python-headless 4.10.0.84 in the same run.
+    texture, mask, vertices, faces, uvs = _inpaint_case()
+    filled = inpaint_texture(
+        torch.from_numpy(texture),
+        torch.from_numpy(mask > 0),
+        torch.from_numpy(vertices),
+        torch.from_numpy(faces.astype(np.int64)),
+        torch.from_numpy(uvs),
+        arithmetic="cpp",
+    )
+    pixels = (filled.numpy() * 255).round().astype(np.uint8)
+    assert hashlib.sha256(pixels.tobytes()).hexdigest() == (
+        "83396cd881433b0760c9798b9d65819a0102c647dc29a1e31f35b1960b34060e"
+    )

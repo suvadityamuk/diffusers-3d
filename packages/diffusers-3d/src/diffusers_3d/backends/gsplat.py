@@ -5,10 +5,7 @@ from collections.abc import Mapping
 import torch
 
 from ..objects import CameraRig, GaussianSplatAsset
-from ._optional import load_explicit_backend
-from .defaults import BACKEND_REGISTRY
-from .registry import BackendRegistry
-from .types import BackendCapability
+from ._optional import require
 
 
 class GsplatBackend:
@@ -22,19 +19,10 @@ class GsplatBackend:
         *,
         device: str | torch.device = "cuda",
         dtype: torch.dtype = torch.float32,
-        registry: BackendRegistry = BACKEND_REGISTRY,
     ) -> None:
         self.device = torch.device(device)
         self.dtype = dtype
-        self._gsplat = load_explicit_backend(
-            "gsplat",
-            "gsplat",
-            (BackendCapability.GAUSSIAN_RASTERIZATION,),
-            device=device,
-            dtype=dtype,
-            differentiable=True,
-            registry=registry,
-        )
+        self._gsplat = require("gsplat", "gaussian")
 
     def rasterize_gaussians(
         self,

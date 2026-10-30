@@ -3,14 +3,6 @@
 Sections 1–6 use TRELLIS.2 as the example. Every family loads, conditions, and saves the same way; the differences are
 listed under [Other families](#other-families). [Texture a mesh](#texture-a-mesh) covers the two texture stages.
 
-A runnable version of this walkthrough is
-[`families/trellis2/examples/image_to_3d.py`](../src/diffusers_3d/families/trellis2/examples/image_to_3d.py):
-
-```bash
-python -m diffusers_3d.families.trellis2.examples.image_to_3d --tiny --output out/   # offline, random tiny weights
-python -m diffusers_3d.families.trellis2.examples.image_to_3d --model /path/to/trellis2 --image chair.png --output out/
-```
-
 ## 1. Load a pipeline
 
 Converted checkpoints for every family are on the Hub; the
@@ -28,33 +20,41 @@ pipeline = AutoPipelineForImageTo3D.from_pretrained(
 ).to("cuda")
 ```
 
-The auto-loader reads the repo's `object3d_model_index.json`, checks each component class against the installed
-package, downloads only the component folders it needs, and loads with remote code disabled. It accepts `revision`,
-`cache_dir`, `token`, `local_files_only`, and `subfolder`. A keyword argument named after a component, such as
-`image_encoder=`, replaces that component and skips its download. A locally converted folder already contains the
+The auto-loader reads `_class_name` from the repo's `model_index.json` and calls that pipeline's `from_pretrained`,
+so it takes the same arguments (`revision`, `cache_dir`, `token`, `local_files_only`, `subfolder`, `dtype`, and so
+on). `AutoPipelineForImageTo3D`, `AutoPipelineForTextTo3D`, and `AutoPipelineForMeshTexturing` also check that the
+checkpoint is that kind of pipeline. A keyword argument named after a component, such as `image_encoder=`, replaces
+that component and skips its download. A locally converted folder already contains the
 encoder and needs no extra argument.
 
 The concrete class works too: `Trellis2ImageTo3DPipeline.from_pretrained(...)`. Pipelines are `DiffusionPipeline`s,
 so `.to()`, `save_pretrained()`, and `enable_model_cpu_offload()` behave as usual.
 
-## 2. Build the condition
+## 2. Pass an image
 
-`ImageCondition.image` is a float `(C, H, W)` tensor in `[0, 1]` with 1, 3, or 4 channels. You can attach a
-`(1, H, W)` `mask` and a `camera`.
+Image pipelines take a file path, a PIL image, a `(H, W, C)` array, a float `(C, H, W)` tensor in `[0, 1]`, or an
+`ImageCondition`. A list, or a batched `(B, C, H, W)` tensor, makes a batch. An RGBA image keeps its alpha as the
+object mask.
 
 ```python
-import numpy as np
-from PIL import Image
-from diffusers_3d import ImageCondition
-
-with Image.open("chair.png") as image:
-    pixels = torch.from_numpy(np.asarray(image.convert("RGBA"), dtype=np.float32))
-condition = ImageCondition(image=pixels.permute(2, 0, 1) / 255.0)
+condition = "chair.png"
 ```
 
-With alpha or a mask, the pipeline crops and recenters the object exactly as upstream does. Plain RGB is treated as an
-image whose background is already removed. No pipeline runs a background remover. A bare tensor is wrapped in an
-`ImageCondition` for you, and a list makes a batch.
+With alpha or a mask, the pipeline crops and recenters the object exactly as upstream does. Inputs without usable
+alpha go through each family's upstream background remover, at the same point and resolution as upstream:
+
+| Family | Upstream remover | Here |
+|---|---|---|
+| TRELLIS, TripoSR, Step1X-3D geometry | rembg (u2net) | automatic, same call (`background` extra) |
+| TripoSplat, IDOL, Step1X-3D texture | BiRefNet (`ZhengPeng7/BiRefNet`, MIT) | automatic, ported network and weights |
+| TRELLIS.2, Pixal3D | BiRefNet with `briaai/RMBG-2.0` weights (non-commercial, gated) | opt-in, same network with MIT weights |
+| TripoSG | `briaai/RMBG-1.4` (non-commercial) | opt-in rembg |
+| Hunyuan3D-2.1, Hunyuan3D-Omni | none by default | opt-in rembg (Hunyuan's own call) |
+
+Remover weights download on first use. `pipeline.disable_background_removal()` turns removal off,
+`pipeline.enable_background_removal()` turns an opt-in remover on, and `enable_background_removal(remover)` takes any
+`PIL -> RGBA PIL` callable. Build an `ImageCondition` yourself to attach a separate `(1, H, W)` `mask` or a `camera`;
+`diffusers_3d.as_image_conditions` shows what an input becomes.
 
 ## 3. Generate
 
@@ -111,15 +111,14 @@ Checkpoint keys must start with the component they adapt, for example
 ## 6. Save assets
 
 ```python
-from diffusers_3d import MeshAsset, OVoxelAsset, SparseVoxelAsset, TrimeshBackend, write_ovoxel_npz
-
-if isinstance(asset, SparseVoxelAsset):
-    torch.save(asset.to("cpu"), "structure.pt")  # load with weights_only=False
-elif isinstance(asset, OVoxelAsset):
-    write_ovoxel_npz("object.npz", asset)  # readable by the official TRELLIS.2 tools
-elif isinstance(asset, MeshAsset):
-    TrimeshBackend().export_mesh(asset.to_coordinate_system("right_handed_y_up"), "object.glb")  # GLB is Y-up
+mesh.save("object.glb")      # GLB, OBJ, PLY, or STL by suffix; written +Y-up; MeshAsset.load reads it back
+splats.save("object.ply")    # the 3D Gaussian Splatting PLY layout; GaussianSplatAsset.load reads it back
+ovoxel.save("object.npz")    # lossless, readable by upstream TRELLIS.2's tools; OVoxelAsset.load reads it back
+torch.save(structure.to("cpu"), "structure.pt")  # any other asset; load with weights_only=False
 ```
+
+Meshes also have `simplify(face_count)`, `repair()`, and `unwrap_uv()`, which run on the CPU with the `portable`
+extra.
 
 For a PBR-textured GLB like upstream's `to_glb`, install CuMesh ([backends.md](backends.md)) and call
 `pipeline.postprocess_ovoxel(asset, output_format="textured_mesh")`. Convert the result to `right_handed_y_up` before
@@ -127,18 +126,20 @@ exporting it.
 
 ## Texture a mesh
 
-Two pipelines paint an existing mesh from a reference image. Both take a `MeshAsset` and an `ImageCondition` whose
-alpha or mask isolates the object, and return a UV-textured `MeshAsset`. Load them with `AutoPipelineFor3D`:
+Two pipelines paint an existing mesh from a reference image. Both take a `MeshAsset` and an image whose alpha or mask
+isolates the object, and return a UV-textured `MeshAsset`. Load them with `AutoPipelineForMeshTexturing`:
 
 ```python
-from diffusers_3d import AutoPipelineFor3D
+from diffusers_3d import AutoPipelineForImageTo3D, AutoPipelineForMeshTexturing
 
 shape = AutoPipelineForImageTo3D.from_pretrained("suvadityamuk/Hunyuan3D-2.1-diffusers-3d", dtype=torch.float16).to("cuda")
-mesh = shape(ImageCondition(image=rgba), generator=torch.Generator("cuda").manual_seed(0)).objects[0]
+mesh = shape("chair.png", generator=torch.Generator("cuda").manual_seed(0)).objects[0]
 
-paint = AutoPipelineFor3D.from_pretrained("suvadityamuk/Hunyuan3D-2.1-Paint-diffusers-3d", dtype=torch.float16).to("cuda")
-textured = paint(mesh, ImageCondition(image=rgba), generator=torch.Generator("cuda").manual_seed(0)).objects[0]
-TrimeshBackend().export_mesh(textured.to("cpu"), "textured.glb")
+paint = AutoPipelineForMeshTexturing.from_pretrained(
+    "suvadityamuk/Hunyuan3D-2.1-Paint-diffusers-3d", dtype=torch.float16
+).to("cuda")
+textured = paint(mesh, "chair.png", generator=torch.Generator("cuda").manual_seed(0)).objects[0]
+textured.save("textured.glb")
 ```
 
 - **`Hunyuan3DPaintPipeline`** simplifies the mesh to `max_faces=40000` (`None` keeps it), unwraps it with xatlas,
@@ -159,9 +160,13 @@ All load with `AutoPipelineForImageTo3D` and return assets in `output.objects`. 
 | Step1X-3D | RGBA | mesh | `num_inference_steps=50`, `guidance_scale=7.5`, `octree_resolution=384` |
 | Hunyuan3D-2.1 | RGBA | mesh | `num_inference_steps=50`, `guidance_scale=5.0`, `octree_resolution=384`; load in float16 |
 | SAM 3D Objects | RGB plus `mask`, optional `pointmap` | splats and mesh posed in the camera frame | `formats` from `"sparse_structure"`, `"gaussian"`, `"mesh"` |
+| Hunyuan3D-Omni | RGBA plus one of `point_cloud`, `voxels`, `bbox`, `skeleton` (tensors in the output frame) | mesh | `num_inference_steps=50`, `guidance_scale=4.5`, `octree_resolution=512` |
+| TripoSR | RGBA | vertex-coloured mesh, Z-up; `pipeline.render_views(output.latents.latents)` renders the NeRF | `mc_resolution`, `mc_threshold`; one feed-forward pass, no sampling |
+| TripoSplat | RGBA | Gaussian splats, Z-up | `num_inference_steps=20`, `guidance_scale=3.0`, `num_gaussians` (32768 to 262144); guidance runs sequentially as upstream, `batch_guidance=True` batches it |
+| IDOL | RGBA | Gaussian splats, Z-up; predicted input camera in `metadata["camera"]` | `num_inference_steps=50`, `guidance_scale=4.0`, `num_gaussians`; runs TripoSplat's networks |
 | Pixal3D | RGBA plus `camera_angle_x` (horizontal FOV, radians) | same as TRELLIS.2 | TRELLIS.2's `formats` and `pipeline_type` (default `"1536_cascade"`); needs `image_encoder=` like TRELLIS.2 |
 
-TripoSG, Hunyuan3D-2.1, SAM 3D Objects, and Hunyuan3D-2.1 Paint warn about their license terms when constructed.
+TripoSG, Hunyuan3D-2.1, Hunyuan3D-Omni, SAM 3D Objects, and Hunyuan3D-2.1 Paint warn about their license terms when constructed.
 
 ### TRELLIS
 
@@ -172,20 +177,20 @@ TripoSG, Hunyuan3D-2.1, SAM 3D Objects, and Hunyuan3D-2.1 Paint warn about their
 - Sampling uses flat arguments: `sparse_structure_num_inference_steps`, `slat_num_inference_steps`, `guidance_scale`,
   `guidance_interval`, `rescale_t`.
 - `"gaussian"` returns a `GaussianSplatAsset`; rendering it needs gsplat.
-- `"mesh"` returns a vertex-coloured FlexiCubes `MeshAsset` with the normal map in `extras["normal_map"]`. Drop the
-  extras before exporting: `dataclasses.replace(mesh, extras={})`.
+- `"mesh"` returns a vertex-coloured FlexiCubes `MeshAsset` with the normal map in `extras["normal_map"]`, which
+  `save` leaves out of the file.
 - `"radiance_field"` returns a `RadianceFieldAsset`. Render it with
   `diffusers_3d.backends.radiance_field.render_radiance_field(asset, cameras)`.
-- For a textured GLB, pass the mesh and splats to `TrellisGlbPostprocessFacade().to_textured_mesh(...)`.
+- For a textured GLB, pass the mesh and splats to `diffusers_3d.textured_mesh_from_splats(mesh, gaussians)`.
 
 ## Convert a checkpoint yourself
 
 The Hub repos were made with these converters, so converting gives the same result. Each one checks the release's
-configuration, loads weights strictly, and writes a Diffusers pipeline folder with an `object3d_model_index.json`.
+configuration, loads weights strictly, and writes a Diffusers pipeline folder.
 
 | Family | Command |
 |---|---|
-| TRELLIS | `diffusers-3d-convert-trellis <release> <out> --encoder-path facebook/dinov2-with-registers-large` (or `openai/clip-vit-large-patch14` for text) |
+| TRELLIS | `diffusers-3d-convert-trellis <release> <out>` (DINOv2 or CLIP at the revision the converter pins) |
 | TRELLIS.2 | `diffusers-3d-convert-trellis2 <release> <out> --image-encoder-path facebook/dinov3-vitl16-pretrain-lvd1689m` |
 | TripoSG | `diffusers-3d-convert-triposg VAST-AI/TripoSG <out>` |
 | Step1X-3D geometry | `diffusers-3d-convert-step1x3d <Step1X-3D-Geometry-1300m folder> <out>` |

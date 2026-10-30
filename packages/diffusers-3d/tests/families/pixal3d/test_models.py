@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import pytest
 import torch
+from _configs import production_config, tiny_config
 
 from diffusers_3d import (
     Pixal3DNAFUpsampler,
@@ -20,7 +21,7 @@ RELEASED_NAF_TENSORS = 36
 
 
 def test_sparse_structure_flow_adds_projected_features_and_round_trips(tmp_path):
-    model = Pixal3DSparseStructureFlowModel(**Pixal3DSparseStructureFlowModel.tiny_config()).eval()
+    model = Pixal3DSparseStructureFlowModel(**tiny_config(Pixal3DSparseStructureFlowModel)).eval()
     with torch.no_grad():
         model.out_layer.weight.normal_(std=0.02)
     generator = torch.Generator().manual_seed(0)
@@ -50,7 +51,7 @@ def test_sparse_structure_flow_adds_projected_features_and_round_trips(tmp_path)
 
 
 def test_slat_flow_requires_coordinate_aligned_projected_features(tmp_path):
-    model = Pixal3DSLatFlowModel(**Pixal3DSLatFlowModel.tiny_config(texture=True))
+    model = Pixal3DSLatFlowModel(**tiny_config(Pixal3DSLatFlowModel, texture=True))
     coordinates = torch.tensor([[0, 0, 0, 0], [0, 1, 2, 3], [1, 2, 1, 0], [1, 7, 7, 7]])
     generator = torch.Generator().manual_seed(1)
     latents = TrellisSparseTensor(coordinates, torch.randn(4, 4, generator=generator))
@@ -78,10 +79,10 @@ def test_slat_flow_requires_coordinate_aligned_projected_features(tmp_path):
 
 def test_production_layouts_match_the_released_checkpoints():
     with torch.device("meta"):
-        dense = Pixal3DSparseStructureFlowModel(**Pixal3DSparseStructureFlowModel.production_config())
-        shape = Pixal3DSLatFlowModel(**Pixal3DSLatFlowModel.production_config())
-        texture = Pixal3DSLatFlowModel(**Pixal3DSLatFlowModel.production_config(texture=True))
-        trellis2 = Trellis2SLatFlowModel(**Trellis2SLatFlowModel.production_config())
+        dense = Pixal3DSparseStructureFlowModel(**production_config(Pixal3DSparseStructureFlowModel))
+        shape = Pixal3DSLatFlowModel(**production_config(Pixal3DSLatFlowModel))
+        texture = Pixal3DSLatFlowModel(**production_config(Pixal3DSLatFlowModel, texture=True))
+        trellis2 = Trellis2SLatFlowModel(**production_config(Trellis2SLatFlowModel))
     for model, projection in ((dense, "sparse_structure"), (shape, "slat"), (texture, "slat")):
         assert len(model.state_dict()) == RELEASED_FLOW_TENSORS
         assert model.blocks[0].cross_attn.proj_linear.weight.shape == RELEASED_PROJECTION_SHAPES[projection]
@@ -93,12 +94,12 @@ def test_production_layouts_match_the_released_checkpoints():
     }
     assert texture.input_layer.weight.shape == (1536, 64)
 
-    upsampler = Pixal3DNAFUpsampler(**Pixal3DNAFUpsampler.production_config())
+    upsampler = Pixal3DNAFUpsampler(**production_config(Pixal3DNAFUpsampler))
     assert len(upsampler.state_dict()) == RELEASED_NAF_TENSORS
 
 
 def test_naf_upsampler_output_and_validation():
-    model = Pixal3DNAFUpsampler(**Pixal3DNAFUpsampler.tiny_config()).eval()
+    model = Pixal3DNAFUpsampler(**tiny_config(Pixal3DNAFUpsampler)).eval()
     image = torch.rand(2, 3, 24, 24)
     features = torch.randn(2, 6, 4, 4)
     with torch.no_grad():

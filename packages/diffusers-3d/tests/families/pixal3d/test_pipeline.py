@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 import dataclasses
+import json
 import math
 
 import pytest
 import torch
+from _configs import tiny_config
+from moge.configs import tiny_moge2_config
 
 from diffusers_3d import (
     AutoPipelineForImageTo3D,
@@ -15,9 +18,11 @@ from diffusers_3d import (
     MultiViewCondition,
     OVoxelAsset,
     Pixal3DImageTo3DPipeline,
+    Pixal3DSparseStructureFlowModel,
     SparseVoxelAsset,
-    preprocess_image_condition,
 )
+from diffusers_3d.data import preprocess_image_condition
+from diffusers_3d.families.moge import MoGe2Model
 from diffusers_3d.families.pixal3d.conditioner import (
     camera_distance_from_fov,
     front_view_camera,
@@ -170,8 +175,29 @@ def _rig_for(height: int, width: int) -> CameraRig:
     return CameraRig(rig.world_to_camera, rig.intrinsics, torch.tensor([[height, width]] * 2))
 
 
-def test_save_load_auto_and_preset_validation(tmp_path, tiny_pixal3d_pipeline):
-    tiny_pixal3d_pipeline.save_pretrained(tmp_path)
+_DECODERS = ("sparse_structure_decoder", "shape_slat_decoder", "pbr_decoder")
+
+
+def _external_modules(pipeline) -> dict:
+    names = ("image_encoder", "feature_upsampler", *_DECODERS)
+    return {name: getattr(pipeline, name) for name in names}
+
+
+def test_save_load_auto_and_preset_validation(tmp_path, tiny_pixal3d_pipeline, local_external_components):
+    pipeline = tiny_pixal3d_pipeline
+    calls = local_external_components(Pixal3DImageTo3DPipeline, **_external_modules(pipeline))
+    pipeline.save_pretrained(tmp_path)
+    # DINOv3, NAF, and the TRELLIS decoders are third-party: never saved, loaded from their sources; no depth
+    # estimator is named here.
+    assert sorted(path.name for path in tmp_path.iterdir() if path.is_dir()) == [
+        "shape_slat_flow_model",
+        "shape_slat_flow_model_1024",
+        "shape_slat_scheduler",
+        "sparse_structure_flow_model",
+        "sparse_structure_scheduler",
+        "texture_slat_flow_model_1024",
+        "texture_slat_scheduler",
+    ]
     loaded = AutoPipelineForImageTo3D.from_pretrained(tmp_path, local_files_only=True)
     assert type(loaded) is Pixal3DImageTo3DPipeline
     assert loaded.config.default_pipeline_type == "1536_cascade"
@@ -181,6 +207,25 @@ def test_save_load_auto_and_preset_validation(tmp_path, tiny_pixal3d_pipeline):
     )
     with pytest.raises(ValueError, match="pipeline_type must be one of"):
         loaded(ImageCondition(_rgba()), camera_angle_x=0.4, pipeline_type="512")
+    # Upstream runs DINOv3 and NAF in float32 under a bfloat16 load.
+    low_precision = AutoPipelineForImageTo3D.from_pretrained(tmp_path, local_files_only=True, dtype=torch.bfloat16)
+    low_precision.disable_background_removal()
+    # The gated DINOv3 loads from its own repository, in float32 under a bfloat16 load as upstream runs it.
+    encoders = [(call[0], call[3]) for call in calls if call[0] in ("image_encoder", "feature_upsampler")]
+    assert encoders == [
+        ("image_encoder", None),
+        ("feature_upsampler", None),
+        ("image_encoder", torch.float32),
+        ("feature_upsampler", torch.float32),
+    ]
+    assert {call[0] for call in calls} == {"image_encoder", "feature_upsampler", *_DECODERS}
+    assert (
+        low_precision.image_encoder.dtype is torch.float32 and low_precision.feature_upsampler.dtype is torch.float32
+    )
+    assert low_precision.sparse_structure_flow_model.dtype is torch.bfloat16
+    low_precision.set_progress_bar_config(disable=True)
+    output = low_precision(ImageCondition(_rgba()), camera_angle_x=0.4, formats=("sparse_structure",), **STEPS)
+    assert isinstance(output.objects[0], SparseVoxelAsset)
 
 
 def test_meshes_stay_in_the_view_aligned_frame(monkeypatch, tiny_pixal3d_pipeline, slab_ovoxel):
@@ -213,3 +258,39 @@ def test_projection_samples_bfloat16_features_on_a_float32_grid():
     reference = project_grid_features([feature_map.float()], cells, **arguments)
     assert low_precision.dtype is torch.float32
     torch.testing.assert_close(low_precision, reference, atol=0.0, rtol=0.0)
+
+
+def test_missing_field_of_view_comes_from_the_depth_estimator(monkeypatch):
+    pipeline = tiny_pipeline()
+    with pytest.raises(ValueError, match="load the MoGe-2 depth_estimator"):
+        pipeline.prepare_views(ImageCondition(_rgba()), image_sizes=(TINY_IMAGE_SIZE,))
+    pipeline.register_modules(depth_estimator=MoGe2Model(**tiny_moge2_config()).eval())
+    seen = []
+    monkeypatch.setattr(
+        pipeline, "estimate_camera_angle_x", lambda condition: seen.append(condition) or torch.tensor([0.5])
+    )
+    views = pipeline.prepare_views(ImageCondition(_rgba()), image_sizes=(TINY_IMAGE_SIZE,))
+    assert len(seen) == 1 and views.camera_angle_x.tolist() == [[0.5]]
+    # An explicit field of view skips the estimate.
+    pipeline.prepare_views(ImageCondition(_rgba()), image_sizes=(TINY_IMAGE_SIZE,), camera_angle_x=0.4)
+    assert len(seen) == 1
+
+
+def test_plain_load_keeps_the_bfloat16_torso_and_folders_without_an_estimator_load(
+    tmp_path, local_external_components
+):
+    pipeline = tiny_pipeline()
+    local_external_components(Pixal3DImageTo3DPipeline, **_external_modules(pipeline))
+    config = {**tiny_config(Pixal3DSparseStructureFlowModel), "dtype": "bfloat16"}
+    flow = Pixal3DSparseStructureFlowModel(**config)
+    pipeline.register_modules(sparse_structure_flow_model=flow)
+    pipeline.save_pretrained(tmp_path)
+    # Published folders predate the depth estimator.
+    index = json.loads((tmp_path / "model_index.json").read_text())
+    index.pop("depth_estimator", None)
+    (tmp_path / "model_index.json").write_text(json.dumps(index))
+    loaded = Pixal3DImageTo3DPipeline.from_pretrained(tmp_path, local_files_only=True)
+    assert loaded.depth_estimator is None
+    dtypes = {name: value.dtype for name, value in loaded.sparse_structure_flow_model.state_dict().items()}
+    assert dtypes == {name: value.dtype for name, value in flow.state_dict().items()}
+    assert torch.bfloat16 in dtypes.values() and torch.float32 in dtypes.values()

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import torch
+from _configs import tiny_config
 
 from diffusers_3d import Hunyuan3DPaintRRDBNet, Hunyuan3DPaintUNet
 from diffusers_3d.families.hunyuan3d.paint_models import Hunyuan3DPaintTransformerBlock, position_voxel_indices
@@ -8,7 +9,7 @@ from diffusers_3d.families.hunyuan3d.paint_models import Hunyuan3DPaintTransform
 
 def _unet() -> Hunyuan3DPaintUNet:
     torch.manual_seed(0)
-    model = Hunyuan3DPaintUNet(**Hunyuan3DPaintUNet.tiny_config()).eval()
+    model = Hunyuan3DPaintUNet(**tiny_config(Hunyuan3DPaintUNet)).eval()
     with torch.no_grad():
         for parameter in model.parameters():
             parameter.normal_(std=0.1)
@@ -74,7 +75,7 @@ def test_position_voxel_indices_cover_every_resolution_and_zero_the_background()
 
 
 def test_rrdbnet_upscales_four_times_with_the_released_layer_names():
-    model = Hunyuan3DPaintRRDBNet(**Hunyuan3DPaintRRDBNet.tiny_config()).eval()
+    model = Hunyuan3DPaintRRDBNet(**tiny_config(Hunyuan3DPaintRRDBNet)).eval()
     with torch.no_grad():
         assert model(torch.rand(2, 3, 5, 7)).shape == (2, 3, 20, 28)
     names = set(model.state_dict())

@@ -9,7 +9,6 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any
 
 import torch
 from diffusers import ModelMixin  # noqa: F401 - required by external-component loading
@@ -18,9 +17,7 @@ from diffusers.models.attention import FeedForward
 from diffusers.utils import BaseOutput
 from torch import nn
 
-from ...execution.metadata import ContributionStatus, ReviewStatus
 from ...execution.models import Object3DModel
-from ...objects import Object3DKind
 from .models import Hunyuan3DAttention
 
 
@@ -63,12 +60,6 @@ class Hunyuan3DShapeVAE(Object3DModel):
     ``config.scale_factor`` before :meth:`forward`.
     """
 
-    family_id = "hunyuan3d-2.1"
-    component_role = "vae"
-    supported_object_kinds = (Object3DKind.MESH,)
-    required_backends = ()
-    contribution_status = ContributionStatus.REVIEWED_PACKAGE
-    review_status = ReviewStatus.REVIEWED
     _no_split_modules = ["Hunyuan3DVAEBlock", "Hunyuan3DVAEDecoderBlock"]
     _repeated_blocks = ["Hunyuan3DVAEBlock"]
 
@@ -92,30 +83,6 @@ class Hunyuan3DShapeVAE(Object3DModel):
         self.norm_out = nn.LayerNorm(width)
         self.proj_out = nn.Linear(width, 1)
 
-    @classmethod
-    def production_config(cls) -> dict[str, Any]:
-        return {
-            "num_latents": 4096,
-            "embed_dim": 64,
-            "width": 1024,
-            "heads": 16,
-            "num_decoder_layers": 16,
-            "num_freqs": 8,
-            "scale_factor": 1.0039506158752403,
-        }
-
-    @classmethod
-    def tiny_config(cls) -> dict[str, Any]:
-        return {
-            "num_latents": 6,
-            "embed_dim": 8,
-            "width": 32,
-            "heads": 4,
-            "num_decoder_layers": 2,
-            "num_freqs": 2,
-            "scale_factor": 1.25,
-        }
-
     def forward(
         self, latents: torch.Tensor, return_dict: bool = True
     ) -> Hunyuan3DShapeVAEOutput | tuple[torch.Tensor]:
@@ -131,7 +98,7 @@ class Hunyuan3DShapeVAE(Object3DModel):
     def query_occupancy(self, decoded_latents: torch.Tensor, points: torch.Tensor) -> torch.Tensor:
         """Occupancy logits (positive inside) of ``(batch, points, 3)`` positions, shape ``(batch, points)``."""
 
-        frequencies = (points[..., None] * self.frequencies).flatten(-2)
+        frequencies = (points[..., None] * self.frequencies.to(points.dtype)).flatten(-2)
         embedding = torch.cat([points, frequencies.sin(), frequencies.cos()], dim=-1)
         hidden_states = self.decoder_block(self.query_proj(embedding.to(decoded_latents.dtype)), decoded_latents)
         return self.proj_out(self.norm_out(hidden_states)).squeeze(-1)

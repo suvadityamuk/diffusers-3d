@@ -1,0 +1,33 @@
+VAST-AI TripoSplat integration notice
+
+Portions of the rectified-flow transformer, the Flux.2 VAE image-latent
+conditioning, the octree point sampler and Gaussian decoder, image
+preprocessing, and sampling equations in this family are modified from:
+
+  VAST-AI-Research/TripoSplat
+  https://github.com/VAST-AI-Research/TripoSplat
+  revision d8db9e018b413dd9c4a9fe22463781bf98e8e68d
+
+Those portions are provided under the accompanying MIT License:
+
+  MIT License
+  Copyright (c) 2026 VAST
+
+All ported source files carry a prominent modification notice. Independently
+written diffusers-3d package glue remains under the package Apache-2.0 license.
+
+The DINOv3 image encoder runs as the stock Transformers DINOv3ViTModel and the
+Flux.2 VAE encoder on stock Diffusers blocks; neither is copied from upstream.
+
+Not included:
+
+- the BiRefNet background remover (upstream bundles a Swin-L BiRefNet port);
+- the TripoSplat VAE encoder, which inference does not use.
+
+Weights are not redistributed. The VAST-AI/TripoSplat model card declares the
+MIT license. Its files also include DINOv3 ViT-H/16+ weights from Meta (DINOv3
+License) and the Black Forest Labs Flux.2 VAE; check their own terms before
+redistributing. Converted checkpoints keep their own licenses.
+
+No affiliation, sponsorship, or endorsement by VAST-AI-Research, Tripo, Meta,
+or Black Forest Labs is claimed.

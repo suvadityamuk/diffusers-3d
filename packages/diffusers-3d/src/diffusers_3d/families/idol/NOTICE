@@ -1,0 +1,40 @@
+Speridlabs IDOL integration notice
+
+Image preprocessing, image conditioning, camera decoding, and sampling
+equations in this family are modified from:
+
+  speridlabs/idol-sdk
+  https://github.com/speridlabs/idol-sdk
+  revision 4702a7f00850e34b6e83a2170cc123c3e9570744
+
+Those portions are provided under the accompanying Apache License 2.0
+(LICENSE-APACHE-2.0). Ported source files carry a prominent modification notice.
+
+IDOL's networks keep the architecture of VAST-AI-Research TripoSplat (MIT),
+which upstream credits. They run as this package's TripoSplat classes; see
+../triposplat/NOTICE. Upstream's denoiser source also credits the Diffusers
+Wan transformer (Apache-2.0). No IDOL network code is copied here.
+
+The DINOv3 image encoder runs as the stock Transformers DINOv3ViTModel and the
+Flux.2 VAE encoder on stock Diffusers blocks.
+
+Not included:
+
+- the BiRefNet background remover (upstream bundles BiRefNet weights,
+  birefnet.safetensors, from ZhengPeng7/BiRefNet, MIT);
+- training code, the Gradio demo, and upstream's PLY writer.
+
+Weights are not redistributed. The speridlabs/idol model card declares
+Apache-2.0 and the repository is not gated. IDOL also needs two image encoders
+that it does not bundle:
+
+- facebook/dinov3-vith16plus-pretrain-lvd1689m, gated, under the DINOv3
+  License;
+- the FLUX.2 VAE from black-forest-labs/FLUX.2-dev, which is gated under the
+  FLUX non-commercial license.
+
+A converted folder embeds both encoders. Check their terms before
+redistributing it.
+
+No affiliation, sponsorship, or endorsement by Speridlabs, VAST-AI-Research,
+Meta, or Black Forest Labs is claimed.

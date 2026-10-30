@@ -2,49 +2,30 @@ from __future__ import annotations
 
 import dataclasses
 import io
-import json
-import subprocess
 import sys
 import types
-from importlib.machinery import ModuleSpec
-from pathlib import Path
 
 import numpy as np
 import pytest
 import torch
 
-import diffusers_3d.backends._optional as optional_backends
 from diffusers_3d import (
-    CUMESH_SOURCE_REVISION,
-    CUMESH_SOURCE_URL,
-    FLEX_GEMM_BATCH_INDICES,
-    FLEX_GEMM_SOURCE_REVISION,
-    FLEX_GEMM_SOURCE_URL,
-    BackendCapability,
-    BackendLicenseClass,
-    BackendRegistry,
-    BackendSpec,
-    BackendSupportLevel,
-    BackendUnavailableError,
     CoordinateSystem,
     CuMeshBackend,
-    FlexGemmBackend,
     MeshAsset,
-    OVoxelBackend,
-    OVoxelCapability,
-    OVoxelRuntimeUnavailableError,
-    SparseVoxelAsset,
-    Trellis2PBRPostprocessFacade,
     TrimeshBackend,
-    morton_decode_3d,
-    morton_encode_3d,
+)
+from diffusers_3d.backends import (
     official_tensors_from_ovoxel_asset,
     ovoxel_asset_from_official,
-    ovoxel_grid_transform,
     ovoxel_to_mesh,
     read_ovoxel_npz,
+    textured_mesh_from_ovoxel,
     write_ovoxel_npz,
 )
+from diffusers_3d.backends.o_voxel import morton_decode_3d, morton_encode_3d
+from diffusers_3d.backends.texture_baking import pixel_barycentrics
+from diffusers_3d.backends.voxel_index import VoxelIndex, trilinear_sample
 
 
 def _packed_official() -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
@@ -363,278 +344,7 @@ def test_ovoxel_unpacked_mapping_and_morton_codec_are_exact():
             torch.testing.assert_close(restored[name], value)
 
 
-def test_ovoxel_capabilities_are_independent_and_vxz_never_claims_pure_support(
-    registry_factory,
-    spec_factory,
-):
-    spec = spec_factory(
-        "o_voxel",
-        capabilities=(
-            BackendCapability.NATIVE_REPRESENTATION,
-            BackendCapability.CONVERSION,
-            BackendCapability.SERIALIZATION,
-        ),
-        support_level=BackendSupportLevel.ACCELERATED,
-        devices=("cpu",),
-        differentiable=False,
-        import_name="o_voxel",
-        distribution_name="o-voxel",
-    )
-    registry = registry_factory((spec,), installed=(), importable=())
-    backend = OVoxelBackend(device="cpu", registry=registry)
-    assert backend.supports(OVoxelCapability.SCHEMA_PACK)
-    assert backend.supports(OVoxelCapability.NPZ_CODEC)
-    assert not backend.supports(OVoxelCapability.NATIVE_CODEC)
-    assert not backend.supports(OVoxelCapability.NATIVE_RENDERING)
-    with pytest.raises(OVoxelRuntimeUnavailableError, match="accept_nvdiffrast"):
-        backend.read_vxz("not-real.vxz")
-
-    acknowledged = OVoxelBackend(
-        device="cpu",
-        registry=registry,
-        accept_nvdiffrast_research_license=True,
-    )
-    with pytest.raises(OVoxelRuntimeUnavailableError, match="separately compiled"):
-        acknowledged.read_vxz("not-real.vxz")
-
-
-def test_ovoxel_native_facade_delegates_to_pinned_io_dual_grid_and_renderer_api(
-    monkeypatch,
-    registry_factory,
-    spec_factory,
-):
-    coordinates, attributes = _packed_official()
-    calls = {}
-
-    def read_vxz(file, num_threads=-1):
-        calls["read_vxz"] = (file, num_threads)
-        return coordinates, attributes
-
-    def write_vxz(file, coord, attr, **kwargs):
-        calls["write_vxz"] = (file, coord, attr, kwargs)
-
-    module = types.ModuleType("o_voxel")
-    module.io = types.SimpleNamespace(read_vxz=read_vxz, write_vxz=write_vxz)
-    module.rasterize = types.SimpleNamespace()
-    monkeypatch.setitem(sys.modules, "o_voxel", module)
-    spec = spec_factory(
-        "o_voxel",
-        capabilities=(
-            BackendCapability.NATIVE_REPRESENTATION,
-            BackendCapability.CONVERSION,
-            BackendCapability.SERIALIZATION,
-        ),
-        support_level=BackendSupportLevel.ACCELERATED,
-        devices=("cpu",),
-        dtypes=("float16",),
-        differentiable=False,
-        import_name="o_voxel",
-        distribution_name="o-voxel",
-    )
-    backend = OVoxelBackend(
-        device="cpu",
-        dtype=torch.float16,
-        registry=registry_factory((spec,)),
-        accept_nvdiffrast_research_license=True,
-    )
-    assert backend.supports(OVoxelCapability.NATIVE_CODEC)
-    assert not backend.supports(OVoxelCapability.NATIVE_RENDERING)
-
-    class VoxelRenderer:
-        def __init__(self, rendering_options):
-            calls["renderer_options"] = rendering_options
-
-        def render(self, **kwargs):
-            calls["render"] = kwargs
-            return types.SimpleNamespace(
-                attr=torch.ones(3, 4, 4),
-                depth=torch.ones(4, 4),
-                alpha=torch.ones(4, 4),
-            )
-
-    module.rasterize.VoxelRenderer = VoxelRenderer
-    assert backend.supports(OVoxelCapability.NATIVE_RENDERING)
-
-    with pytest.raises(ValueError, match="does not encode.*resolution"):
-        backend.read_vxz("asset.vxz")
-    asset = backend.read_vxz("asset.vxz", resolution=8, num_threads=3)
-    assert calls["read_vxz"] == ("asset.vxz", 3)
-    assert asset.metadata["resolution"] == [8, 8, 8]
-
-    with pytest.raises(ValueError, match="no verified lossless split_weights encoding"):
-        backend.write_vxz("lossy.vxz", asset)
-    asset.split_weights = None
-    backend.write_vxz("restored.vxz", asset, compression="zstd")
-    output_file, output_coordinates, output_attributes, output_kwargs = calls["write_vxz"]
-    assert output_file == "restored.vxz"
-    assert torch.equal(output_coordinates, coordinates)
-    for name, value in attributes.items():
-        if name == "split_weight":
-            continue
-        assert torch.equal(output_attributes[name], value)
-    assert output_kwargs == {"compression": "zstd"}
-
-    asset.transform = torch.eye(4)
-    asset.grid_transform = asset.grid_transform.to(dtype=torch.float16)
-    rendered = backend.render_voxels(
-        asset,
-        extrinsics=torch.eye(4),
-        intrinsics=torch.tensor([[2.0, 0.0, 2.0], [0.0, 2.0, 2.0], [0.0, 0.0, 1.0]]),
-        image_size=4,
-    )
-    assert set(rendered) == {"attr", "depth", "alpha"}
-    assert calls["renderer_options"] == {"resolution": 4}
-    # Pixel-unit intrinsics are rescaled to the rasterizer's unit-image convention.
-    torch.testing.assert_close(
-        calls["render"]["intrinsics"], torch.tensor([[0.5, 0.0, 0.5], [0.0, 0.5, 0.5], [0.0, 0.0, 1.0]])
-    )
-    assert calls["render"]["voxel_size"] == pytest.approx(1 / 8)
-    assert all(
-        calls["render"][name].dtype is torch.float32 for name in ("position", "attrs", "extrinsics", "intrinsics")
-    )
-    torch.testing.assert_close(
-        calls["render"]["position"],
-        (asset.active_coordinates.to(dtype=torch.float32) + 0.5) / 8 - 0.5,
-    )
-    asset.grid_transform = asset.grid_transform.float()
-    asset.transform = torch.eye(4)
-    asset.transform[:3, 3] = torch.tensor([1.0, 2.0, 3.0])
-    backend.render_voxels(
-        asset,
-        extrinsics=torch.eye(4),
-        intrinsics=torch.eye(3),
-        image_size=4,
-    )
-    torch.testing.assert_close(
-        calls["render"]["position"],
-        (asset.active_coordinates.to(dtype=torch.float32) + 0.5) / 8 - 0.5 + torch.tensor([1.0, 2.0, 3.0]),
-    )
-    angle = torch.tensor(torch.pi / 4)
-    asset.transform = torch.tensor(
-        [
-            [torch.cos(angle), -torch.sin(angle), 0.0, 0.0],
-            [torch.sin(angle), torch.cos(angle), 0.0, 0.0],
-            [0.0, 0.0, 1.0, 0.0],
-            [0.0, 0.0, 0.0, 1.0],
-        ]
-    )
-    with pytest.raises(ValueError, match="axis-aligned"):
-        backend.render_voxels(
-            asset,
-            extrinsics=torch.eye(4),
-            intrinsics=torch.eye(3),
-            image_size=4,
-        )
-
-    high_coordinates = torch.tensor(
-        [[1535, 2, 0], [1024, 1, 0], [1023, 3, 0], [0, 0, 0]],
-        dtype=torch.int32,
-    )
-    asset.active_coordinates = high_coordinates
-    asset.metadata["resolution"] = [1536, 1536, 1536]
-    asset.grid_transform = ovoxel_grid_transform(1536)
-    asset.transform = torch.eye(4)
-    backend.write_vxz("high-resolution.vxz", asset)
-    assert calls["write_vxz"][0] == "high-resolution.vxz"
-    assert torch.equal(calls["write_vxz"][1], high_coordinates)
-
-
-def test_top_level_import_does_not_import_optional_trellis2_backends():
-    source_root = Path(__file__).parents[2] / "src"
-    code = (
-        "import sys; "
-        f"sys.path.insert(0, {str(source_root)!r}); "
-        "import diffusers_3d; "
-        "names=('o_voxel','flex_gemm','cumesh','nvdiffrast'); "
-        "assert all(name not in sys.modules for name in names)"
-    )
-    subprocess.run([sys.executable, "-c", code], check=True)
-
-
-def test_flex_gemm_realistic_cpu_fake_adapts_sparse_operations_without_custom_attestations(
-    monkeypatch,
-    registry_factory,
-    spec_factory,
-):
-    captured = {}
-
-    def sparse_submanifold_conv3d(features, coordinates, shape, weight, bias, unused, dilation):
-        captured.update(coordinates=coordinates, shape=shape, dilation=dilation, unused=unused)
-        return features @ weight.T + bias
-
-    def grid_sample_3d(features, coordinates, *, shape, grid, mode):
-        captured.update(grid_coordinates=coordinates, grid_shape=shape, grid=grid, mode=mode)
-        return features.sum(dim=1, keepdim=True)
-
-    module = types.ModuleType("flex_gemm")
-    module.ops = types.SimpleNamespace(
-        spconv=types.SimpleNamespace(sparse_submanifold_conv3d=sparse_submanifold_conv3d),
-        grid_sample=types.SimpleNamespace(grid_sample_3d=grid_sample_3d),
-    )
-    monkeypatch.setitem(sys.modules, "flex_gemm", module)
-    spec = spec_factory(
-        "flex_gemm",
-        capabilities=(BackendCapability.SPARSE_COMPUTE,),
-        support_level=BackendSupportLevel.ACCELERATED,
-        devices=("cpu",),
-        dtypes=("float32",),
-        differentiable=True,
-        import_name="flex_gemm",
-        distribution_name="flex-gemm",
-    )
-    backend = FlexGemmBackend(
-        device="cpu",
-        registry=registry_factory((spec,)),
-    )
-    assert backend.build_identity is None
-    voxels = SparseVoxelAsset(
-        coordinates=torch.tensor([[0, 1, 2], [3, 2, 1]], dtype=torch.int64),
-        features=torch.tensor([[1.0, 2.0], [3.0, 4.0]]),
-        voxel_size=0.25,
-        coordinate_system=CoordinateSystem.RIGHT_HANDED_Z_UP,
-        extras={FLEX_GEMM_BATCH_INDICES: torch.tensor([0, 1], dtype=torch.int64)},
-    )
-    projected = backend.sparse_compute(
-        voxels,
-        operation="submanifold_conv3d",
-        parameters={
-            "weight": torch.tensor([[2.0, -1.0]]),
-            "bias": torch.tensor([0.5]),
-            "dilation": torch.tensor([1, 2, 1]),
-        },
-    )
-    torch.testing.assert_close(projected.features, torch.tensor([[0.5], [2.5]]))
-    assert torch.equal(
-        captured["coordinates"],
-        torch.tensor([[0, 0, 1, 2], [1, 3, 2, 1]], dtype=torch.int32),
-    )
-    assert captured["dilation"] == (1, 2, 1)
-    assert projected.metadata["flex_gemm_source_revision"] == FLEX_GEMM_SOURCE_REVISION
-    assert "flex_gemm_build_identity" not in projected.metadata
-    sampled = backend.grid_sample_3d(voxels, torch.zeros(1, 2, 3), mode="trilinear")
-    torch.testing.assert_close(sampled, torch.tensor([[3.0], [7.0]]))
-    assert captured["mode"] == "trilinear"
-
-
-def test_flex_gemm_rejects_incompatible_runtime_before_extension_import(monkeypatch):
-    imported = []
-    monkeypatch.setattr(torch.cuda, "is_available", lambda: False)
-    monkeypatch.setattr(
-        optional_backends.importlib,
-        "import_module",
-        lambda name: imported.append(name),
-    )
-
-    with pytest.raises(RuntimeError, match="available CUDA/ROCm"):
-        FlexGemmBackend(device="cuda")
-    assert imported == []
-
-
-def test_cumesh_cpu_fake_covers_repair_simplify_remesh_uv_and_bvh(
-    monkeypatch,
-    registry_factory,
-    spec_factory,
-):
+def test_cumesh_cpu_fake_covers_repair_simplify_remesh_uv_and_bvh(monkeypatch):
     calls = []
 
     class FakeCuMesh:
@@ -685,28 +395,17 @@ def test_cumesh_cpu_fake_covers_repair_simplify_remesh_uv_and_bvh(
     module.cuBVH = FakeBVH
     module.remeshing = types.SimpleNamespace(remesh_narrow_band_dc=remesh)
     monkeypatch.setitem(sys.modules, "cumesh", module)
-    spec = spec_factory(
-        "cumesh",
-        capabilities=(BackendCapability.GEOMETRY_PROCESSING, BackendCapability.CONVERSION),
-        support_level=BackendSupportLevel.ACCELERATED,
-        devices=("cpu",),
-        dtypes=("float32",),
-        differentiable=False,
-        import_name="cumesh",
-        distribution_name="cumesh",
-    )
     with pytest.warns(UserWarning, match="non-commercial"):
-        backend = CuMeshBackend(device="cpu", registry=registry_factory((spec,)))
-    assert backend.build_identity is None
+        backend = CuMeshBackend(device="cpu")
     mesh = MeshAsset(
         vertices=torch.tensor([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]]),
         faces=torch.tensor([[0, 1, 2]], dtype=torch.int64),
         coordinate_system=CoordinateSystem.RIGHT_HANDED_Z_UP,
     )
-    repaired = backend.process_geometry(mesh, operation="repair")
-    simplified = backend.process_geometry(mesh, operation="simplify", parameters={"target_faces": 1})
-    remeshed = backend.process_geometry(mesh, operation="remesh", parameters={"resolution": 8})
-    unwrapped = backend.process_geometry(mesh, operation="uv_unwrap")
+    repaired = backend.repair(mesh)
+    simplified = backend.simplify(mesh, 1)
+    remeshed = backend.remesh(mesh, 8)
+    unwrapped = backend.unwrap_uv(mesh)
     assert repaired.metadata["cumesh_operation"] == "repair"
     assert simplified.metadata["cumesh_operation"] == "simplify"
     assert remeshed.metadata["cumesh_operation"] == "remesh"
@@ -722,74 +421,6 @@ def test_cumesh_cpu_fake_covers_repair_simplify_remesh_uv_and_bvh(
     assert "remove_duplicate_faces" in calls
     assert ("simplify", 1, False) in calls
     assert ("remesh", 8, "FakeBVH") in calls
-
-
-@pytest.mark.parametrize(
-    ("name", "source_url", "source_revision", "capabilities", "differentiable", "backend_type"),
-    [
-        (
-            "flex_gemm",
-            FLEX_GEMM_SOURCE_URL,
-            FLEX_GEMM_SOURCE_REVISION,
-            (BackendCapability.SPARSE_COMPUTE,),
-            True,
-            FlexGemmBackend,
-        ),
-        (
-            "cumesh",
-            CUMESH_SOURCE_URL,
-            CUMESH_SOURCE_REVISION,
-            (BackendCapability.GEOMETRY_PROCESSING, BackendCapability.CONVERSION),
-            False,
-            CuMeshBackend,
-        ),
-    ],
-)
-def test_source_backends_reject_wrong_pep610_source_before_import(
-    monkeypatch,
-    name,
-    source_url,
-    source_revision,
-    capabilities,
-    differentiable,
-    backend_type,
-):
-    monkeypatch.delitem(sys.modules, name, raising=False)
-    spec = BackendSpec(
-        name=name,
-        import_names=(name,),
-        distribution_names=(name,),
-        capabilities=frozenset(capabilities),
-        support_level=BackendSupportLevel.ACCELERATED,
-        license_class=BackendLicenseClass.PERMISSIVE,
-        devices=frozenset({"cpu"}),
-        dtypes=frozenset({"float32"}),
-        differentiable=differentiable,
-        install_hint=f"Build {name} from its pinned source",
-        source_url=source_url,
-        source_revision=source_revision,
-        requires_source_provenance=True,
-    )
-
-    class WrongDistribution:
-        def read_text(self, filename):
-            assert filename == "direct_url.json"
-            return json.dumps(
-                {
-                    "url": "https://github.com/untrusted/fork.git",
-                    "vcs_info": {"vcs": "git", "commit_id": source_revision},
-                }
-            )
-
-    registry = BackendRegistry(
-        (spec,),
-        module_finder=lambda candidate: ModuleSpec(candidate, loader=None),
-        version_getter=lambda _: "1.0",
-        distribution_getter=lambda _: WrongDistribution(),
-    )
-    with pytest.raises(BackendUnavailableError, match="does not match required source"):
-        backend_type(device="cpu", registry=registry)
-    assert name not in sys.modules
 
 
 def test_ovoxel_to_mesh_builds_one_vertex_per_voxel_and_two_triangles_per_closed_quad(slab_ovoxel):
@@ -809,9 +440,7 @@ def test_ovoxel_to_mesh_builds_one_vertex_per_voxel_and_two_triangles_per_closed
 
 @pytest.mark.portable
 @pytest.mark.parametrize("remesh", [False, True])
-def test_textured_mesh_follows_upstream_steps_and_bakes_textures_a_viewer_reads_back(
-    monkeypatch, registry_factory, spec_factory, slab_ovoxel, remesh
-):
+def test_textured_mesh_follows_upstream_steps_and_bakes_textures_a_viewer_reads_back(monkeypatch, slab_ovoxel, remesh):
     pytest.importorskip("trimesh")
     calls = []
 
@@ -825,7 +454,7 @@ def test_textured_mesh_follows_upstream_steps_and_bakes_textures_a_viewer_reads_
         def __getattr__(self, name):
             return lambda *args, **kwargs: calls.append((name, *args, *kwargs.values()))
 
-        def uv_unwrap(self, *, compute_charts_kwargs, return_vmaps):
+        def uv_unwrap(self, *, compute_charts_kwargs, return_vmaps, verbose):
             calls.append(("uv_unwrap",))
             uvs = self.vertices[:, :2] + 0.5
             return self.vertices, self.faces, uvs, torch.arange(self.vertices.shape[0])
@@ -851,24 +480,38 @@ def test_textured_mesh_follows_upstream_steps_and_bakes_textures_a_viewer_reads_
         calls.append(("remesh", kwargs["resolution"]))
         return vertices, faces
 
+    def rasterize(context, clip, faces, *, resolution):
+        # nvdiffrast's output: (u, v, z/w, face id + 1), with p = u * v0 + v * v1 + (1 - u - v) * v2; row 0 at v = 0.
+        size = resolution[0]
+        triangles = ((clip[0, :, :2] + 1) / 2 * size)[faces.long()]
+        lower = triangles.amin(dim=1).floor().clamp(min=0).long()
+        upper = triangles.amax(dim=1).ceil().long().clamp(max=size)
+        face, column, row, weights = pixel_barycentrics(triangles, lower, upper)
+        inside = (weights >= 0).all(dim=1)
+        face, column, row, weights = face[inside], column[inside], row[inside], weights[inside]
+        output = torch.zeros(1, size, size, 4)
+        output[0, row, column] = torch.stack([weights[:, 0], weights[:, 1], weights[:, 2] * 0, face + 1.0], dim=1)
+        return output, None
+
+    def interpolate(attributes, rast, faces):
+        corners = attributes[0][faces[(rast[..., 3].long() - 1).clamp(min=0)].long()]
+        u, v = rast[..., :1], rast[..., 1:2]
+        values = u * corners[..., 0, :] + v * corners[..., 1, :] + (1 - u - v) * corners[..., 2, :]
+        return (values * (rast[..., 3:] > 0),)
+
+    def grid_sample_3d(features, coordinates, *, shape, grid, mode):
+        assert mode == "trilinear"
+        return trilinear_sample(VoxelIndex(coordinates[:, 1:], tuple(shape[2:])), features, grid[0])[None]
+
     module = types.ModuleType("cumesh")
     module.CuMesh, module.cuBVH = FakeCuMesh, FakeBVH
     module.remeshing = types.SimpleNamespace(remesh_narrow_band_dc=remesh_narrow_band_dc)
     monkeypatch.setitem(sys.modules, "cumesh", module)
-    spec = spec_factory(
-        "cumesh",
-        capabilities=(BackendCapability.GEOMETRY_PROCESSING, BackendCapability.CONVERSION),
-        support_level=BackendSupportLevel.ACCELERATED,
-        devices=("cpu",),
-        dtypes=("float32",),
-        differentiable=False,
-        import_name="cumesh",
-        distribution_name="cumesh",
-    )
-    facade = Trellis2PBRPostprocessFacade(registry=registry_factory((spec,)))
-    assert set(facade.requirements(device="cpu")) == {"cumesh"}
+    nvdiffrast = types.SimpleNamespace(RasterizeCudaContext=object, rasterize=rasterize, interpolate=interpolate)
+    monkeypatch.setitem(sys.modules, "nvdiffrast.torch", nvdiffrast)
+    monkeypatch.setitem(sys.modules, "flex_gemm.ops.grid_sample", types.SimpleNamespace(grid_sample_3d=grid_sample_3d))
 
-    textured = facade.to_textured_mesh(
+    textured = textured_mesh_from_ovoxel(
         slab_ovoxel, device="cpu", decimation_target=100, texture_size=64, remesh=remesh
     )
 
@@ -879,14 +522,26 @@ def test_textured_mesh_follows_upstream_steps_and_bakes_textures_a_viewer_reads_
     ]
     fill = ("fill_holes", 3e-2)
     expected = (
-        [fill, ("remesh", 8), ("simplify", 100)]
+        [fill, ("remesh", 8), ("simplify", 100, False)]
         if remesh
-        else [fill, ("simplify", 300), *cleanup, fill, ("simplify", 100), *cleanup, fill, ("unify_face_orientations",)]
+        else [
+            fill,
+            ("simplify", 300, False),
+            *cleanup,
+            fill,
+            ("simplify", 100, False),
+            *cleanup,
+            fill,
+            ("unify_face_orientations",),
+        ]
     )
     assert calls == [*expected, ("uv_unwrap",), ("compute_vertex_normals",)]
 
     material = textured.materials[0]
     assert material.metadata["double_sided"] is not remesh
+    assert textured.metadata["export_rotation"] == [[1.0, 0.0, 0.0], [0.0, 0.0, 1.0], [0.0, -1.0, 0.0]]
+    # Upstream bakes 8-bit textures.
+    assert torch.equal((material.base_color * 255).round() / 255, material.base_color)
     # Read each vertex's texel the way a viewer does (OpenGL uvs: v up, row 0 at the top).
     size = material.base_color.shape[0]
     columns = (textured.uvs[:, 0] * size).long().clamp(0, size - 1)
@@ -899,3 +554,18 @@ def test_textured_mesh_follows_upstream_steps_and_bakes_textures_a_viewer_reads_
     exported = TrimeshBackend().to_trimesh(textured.to_coordinate_system(CoordinateSystem.RIGHT_HANDED_Y_UP))
     assert exported.visual.material.metallicRoughnessTexture is not None
     assert exported.visual.material.doubleSided is not remesh
+
+
+def test_ovoxel_asset_save_and_load_round_trip(tmp_path):
+    from diffusers_3d import OVoxelAsset
+
+    coordinates, attributes = _packed_official()
+    asset = ovoxel_asset_from_official(coordinates, attributes, resolution=8, packed=True)
+    asset.save(tmp_path / "asset.npz")
+    loaded = OVoxelAsset.load(tmp_path / "asset.npz", resolution=8)
+
+    # The writer stores voxels sorted, so compare the voxel sets.
+    def rows(value):
+        return sorted(map(tuple, official_tensors_from_ovoxel_asset(value)[0].tolist()))
+
+    assert rows(loaded) == rows(asset)

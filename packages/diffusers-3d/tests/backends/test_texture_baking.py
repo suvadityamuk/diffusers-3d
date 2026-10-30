@@ -145,57 +145,11 @@ def test_bake_texture_recovers_face_colours_and_fills_unseen_texels():
     assert loose_error.mean() > error.mean()
 
 
-@pytest.mark.portable
-def test_trellis_glb_facade_bakes_a_textured_mesh_with_fake_gsplat(monkeypatch):
-    pytest.importorskip("xatlas")
+def test_trellis_glb_validates_inputs_and_names_its_optional_cuda_libraries(monkeypatch):
     import sys
-    import types
-    from importlib.machinery import ModuleSpec
 
-    from diffusers_3d import (
-        BackendCapability,
-        BackendLicenseClass,
-        BackendRegistry,
-        BackendSpec,
-        BackendSupportLevel,
-        GaussianSplatAsset,
-        TrellisGlbPostprocessFacade,
-    )
+    from diffusers_3d import GaussianSplatAsset, textured_mesh_from_splats
 
-    module = types.ModuleType("gsplat")
-
-    def rasterization(**kwargs):
-        count = kwargs["viewmats"].shape[0]
-        rendered = torch.zeros(count, kwargs["height"], kwargs["width"], 4)
-        rendered[..., :3] = torch.tensor([0.25, 0.5, 0.75])
-        rendered[..., 3] = 2.0  # every pixel at the orbit radius
-        return rendered, torch.ones(count, kwargs["height"], kwargs["width"], 1), {}
-
-    module.rasterization = rasterization
-    monkeypatch.setitem(sys.modules, "gsplat", module)
-
-    def spec(name, capability, level):
-        return BackendSpec(
-            name=name,
-            import_names=(name,),
-            distribution_names=(name,),
-            capabilities=frozenset({capability}),
-            support_level=level,
-            license_class=BackendLicenseClass.PERMISSIVE,
-            devices=frozenset({"cpu"}),
-            dtypes=frozenset({"float32"}),
-            differentiable=name == "gsplat",
-            install_hint=f"Install {name}",
-        )
-
-    registry = BackendRegistry(
-        (
-            spec("gsplat", BackendCapability.GAUSSIAN_RASTERIZATION, BackendSupportLevel.ACCELERATED),
-            spec("xatlas", BackendCapability.GEOMETRY_PROCESSING, BackendSupportLevel.PORTABLE),
-        ),
-        module_finder=lambda candidate: ModuleSpec(candidate, loader=None),
-        version_getter=lambda _: "1.0",
-    )
     mesh = _cube_with_manual_atlas()
     gaussians = GaussianSplatAsset(
         means=torch.zeros(1, 3),
@@ -206,35 +160,11 @@ def test_trellis_glb_facade_bakes_a_textured_mesh_with_fake_gsplat(monkeypatch):
         active_sh_degree=0,
         coordinate_system=CoordinateSystem.RIGHT_HANDED_Z_UP,
     )
-    calls = []
-
-    class Processor:
-        def process_geometry(self, mesh, *, operation, parameters=None):
-            calls.append((operation, parameters))
-            return mesh
-
-    facade = TrellisGlbPostprocessFacade(registry=registry)
-    textured = facade.to_textured_mesh(
-        mesh,
-        gaussians,
-        device="cpu",
-        simplify_ratio=0.5,
-        texture_size=32,
-        num_views=12,
-        render_size=32,
-        depth_tolerance=1.0,
-        mesh_processor=Processor(),
-    )
-
-    assert [operation for operation, _ in calls] == ["repair", "simplify"]
-    assert calls[1][1] == {"target_faces": 6}
-    assert textured.uvs is not None and textured.uvs.shape[0] == textured.vertices.shape[0]
-    assert textured.coordinate_system is CoordinateSystem.RIGHT_HANDED_Z_UP
-    material = textured.materials[0]
-    assert material.base_color.shape == (32, 32, 3)
-    torch.testing.assert_close(material.base_color.reshape(-1, 3).mean(dim=0), torch.tensor([0.25, 0.5, 0.75]))
-    assert float(material.roughness) == 1.0
-    assert textured.metadata["texture"] == "baked-from-gaussians"
-    assert textured.metadata["observed_texel_fraction"] == 1.0
     with pytest.raises(ValueError, match="same coordinate system"):
-        facade.to_textured_mesh(mesh.to_coordinate_system("right_handed_y_up"), gaussians, device="cpu")
+        textured_mesh_from_splats(mesh.to_coordinate_system("right_handed_y_up"), gaussians)
+    with pytest.raises(ValueError, match="simplify"):
+        textured_mesh_from_splats(mesh, gaussians, simplify=1.0)
+    # Upstream's texturing runs on nvdiffrast; without it the error says how to install it.
+    monkeypatch.setitem(sys.modules, "nvdiffrast.torch", None)
+    with pytest.raises(ImportError, match="NVlabs/nvdiffrast.git@v0.3.3"):
+        textured_mesh_from_splats(mesh, gaussians)

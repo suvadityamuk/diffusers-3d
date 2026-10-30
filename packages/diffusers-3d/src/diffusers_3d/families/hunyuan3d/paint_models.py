@@ -24,9 +24,7 @@ from diffusers.models.embeddings import ImageProjection, apply_rotary_emb, get_1
 from diffusers.models.unets.unet_2d_condition import UNet2DConditionOutput
 from torch import nn
 
-from ...execution.metadata import ContributionStatus, ReviewStatus
 from ...execution.models import Object3DModel
-from ...objects import Object3DKind
 
 
 def _attention(query: torch.Tensor, key: torch.Tensor, value: torch.Tensor, heads: int) -> torch.Tensor:
@@ -225,13 +223,6 @@ class Hunyuan3DPaintUNet(Object3DModel):
     ``ImageProjection``.
     """
 
-    family_id = "hunyuan3d-2.1"
-    component_role = "unet"
-    supported_object_kinds = (Object3DKind.MESH,)
-    required_backends = ()
-    contribution_status = ContributionStatus.REVIEWED_PACKAGE
-    review_status = ReviewStatus.REVIEWED
-
     @register_to_config
     def __init__(
         self,
@@ -286,26 +277,6 @@ class Hunyuan3DPaintUNet(Object3DModel):
         self.material_embeds = nn.Parameter(torch.zeros(2, num_text_tokens, cross_attention_dim))
         self.reference_embeds = nn.Parameter(torch.zeros(num_text_tokens, cross_attention_dim))
         self.image_projection = ImageProjection(image_embed_dim, cross_attention_dim, num_image_text_embeds)
-
-    @classmethod
-    def production_config(cls) -> dict[str, Any]:
-        return {}
-
-    @classmethod
-    def tiny_config(cls) -> dict[str, Any]:
-        return {
-            "sample_size": 8,
-            "down_block_types": ("CrossAttnDownBlock2D", "DownBlock2D"),
-            "up_block_types": ("UpBlock2D", "CrossAttnUpBlock2D"),
-            "block_out_channels": (16, 32),
-            "layers_per_block": 1,
-            "attention_head_dim": (1, 2),
-            "cross_attention_dim": 12,
-            "norm_num_groups": 8,
-            "num_text_tokens": 3,
-            "image_embed_dim": 10,
-            "num_image_text_embeds": 2,
-        }
 
     def encode_reference(self, latents: torch.Tensor) -> dict[str, torch.Tensor]:
         """Run ``reference_unet`` on ``(batch, C, h, w)`` reference latents and return each block's normed input."""
@@ -403,13 +374,6 @@ class Hunyuan3DPaintRRDBNet(Object3DModel):
     ``forward`` maps ``(batch, 3, H, W)`` images in ``[0, 1]`` to ``(batch, 3, 4 H, 4 W)``.
     """
 
-    family_id = "hunyuan3d-2.1"
-    component_role = "upscaler"
-    supported_object_kinds = (Object3DKind.MESH,)
-    required_backends = ()
-    contribution_status = ContributionStatus.REVIEWED_PACKAGE
-    review_status = ReviewStatus.REVIEWED
-
     @register_to_config
     def __init__(self, channels: int = 3, num_features: int = 64, num_blocks: int = 23, growth_channels: int = 32):
         super().__init__()
@@ -422,14 +386,6 @@ class Hunyuan3DPaintRRDBNet(Object3DModel):
         self.conv_up2 = nn.Conv2d(num_features, num_features, 3, padding=1)
         self.conv_hr = nn.Conv2d(num_features, num_features, 3, padding=1)
         self.conv_last = nn.Conv2d(num_features, channels, 3, padding=1)
-
-    @classmethod
-    def production_config(cls) -> dict[str, Any]:
-        return {}
-
-    @classmethod
-    def tiny_config(cls) -> dict[str, Any]:
-        return {"num_features": 8, "num_blocks": 1, "growth_channels": 4}
 
     def forward(self, images: torch.Tensor) -> torch.Tensor:
         features = self.conv_first(images)

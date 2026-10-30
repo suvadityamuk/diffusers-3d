@@ -106,6 +106,59 @@ _HUNYUAN3D_EXPORTS = {
     "convert_hunyuan3d_paint_checkpoint",
 }
 
+_HUNYUAN3D_OMNI_EXPORTS = {
+    "HUNYUAN3D_OMNI_REFERENCE_REVISION",
+    "Hunyuan3DOmniControlEncoder",
+    "Hunyuan3DOmniControlEncoderOutput",
+    "Hunyuan3DOmniImageTo3DPipeline",
+    "convert_hunyuan3d_omni_checkpoint",
+}
+
+_TRIPOSR_EXPORTS = {
+    "TRIPOSR_REFERENCE_REVISION",
+    "TRIPOSR_WEIGHTS_REVISION",
+    "TripoSRImageTo3DPipeline",
+    "TripoSRTransformerModel",
+    "TripoSRTriplaneDecoder",
+    "TripoSRTriplaneDecoderOutput",
+    "convert_triposr_checkpoint",
+    "prepare_triposr_image",
+}
+
+_TRIPOSPLAT_EXPORTS = {
+    "TRIPOSPLAT_REFERENCE_REVISION",
+    "TRIPOSPLAT_WEIGHTS_REVISION",
+    "TripoSplatGaussianDecoder",
+    "TripoSplatGaussianDecoderOutput",
+    "TripoSplatImageTo3DPipeline",
+    "TripoSplatImageVAE",
+    "TripoSplatTransformerModel",
+    "TripoSplatTransformerOutput",
+    "convert_triposplat_checkpoint",
+    "prepare_triposplat_image",
+}
+
+_IDOL_EXPORTS = {
+    "IDOL_REFERENCE_REVISION",
+    "IDOL_WEIGHTS_REVISION",
+    "IdolImageTo3DPipeline",
+    "convert_idol_checkpoint",
+    "decode_idol_camera",
+    "prepare_idol_image",
+}
+
+_MOGE_EXPORTS = {
+    "MOGE2_REFERENCE_REVISION",
+    "MOGE2_WEIGHTS_REPOSITORY",
+    "MOGE2_WEIGHTS_REVISION",
+    "MOGE_REFERENCE_REVISION",
+    "MOGE_WEIGHTS_REPOSITORY",
+    "MOGE_WEIGHTS_REVISION",
+    "MoGe2Model",
+    "MoGeModel",
+    "convert_moge_checkpoint",
+}
+
 _MODULES = {
     ".trellis": _TRELLIS_EXPORTS,
     ".trellis2": _TRELLIS2_EXPORTS,
@@ -114,6 +167,11 @@ _MODULES = {
     ".step1x3d": _STEP1X3D_EXPORTS,
     ".pixal3d": _PIXAL3D_EXPORTS,
     ".hunyuan3d": _HUNYUAN3D_EXPORTS,
+    ".moge": _MOGE_EXPORTS,
+    ".idol": _IDOL_EXPORTS,
+    ".triposplat": _TRIPOSPLAT_EXPORTS,
+    ".triposr": _TRIPOSR_EXPORTS,
+    ".hunyuan3d_omni": _HUNYUAN3D_OMNI_EXPORTS,
 }
 _EXPORT_MODULES = {name: module for module, names in _MODULES.items() for name in names}
 

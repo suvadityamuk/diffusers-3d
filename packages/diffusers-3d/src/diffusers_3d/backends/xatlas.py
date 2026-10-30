@@ -1,14 +1,9 @@
 from __future__ import annotations
 
-from collections.abc import Mapping
-
 import torch
 
 from ..objects import MeshAsset, PBRMaterial
-from ._optional import load_selected_backend
-from .defaults import BACKEND_REGISTRY
-from .registry import BackendRegistry
-from .types import BackendCapability
+from ._optional import require
 
 
 def _detach_material(material: PBRMaterial) -> PBRMaterial:
@@ -27,25 +22,12 @@ def _detach_material(material: PBRMaterial) -> PBRMaterial:
 class XAtlasBackend:
     """Portable xatlas UV unwrapping with explicit channel remapping."""
 
-    def __init__(self, *, registry: BackendRegistry = BACKEND_REGISTRY) -> None:
-        self._xatlas = load_selected_backend(
-            "xatlas",
-            "xatlas",
-            (BackendCapability.GEOMETRY_PROCESSING,),
-            registry=registry,
-        )
+    def __init__(self) -> None:
+        self._xatlas = require("xatlas", "portable")
 
-    def process_geometry(
-        self,
-        mesh: MeshAsset,
-        *,
-        operation: str,
-        parameters: Mapping[str, object] | None = None,
-    ) -> MeshAsset:
-        if operation != "unwrap_uv":
-            raise ValueError("xatlas supports only the 'unwrap_uv' geometry operation")
-        if parameters:
-            raise ValueError("xatlas 'unwrap_uv' does not accept parameters")
+    def unwrap_uv(self, mesh: MeshAsset) -> MeshAsset:
+        """UV-unwrap ``mesh``; vertices on UV seams are duplicated and every vertex channel follows them."""
+
         if not isinstance(mesh, MeshAsset):
             raise TypeError("mesh must be a MeshAsset")
         mesh.validate(expensive=True)

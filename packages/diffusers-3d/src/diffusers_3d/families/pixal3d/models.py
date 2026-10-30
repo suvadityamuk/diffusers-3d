@@ -51,8 +51,6 @@ class Pixal3DSparseStructureFlowModel(Trellis2SparseStructureFlowModel):
     ``(batch, resolution**3, proj_in_channels)`` in ``ij`` flattening order.
     """
 
-    family_id = "pixal3d"
-
     @register_to_config
     def __init__(
         self,
@@ -96,14 +94,6 @@ class Pixal3DSparseStructureFlowModel(Trellis2SparseStructureFlowModel):
         )
         _add_projection(self, proj_in_channels)
 
-    @classmethod
-    def production_config(cls) -> dict[str, Any]:
-        return {**super().production_config(), "proj_in_channels": 1024}
-
-    @classmethod
-    def tiny_config(cls) -> dict[str, Any]:
-        return {**super().tiny_config(), "proj_in_channels": 12}
-
     def _block_context(self, context: Any, batch_size: int, dtype: torch.dtype) -> tuple[torch.Tensor, torch.Tensor]:
         encoder_hidden_states, projected = context
         expected = (batch_size, self.resolution**3, self.config.proj_in_channels)
@@ -118,8 +108,6 @@ class Pixal3DSLatFlowModel(Trellis2SLatFlowModel):
     ``encoder_hidden_states`` is the pair ``(global_tokens, projected)``, where ``projected`` is a
     ``TrellisSparseTensor`` coordinate-aligned with ``hidden_states`` carrying ``proj_in_channels`` features.
     """
-
-    family_id = "pixal3d"
 
     @register_to_config
     def __init__(
@@ -163,14 +151,6 @@ class Pixal3DSLatFlowModel(Trellis2SLatFlowModel):
             qk_rms_norm_cross,
         )
         _add_projection(self, proj_in_channels)
-
-    @classmethod
-    def production_config(cls, *, texture: bool = False) -> dict[str, Any]:
-        return {**super().production_config(texture=texture), "proj_in_channels": 2048}
-
-    @classmethod
-    def tiny_config(cls, *, texture: bool = False) -> dict[str, Any]:
-        return {**super().tiny_config(texture=texture), "proj_in_channels": 24}
 
     def _validate_context(self, context: Any, hidden_states: TrellisSparseTensor) -> None:
         encoder_hidden_states, projected = context

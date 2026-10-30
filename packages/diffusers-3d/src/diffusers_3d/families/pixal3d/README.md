@@ -8,31 +8,34 @@ features there. Everything runs in plain PyTorch on any device. MIT license.
 ```python
 import math
 import torch
-from transformers import DINOv3ViTModel
 from diffusers_3d import AutoPipelineForImageTo3D, ImageCondition
 
-image_encoder = DINOv3ViTModel.from_pretrained("facebook/dinov3-vitl16-pretrain-lvd1689m")
-pipeline = AutoPipelineForImageTo3D.from_pretrained(
-    "suvadityamuk/Pixal3D-diffusers-3d", image_encoder=image_encoder
-).to("cuda")
+pipeline = AutoPipelineForImageTo3D.from_pretrained("suvadityamuk/Pixal3D-diffusers-3d").to("cuda")
 ovoxel = pipeline(ImageCondition(image=rgba), camera_angle_x=math.radians(40)).objects[0]
 ```
 
-The published repo omits the DINOv3 encoder because its weights are gated under Meta's DINOv3 License.
+Only Pixal3D's own networks are converted and published. `from_pretrained` loads the third-party ones from their
+original sources at pinned revisions: DINOv3 from `facebook/dinov3-vitl16-pretrain-lvd1689m` (gated under Meta's
+DINOv3 License; accept it on the Hub and log in first), valeo.ai's NAF upsampler from its
+[release checkpoint](https://github.com/valeoai/NAF/releases) (checked against its SHA-256 and converted on load),
+and, for single-view checkpoints, MoGe-2 from `Ruicheng/moge-2-vitl` (converted on load).
 
-- `camera_angle_x` (radians, the horizontal field of view of the image) is required, unless the `ImageCondition`
-  carries a `camera`. Upstream estimates it with MoGe-2; this package does not.
+- `camera_angle_x` (radians, the horizontal field of view of the image) is optional. Without it the field of view comes
+  from the `ImageCondition`'s `camera`, else from the MoGe-2 `depth_estimator`, run on the cropped image as
+  upstream does. Off CUDA MoGe-2 runs in float32, because upstream's float16 autocast only works on CUDA.
 - Images need RGBA, or RGB with a `mask`.
 - `pipeline_type` is `1024_cascade` or `1536_cascade` (default). `formats` and sampler options work as in TRELLIS.2.
 - `mesh_scale` (default 1.0) is upstream's object scale factor.
-- Assets are right-handed Y-up with the camera on `+z`, unlike TRELLIS.2's Z-up. The `.npz`/`.vxz` O-Voxel codecs
-  accept only Z-up and reject these assets.
+- Assets are right-handed Y-up with the camera on `+z`, unlike TRELLIS.2's Z-up. The `.npz` O-Voxel codec
+  accepts only Z-up and rejects these assets.
 - Multi-view checkpoints (converted from `pipeline_mv.json`) take a `MultiViewCondition` with one camera per square
   view; view 0 is the front view.
 
 ## Components
 
-The decoders, schedulers, and image encoder are the TRELLIS.2 classes, unchanged. New:
+The decoders, schedulers, and image encoder are the TRELLIS.2 classes, unchanged. The release's three decoders are
+byte-identical copies of `microsoft/TRELLIS-image-large` (sparse structure) and `microsoft/TRELLIS.2-4B` (shape, PBR)
+files, so `from_pretrained` loads them from those repositories at pinned revisions and converts them on load. New:
 
 | Component | Class | Notes |
 | --- | --- | --- |
@@ -45,28 +48,31 @@ The decoders, schedulers, and image encoder are the TRELLIS.2 classes, unchanged
 - NAF runs in plain PyTorch. Upstream's dilated NATTEN window on upsampled keys equals a border-clamped window on the
   low-resolution grid, which is what this computes.
 - Only active voxels are projected, so the 1536 cascade never builds upstream's dense `96³ × 2048` grid.
-- Inputs larger than 1024 px are not shrunk first, as upstream does, so large photos can differ slightly.
-- Upstream runs DINOv3 and NAF in float32 under a bfloat16 load. To match that, pass float32 `image_encoder` and
-  `feature_upsampler` components.
-- No background removal and no field-of-view estimation. Upstream uses BiRefNet and MoGe-2.
+- `from_pretrained` keeps DINOv3 and NAF in float32 whatever `dtype` the rest loads in, as upstream does; a `dtype`
+  dict that names `image_encoder` or `feature_upsampler` overrides this.
+- Inputs without usable alpha are cut out automatically, as upstream does: they are shrunk to at most 1024 px in
+  their own PIL mode and run through BiRefNet with `briaai/RMBG-2.0` weights (gated, non-commercial), which load from
+  that repository at a pinned revision; the output is bit-identical to upstream's wrapper. As upstream, only RGBA
+  alpha counts (LA and transparent palette inputs are cut out again). `pipeline.disable_background_removal()` turns
+  it off; inputs that already carry alpha are shrunk exactly as upstream.
 - Not ported: the `gated_proj` and `attention` multi-view fusion modes (no released weights), `low_vram` mode (use
   Diffusers offloading), the Direct3D-S2 `paper` branch, and training.
 
 ## Conversion
 
 ```bash
-diffusers-3d-convert-pixal3d TencentARC-Pixal3D/ output/ \
-    --image-encoder-path facebook/dinov3-vitl16-pretrain-lvd1689m \
-    --naf-checkpoint-path naf_release.pth   # add --config-file pipeline_mv.json for multi-view
+diffusers-3d-convert-pixal3d TencentARC-Pixal3D/ output/   # add --config-file pipeline_mv.json for multi-view
 ```
 
-The converter loads every component with `strict=True`, checks the NAF checkpoint's SHA-256, and writes the Diffusers
-layout and `object3d_model_index.json`.
+The converter loads every Pixal3D component with `strict=True` and writes the Diffusers layout. `model_index.json`
+names DINOv3, NAF, and, for single-view folders, the MoGe-2 `depth_estimator` (see
+[`families/moge`](../moge/README.md)); none of them is downloaded or written. `--no-depth-estimator` leaves MoGe-2
+out.
 
 ## Verification
 
-Tiny-weight CPU tests compare both flows, NAF, preprocessing, and single- and multi-view projection against the pinned
-upstream code. Set `DIFFUSERS_3D_PIXAL3D_REFERENCE_ROOT` and `DIFFUSERS_3D_NAF_REFERENCE_ROOT` to the upstream
+Tiny-weight CPU tests compare both flows, NAF, preprocessing (including the shrink of large inputs), the MoGe-2 field
+of view, and single- and multi-view projection against the pinned upstream code. Set `DIFFUSERS_3D_PIXAL3D_REFERENCE_ROOT` and `DIFFUSERS_3D_NAF_REFERENCE_ROOT` to the upstream
 checkouts to run them. GPU runs are in [docs/compatibility.md](../../../../docs/compatibility.md).
 
 See [LICENSE-MIT](LICENSE-MIT) and [NOTICE](NOTICE). NAF code is Apache-2.0.

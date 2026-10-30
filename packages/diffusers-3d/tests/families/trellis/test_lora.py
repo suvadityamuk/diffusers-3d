@@ -21,8 +21,6 @@ def test_missing_peft_raises_install_hint(monkeypatch, tiny_trellis_pipeline):
 
     with pytest.raises(ImportError, match=r"pip install \"peft>="):
         tiny_trellis_pipeline.load_lora_weights({})
-    with pytest.raises(ImportError, match=r"pip install \"peft>="):
-        tiny_trellis_pipeline.sparse_structure_flow_model.load_lora_adapter({}, prefix=None)
 
 
 def test_load_lora_weights_adapts_both_flow_models_and_unloads(

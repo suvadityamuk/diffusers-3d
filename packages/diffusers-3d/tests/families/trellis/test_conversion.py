@@ -5,7 +5,7 @@ import json
 import pytest
 import torch
 from safetensors.torch import save_file
-from transformers import Dinov2Config, Dinov2Model
+from transformers import CLIPTextModel, CLIPTokenizer, Dinov2WithRegistersModel
 
 from diffusers_3d import (
     AutoPipelineForImageTo3D,
@@ -14,8 +14,9 @@ from diffusers_3d import (
     TrellisSLatGaussianDecoder,
     TrellisSLatMeshDecoder,
     TrellisSLatRadianceFieldDecoder,
+    TrellisTextTo3DPipeline,
 )
-from diffusers_3d.families.trellis.conversion import _load_encoders, convert_trellis_checkpoint
+from diffusers_3d.families.trellis.conversion import convert_trellis_checkpoint
 
 pytestmark = pytest.mark.integration
 
@@ -54,7 +55,9 @@ def _pipeline_config(*, normalization_channels: int = 4):
     }
 
 
-def test_synthetic_conversion_converts_slat_components_and_auto_loads(tmp_path, tiny_trellis_components):
+def test_synthetic_conversion_converts_slat_components_and_auto_loads(
+    tmp_path, tiny_trellis_components, local_external_components
+):
     source = tmp_path / "source"
     source.mkdir()
     dinov2, flow, decoder, _, slat_flow, _, gaussian_decoder, mesh_decoder, rf_decoder = tiny_trellis_components(
@@ -67,16 +70,14 @@ def test_synthetic_conversion_converts_slat_components_and_auto_loads(tmp_path, 
     _write_component(source, "slat_mesh", "SLatMeshDecoder", mesh_decoder)
     _write_component(source, "slat_rf", "SLatRadianceFieldDecoder", rf_decoder)
     (source / "pipeline.json").write_text(json.dumps(_pipeline_config()), encoding="utf-8")
-    # The released ``dinov2_vitl14_reg`` lives on the Hub as a Transformers ``Dinov2WithRegistersModel``.
-    dinov2.save_pretrained(tmp_path / "dinov2")
 
-    output = convert_trellis_checkpoint(source, tmp_path / "converted", encoder_path=tmp_path / "dinov2")
+    output = convert_trellis_checkpoint(source, tmp_path / "converted")
+    # DINOv2 is not converted: the pipeline loads it from its own repository.
+    assert not (output / "image_encoder").exists()
     report = json.loads((output / "trellis_conversion.json").read_text(encoding="utf-8"))
     model_index = json.loads((output / "model_index.json").read_text(encoding="utf-8"))
-    sidecar = json.loads((output / "object3d_model_index.json").read_text(encoding="utf-8"))
-    assert sidecar["schema_version"] == 2
     assert model_index["image_encoder"] == ["transformers", "Dinov2WithRegistersModel"]
-    assert {component["name"] for component in sidecar["components"]} == {
+    assert {name for name, value in model_index.items() if isinstance(value, list) and len(value) == 2} >= {
         "image_encoder",
         "gaussian_decoder",
         "mesh_decoder",
@@ -87,10 +88,6 @@ def test_synthetic_conversion_converts_slat_components_and_auto_loads(tmp_path, 
         "sparse_structure_flow_model",
         "sparse_structure_scheduler",
     }
-    for component in sidecar["components"]:
-        value = model_index.get(component["name"], [None, None])
-        if value != [None, None] and component["name"] != "image_encoder":
-            assert value == component["expected_class"].rsplit(".", 1)
     assert set(report["components"]) == {
         "sparse_structure_decoder",
         "sparse_structure_flow_model",
@@ -104,8 +101,12 @@ def test_synthetic_conversion_converts_slat_components_and_auto_loads(tmp_path, 
     assert report["components"]["slat_decoder_mesh"]["class"] == TrellisSLatMeshDecoder.__name__
     assert report["components"]["slat_decoder_rf"]["class"] == TrellisSLatRadianceFieldDecoder.__name__
     assert report["skipped_components"] == {}
+    calls = local_external_components(TrellisImageTo3DPipeline, image_encoder=dinov2)
     loaded = AutoPipelineForImageTo3D.from_pretrained(output, local_files_only=True)
     assert type(loaded) is TrellisImageTo3DPipeline
+    assert calls == [
+        ("image_encoder", "facebook/dinov2-with-registers-large", "e4c89a4e05589de9b3e188688a303d0f3c04d0f3")
+    ]
     assert type(loaded.slat_flow_model) is TrellisSLatFlowModel
     assert type(loaded.gaussian_decoder) is TrellisSLatGaussianDecoder
     assert type(loaded.mesh_decoder) is TrellisSLatMeshDecoder
@@ -115,11 +116,22 @@ def test_synthetic_conversion_converts_slat_components_and_auto_loads(tmp_path, 
         assert torch.equal(loaded.image_encoder.state_dict()[name], parameter), name
 
 
-def test_converter_rejects_an_encoder_without_register_tokens(tmp_path):
-    config = Dinov2Config(image_size=8, patch_size=4, hidden_size=12, num_hidden_layers=1, num_attention_heads=3)
-    Dinov2Model(config).save_pretrained(tmp_path / "dinov2")
-    with pytest.raises(ValueError, match="does not match Dinov2WithRegistersModel"):
-        _load_encoders(str(tmp_path / "dinov2"), TrellisImageTo3DPipeline)
+def test_pipelines_load_their_encoders_from_the_pinned_repositories(monkeypatch):
+    requested = []
+
+    def from_pretrained(path, *, revision, **kwargs):
+        requested.append((path, revision, kwargs.get("dtype")))
+        return torch.nn.Identity()
+
+    monkeypatch.setattr(Dinov2WithRegistersModel, "from_pretrained", from_pretrained)
+    monkeypatch.setattr(CLIPTextModel, "from_pretrained", from_pretrained)
+    monkeypatch.setattr(CLIPTokenizer, "from_pretrained", from_pretrained)
+    for pipeline_type in (TrellisImageTo3DPipeline, TrellisTextTo3DPipeline):
+        for name, component in pipeline_type.external_components.items():
+            component.load(component.repository, revision=component.revision, dtype=None)
+    dinov2 = ("facebook/dinov2-with-registers-large", "e4c89a4e05589de9b3e188688a303d0f3c04d0f3")
+    clip = ("openai/clip-vit-large-patch14", "32bd64288804d66eefd0ccbe215aa642df71cc41")
+    assert requested == [(*dinov2, torch.float32), (*clip, torch.float32), (*clip, None)]
 
 
 def test_converter_requires_every_referenced_component_pair(tmp_path, tiny_trellis_components):
@@ -129,10 +141,9 @@ def test_converter_requires_every_referenced_component_pair(tmp_path, tiny_trell
     _write_component(source, "ss_flow", "SparseStructureFlowModel", flow)
     _write_component(source, "ss_decoder", "SparseStructureDecoder", decoder)
     (source / "pipeline.json").write_text(json.dumps(_pipeline_config()), encoding="utf-8")
-    image_encoder.save_pretrained(tmp_path / "dinov2")
 
     with pytest.raises(FileNotFoundError, match="slat_flow"):
-        convert_trellis_checkpoint(source, tmp_path / "converted", encoder_path=tmp_path / "dinov2")
+        convert_trellis_checkpoint(source, tmp_path / "converted")
 
 
 def test_converter_strictly_rejects_pipeline_component_drift(tmp_path):
@@ -142,4 +153,4 @@ def test_converter_strictly_rejects_pipeline_component_drift(tmp_path):
     del config["args"]["models"]["slat_decoder_rf"]
     (source / "pipeline.json").write_text(json.dumps(config), encoding="utf-8")
     with pytest.raises(ValueError, match="missing=.*slat_decoder_rf"):
-        convert_trellis_checkpoint(source, tmp_path / "converted", encoder_path=tmp_path / "dinov2")
+        convert_trellis_checkpoint(source, tmp_path / "converted")

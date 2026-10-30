@@ -11,7 +11,7 @@ from diffusers_3d import (
     MeshAsset,
     Object3DPipelineOutput,
 )
-from diffusers_3d.families.hunyuan3d.pipeline import recenter_image, resize_like_opencv
+from diffusers_3d.families.hunyuan3d.pipeline import recenter_image
 
 from .conftest import make_tiny_hunyuan3d_pipeline, sample_latents
 
@@ -50,14 +50,6 @@ def test_recenter_crops_the_alpha_box_and_composites_on_white():
         recenter_image(np.zeros((4, 4, 4), dtype=np.uint8), border_ratio=0.15)
 
 
-def test_resize_like_opencv_keeps_constant_images_and_shapes():
-    image = np.full((7, 9, 3), 37, dtype=np.uint8)
-    for size, interpolation in (((4, 5), "area"), ((15, 20), "area"), ((15, 20), "cubic"), ((4, 5), "cubic")):
-        resized = resize_like_opencv(image, *size, interpolation)
-        assert resized.shape == (*size, 3)
-        assert (resized == 37).all()
-
-
 @pytest.mark.portable
 def test_extract_mesh_winds_outward_and_keeps_upstream_vertex_scaling():
     axis = torch.linspace(-1, 1, 17)
@@ -88,11 +80,14 @@ def test_tiny_pipeline_returns_meshes_and_is_deterministic(tiny_hunyuan3d_pipeli
     torch.testing.assert_close(first.latents.latents[:1], second.latents.latents)
 
 
-def test_pipeline_save_load_and_auto_pipeline(tmp_path, tiny_hunyuan3d_pipeline):
+def test_pipeline_save_load_and_auto_pipeline(tmp_path, tiny_hunyuan3d_pipeline, local_external_components):
     tiny_hunyuan3d_pipeline.save_pretrained(tmp_path)
-    assert (tmp_path / "object3d_model_index.json").is_file()
+    # The conditioner is Meta's facebook/dinov2-large cast to float16: never written, loaded from there.
+    assert not (tmp_path / "image_encoder").exists()
+    calls = local_external_components(Hunyuan3DImageTo3DPipeline, image_encoder=tiny_hunyuan3d_pipeline.image_encoder)
     with pytest.warns(UserWarning, match="Tencent Hunyuan 3D 2.1"):
         loaded = AutoPipelineForImageTo3D.from_pretrained(tmp_path, local_files_only=True)
     assert type(loaded) is Hunyuan3DImageTo3DPipeline
     assert loaded.config.image_size == 16
     torch.testing.assert_close(sample_latents(loaded), sample_latents(tiny_hunyuan3d_pipeline))
+    assert calls == [("image_encoder", "facebook/dinov2-large", "47b73eefe95e8d44ec3623f8890bd894b6ea2d6c", None)]

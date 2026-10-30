@@ -2,12 +2,13 @@ from __future__ import annotations
 
 import pytest
 import torch
+from _configs import production_config, tiny_config
 
 from diffusers_3d import Trellis2SLatFlowModel, Trellis2SparseStructureFlowModel, TrellisSparseTensor
 
 
 def test_sparse_structure_flow_forward_backward_state_layout_and_save_load(tmp_path):
-    model = Trellis2SparseStructureFlowModel(**Trellis2SparseStructureFlowModel.tiny_config())
+    model = Trellis2SparseStructureFlowModel(**tiny_config(Trellis2SparseStructureFlowModel))
     with torch.no_grad():
         model.out_layer.weight.normal_(std=0.02)
     model.enable_gradient_checkpointing()
@@ -44,8 +45,8 @@ def test_sparse_structure_flow_forward_backward_state_layout_and_save_load(tmp_p
 
 
 def test_slat_flow_tiny_shape_and_texture_concat_forward_backward_and_save_load(tmp_path):
-    shape_model = Trellis2SLatFlowModel(**Trellis2SLatFlowModel.tiny_config())
-    texture_model = Trellis2SLatFlowModel(**Trellis2SLatFlowModel.tiny_config(texture=True))
+    shape_model = Trellis2SLatFlowModel(**tiny_config(Trellis2SLatFlowModel))
+    texture_model = Trellis2SLatFlowModel(**tiny_config(Trellis2SLatFlowModel, texture=True))
     with torch.no_grad():
         shape_model.out_layer.weight.normal_(std=0.02)
         texture_model.out_layer.weight.normal_(std=0.02)
@@ -80,9 +81,9 @@ def test_slat_flow_tiny_shape_and_texture_concat_forward_backward_and_save_load(
 def test_production_slat_flow_layouts_match_the_released_checkpoints():
     # Key counts and the input widths of the released 1.3B shape / texture SLAT denoisers.
     with torch.device("meta"):
-        shape_model = Trellis2SLatFlowModel(**Trellis2SLatFlowModel.production_config())
-        texture_model = Trellis2SLatFlowModel(**Trellis2SLatFlowModel.production_config(texture=True))
-        cascade_model = Trellis2SLatFlowModel(**{**Trellis2SLatFlowModel.production_config(), "resolution": 64})
+        shape_model = Trellis2SLatFlowModel(**production_config(Trellis2SLatFlowModel))
+        texture_model = Trellis2SLatFlowModel(**production_config(Trellis2SLatFlowModel, texture=True))
+        cascade_model = Trellis2SLatFlowModel(**{**production_config(Trellis2SLatFlowModel), "resolution": 64})
     assert len(shape_model.state_dict()) == len(texture_model.state_dict()) == 640
     assert shape_model.input_layer.weight.shape == (1536, 32)
     assert texture_model.input_layer.weight.shape == (1536, 64)
@@ -92,7 +93,7 @@ def test_production_slat_flow_layouts_match_the_released_checkpoints():
 
 
 def test_slat_flow_rope_is_unbounded_by_the_configured_resolution():
-    model = Trellis2SLatFlowModel(**Trellis2SLatFlowModel.tiny_config())
+    model = Trellis2SLatFlowModel(**tiny_config(Trellis2SLatFlowModel))
     coordinates = torch.tensor([[0, 0, 0, 0], [0, 40, 41, 42]], dtype=torch.int64)
     hidden_states = TrellisSparseTensor(coordinates, torch.randn(2, 4, generator=torch.Generator().manual_seed(0)))
     output = model(hidden_states, torch.tensor([500.0]), torch.randn(1, 3, 12)).sample

@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass, field
+import os
+from dataclasses import dataclass, field, fields
+from typing import Any
 
 import torch
 from diffusers.utils import BaseOutput
@@ -20,6 +22,7 @@ from ._validation import (
     validate_transform,
 )
 from .base import TensorDataMixin
+from .coordinates import changes_handedness, coordinate_change_matrix
 from .types import CoordinateSystem, Metadata, Object3DKind
 
 QUATERNION_NORM_TOLERANCE = 1e-3
@@ -55,6 +58,66 @@ class GaussianSplatAsset(BaseOutput, TensorDataMixin):
     @property
     def object_to_world(self) -> torch.Tensor:
         return self.transform
+
+    def to_coordinate_system(self, target: CoordinateSystem | str) -> GaussianSplatAsset:
+        """Rotate the Gaussians into another right-handed convention (for example TRELLIS Z-up to Y-up).
+
+        Only degree-0 colour is rotation invariant, so assets with non-zero higher-order SH coefficients raise.
+        """
+
+        target = normalize_coordinate_system(target)
+        if target is self.coordinate_system:
+            return self
+        if changes_handedness(self.coordinate_system, target):
+            raise ValueError("Gaussian splats can only be rotated between conventions of the same handedness")
+        if self.sh_coefficients.shape[1] > 1 and bool(self.sh_coefficients[:, 1:].ne(0).any()):
+            raise ValueError("rotating higher-order spherical harmonics is not supported")
+        matrix = coordinate_change_matrix(self.coordinate_system, target, device=self.means.device)
+        rotation = _matrix_to_quaternion(matrix).to(self.quaternions_wxyz)
+        matrix4 = torch.eye(4, device=self.transform.device, dtype=self.transform.dtype)
+        matrix4[:3, :3] = matrix.to(dtype=self.transform.dtype)
+        values = {info.name: getattr(self, info.name) for info in fields(self) if info.init}
+        values.update(
+            means=self.means @ matrix.to(self.means.dtype).T,
+            quaternions_wxyz=_quaternion_multiply(rotation.expand_as(self.quaternions_wxyz), self.quaternions_wxyz),
+            transform=matrix4 @ self.transform @ matrix4.T,
+            coordinate_system=target,
+        )
+        return GaussianSplatAsset(**values)
+
+    def save(self, file: str | os.PathLike[str] | Any) -> None:
+        """Write a 3D Gaussian Splatting PLY, oriented the way the model's upstream writes it.
+
+        When ``metadata["export_rotation"]`` holds a proper 3x3 rotation ``R``, means become ``means @ R.T`` and the
+        orientations rotate with them (higher-order SH must be zero); otherwise the file is right-handed Y-up.
+        """
+
+        from ..backends.splat_ply import write_splat_ply
+
+        rotation = self.metadata.get("export_rotation")
+        if rotation is None:
+            write_splat_ply(file, self.to_coordinate_system(CoordinateSystem.RIGHT_HANDED_Y_UP))
+            return
+        matrix = torch.tensor(rotation, dtype=torch.float32, device=self.means.device)
+        if self.sh_coefficients.shape[1] > 1 and bool(self.sh_coefficients[:, 1:].ne(0).any()):
+            raise ValueError("rotating higher-order spherical harmonics is not supported")
+        values = {info.name: getattr(self, info.name) for info in fields(self) if info.init}
+        values.update(
+            means=self.means @ matrix.to(self.means.dtype).T,
+            quaternions_wxyz=_quaternion_multiply(
+                _matrix_to_quaternion(matrix).to(self.quaternions_wxyz).expand_as(self.quaternions_wxyz),
+                self.quaternions_wxyz,
+            ),
+        )
+        write_splat_ply(file, GaussianSplatAsset(**values))
+
+    @classmethod
+    def load(cls, file: str | os.PathLike[str] | Any) -> GaussianSplatAsset:
+        """Read a 3D Gaussian Splatting PLY as right-handed Y-up CPU tensors."""
+
+        from ..backends.splat_ply import read_splat_ply
+
+        return read_splat_ply(file)
 
     def validate(self, expensive: bool = False) -> None:
         del expensive
@@ -105,6 +168,37 @@ class GaussianSplatAsset(BaseOutput, TensorDataMixin):
         validate_transform("transform", self.transform)
         validate_extras(self.extras, allowed_first_dimensions={count})
         validate_shared_device(self.tensor_items())
+
+
+def _matrix_to_quaternion(matrix: torch.Tensor) -> torch.Tensor:
+    """``(w, x, y, z)`` of a proper rotation matrix (Shepperd's method, stable for every rotation)."""
+
+    m = matrix.double()
+    trace = m[0, 0] + m[1, 1] + m[2, 2]
+    candidates = torch.stack(
+        [
+            torch.stack([1 + trace, m[2, 1] - m[1, 2], m[0, 2] - m[2, 0], m[1, 0] - m[0, 1]]),
+            torch.stack([m[2, 1] - m[1, 2], 1 + m[0, 0] - m[1, 1] - m[2, 2], m[0, 1] + m[1, 0], m[0, 2] + m[2, 0]]),
+            torch.stack([m[0, 2] - m[2, 0], m[0, 1] + m[1, 0], 1 - m[0, 0] + m[1, 1] - m[2, 2], m[1, 2] + m[2, 1]]),
+            torch.stack([m[1, 0] - m[0, 1], m[0, 2] + m[2, 0], m[1, 2] + m[2, 1], 1 - m[0, 0] - m[1, 1] + m[2, 2]]),
+        ]
+    )
+    best = candidates[torch.argmax(torch.stack([trace, m[0, 0], m[1, 1], m[2, 2]]))]
+    return (best / best.norm()).float()
+
+
+def _quaternion_multiply(left: torch.Tensor, right: torch.Tensor) -> torch.Tensor:
+    lw, lx, ly, lz = left.unbind(-1)
+    rw, rx, ry, rz = right.unbind(-1)
+    return torch.stack(
+        [
+            lw * rw - lx * rx - ly * ry - lz * rz,
+            lw * rx + lx * rw + ly * rz - lz * ry,
+            lw * ry - lx * rz + ly * rw + lz * rx,
+            lw * rz + lx * ry - ly * rx + lz * rw,
+        ],
+        dim=-1,
+    )
 
 
 __all__ = ["GaussianSplatAsset", "QUATERNION_NORM_TOLERANCE"]

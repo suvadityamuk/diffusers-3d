@@ -1,17 +1,19 @@
 # Contributing
 
 The main way to contribute is to add a model family: port its networks to plain PyTorch, convert its checkpoint to the
-Diffusers layout, and register its pipeline so `AutoPipelineFor3D.from_pretrained()` can load it. Start from
-[`templates/reviewed-model-family`](templates/reviewed-model-family).
+Diffusers layout, and export its pipeline so `AutoPipelineFor3D.from_pretrained()` can load it. The TripoSG family is
+the smallest complete example.
 
 ## Adding a model family
 
 A family lives in `src/diffusers_3d/families/<family>/` and has:
 
-- model and pipeline classes, registered in `registrations.py`;
+- model classes that subclass `Object3DModel`, and a pipeline that subclasses `Object3DPipeline`, exported lazily
+  from the family's `__init__.py` and listed in `families/__init__.py`;
 - a converter, exposed as a `diffusers-3d-convert-<family>` script in `pyproject.toml`;
-- outputs that are `Object3D` assets;
-- tiny-config tests, including a `save_pretrained`/`from_pretrained` round trip and parity against the pinned upstream;
+- outputs that are package assets such as `MeshAsset` or `GaussianSplatAsset`;
+- tests that build every model from a tiny config in `tests/families/_configs.py`, including a
+  `save_pretrained`/`from_pretrained` round trip and parity against the pinned upstream;
 - a README naming the upstream repository and commit, and `LICENSE`/`NOTICE` files for ported code.
 
 Reuse before porting:
@@ -24,8 +26,6 @@ Reuse before porting:
   extensions.
 - Remap checkpoint keys in the converter rather than mirroring upstream module trees.
 - Keep it inference-only.
-
-Registries resolve exact classes, so a subclass or look-alike class is never loaded automatically.
 
 ## Conversion checklist
 
@@ -43,15 +43,10 @@ gated weights: list them in `WITHHELD` so users pass them in at load time.
 
 ## Optional dependencies
 
-Never add a mandatory geometry, rendering, or CUDA dependency. An optional backend must import lazily, declare its
-license class and supported versions in a `BackendSpec`, give an actionable error when missing, and never silently
-replace another backend whose output differs. Pin source builds to a commit in `requirements/backends/`. Model weights
+Never add a mandatory geometry, rendering, or CUDA dependency. An optional backend imports its library with
+`backends._optional.require`, which raises an install hint when it is missing, and never silently replaces another
+backend whose output differs. Pin source builds to a commit in `requirements/backends/`. Model weights
 keep their own licenses regardless of the package license.
-
-## Experimental Hub blocks
-
-To try a workflow before it becomes a family, publish a custom `ModularPipelineBlocks` from
-[`templates/experimental-custom-block`](templates/experimental-custom-block) with a pinned revision.
 
 ## Before opening a PR
 

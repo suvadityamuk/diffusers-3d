@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import math
+import os
 from dataclasses import dataclass, field
 from numbers import Real
+from typing import Any
 
 import torch
 from diffusers.utils import BaseOutput
@@ -133,6 +135,21 @@ class OVoxelAsset(BaseOutput, TensorDataMixin):
     @property
     def object_to_world(self) -> torch.Tensor:
         return self.transform
+
+    def save(self, file: str | os.PathLike[str] | Any) -> None:
+        """Write a lossless ``.npz`` that upstream TRELLIS.2's ``o_voxel`` reader also accepts."""
+
+        from ..backends.o_voxel import write_ovoxel_npz
+
+        write_ovoxel_npz(file, self)
+
+    @classmethod
+    def load(cls, file: str | os.PathLike[str] | Any, **kwargs: Any) -> OVoxelAsset:
+        """Read an O-Voxel ``.npz``; ``resolution`` and ``aabb`` keyword arguments fill in files that lack them."""
+
+        from ..backends.o_voxel import read_ovoxel_npz
+
+        return read_ovoxel_npz(file, **kwargs)
 
     def validate(self, expensive: bool = False) -> None:
         if not isinstance(self.coordinate_system, CoordinateSystem):

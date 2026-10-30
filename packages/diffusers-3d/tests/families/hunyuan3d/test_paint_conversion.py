@@ -6,6 +6,7 @@ import warnings
 
 import pytest
 import torch
+from _configs import tiny_config
 from diffusers import AutoencoderKL, DDIMScheduler, UniPCMultistepScheduler
 from transformers import BitImageProcessorPil, Dinov2Config, Dinov2Model
 
@@ -71,13 +72,6 @@ def tiny_release(tmp_path):
     (folder / "unet").mkdir(parents=True)
     (folder / "unet" / "config.json").write_text(json.dumps(RELEASED_CONFIG))
     torch.save(_released_state_dict(unet), folder / "unet" / "diffusion_pytorch_model.bin")
-    vae = AutoencoderKL(
-        block_out_channels=(8, 16),
-        down_block_types=("DownEncoderBlock2D",) * 2,
-        up_block_types=("UpDecoderBlock2D",) * 2,
-        norm_num_groups=8,
-    )
-    vae.save_pretrained(folder / "vae", safe_serialization=False)
     DDIMScheduler(
         beta_end=0.012,
         beta_schedule="scaled_linear",
@@ -87,31 +81,47 @@ def tiny_release(tmp_path):
         steps_offset=1,
         clip_sample=False,
     ).save_pretrained(folder / "scheduler")
-    return tmp_path / "release", unet, vae
+    return tmp_path / "release", unet
 
 
-def test_converts_a_tiny_release_into_a_loadable_pipeline(tiny_release, tmp_path, monkeypatch):
-    source, unet, vae = tiny_release
-    dinov2 = Dinov2Model(
-        Dinov2Config(
-            hidden_size=1536, num_hidden_layers=1, num_attention_heads=2, mlp_ratio=1, image_size=28, patch_size=14
-        )
+def test_converts_a_tiny_release_without_its_third_party_components(tiny_release, tmp_path, monkeypatch):
+    source, unet = tiny_release
+    dinov2_config = Dinov2Config(
+        hidden_size=1536, num_hidden_layers=1, num_attention_heads=2, mlp_ratio=1, image_size=28, patch_size=14
+    )
+    vae = AutoencoderKL(
+        block_out_channels=(8, 16),
+        down_block_types=("DownEncoderBlock2D",) * 2,
+        up_block_types=("UpDecoderBlock2D",) * 2,
+        norm_num_groups=8,
     )
     processor = BitImageProcessorPil(size={"shortest_edge": 32}, crop_size={"height": 28, "width": 28})
-    monkeypatch.setattr(paint_conversion.Dinov2Model, "from_pretrained", lambda *args, **kwargs: dinov2)
+    monkeypatch.setattr(paint_conversion.Dinov2Config, "from_pretrained", lambda *args, **kwargs: dinov2_config)
+    monkeypatch.setattr(paint_conversion.AutoencoderKL, "load_config", lambda *args, **kwargs: dict(vae.config))
     monkeypatch.setattr(paint_conversion.BitImageProcessorPil, "from_pretrained", lambda *args, **kwargs: processor)
-    monkeypatch.setattr(
-        paint_conversion, "_load_upscaler", lambda: Hunyuan3DPaintRRDBNet(**Hunyuan3DPaintRRDBNet.tiny_config())
-    )
     with warnings.catch_warnings():
         warnings.filterwarnings("ignore", message="Hunyuan3D-2.1 weights", category=UserWarning)
         destination = paint_conversion.convert_hunyuan3d_paint_checkpoint(source, tmp_path / "converted")
         monkeypatch.undo()
-        pipeline = Hunyuan3DPaintPipeline.from_pretrained(destination)
+        assert sorted(path.name for path in destination.iterdir()) == [
+            "hunyuan3d_paint_conversion.json",
+            "model_index.json",
+            "scheduler",
+            "unet",
+        ]
+        index = json.loads((destination / "model_index.json").read_text())
+        assert index["vae"] == ["diffusers", "AutoencoderKL"] and index["upscaler"][1] == "Hunyuan3DPaintRRDBNet"
+        upscaler = Hunyuan3DPaintRRDBNet(**tiny_config(Hunyuan3DPaintRRDBNet))
+        pipeline = Hunyuan3DPaintPipeline.from_pretrained(
+            destination,
+            feature_extractor=processor,
+            image_encoder=Dinov2Model(dinov2_config),
+            vae=vae,
+            upscaler=upscaler,
+        )
     for name, value in unet.state_dict().items():
         assert torch.equal(pipeline.unet.state_dict()[name], value), name
-    for name, value in vae.state_dict().items():
-        assert torch.equal(pipeline.vae.state_dict()[name], value), name
+    assert pipeline.vae is vae and pipeline.upscaler is upscaler
     assert type(pipeline.scheduler) is UniPCMultistepScheduler
     config = pipeline.scheduler.config
     assert (config.prediction_type, config.timestep_spacing, config.rescale_betas_zero_snr) == (
@@ -119,9 +129,9 @@ def test_converts_a_tiny_release_into_a_loadable_pipeline(tiny_release, tmp_path
         "trailing",
         True,
     )
-    assert pipeline.upscaler is not None and (destination / "unet" / "diffusion_pytorch_model.safetensors").exists()
+    assert (destination / "unet" / "diffusion_pytorch_model.safetensors").exists()
     report = json.loads((destination / "hunyuan3d_paint_conversion.json").read_text())
-    assert report["image_encoder"]["revision"] == paint_conversion.DINOV2_REVISION
+    assert report["external_components"]["image_encoder"]["revision"] == paint_conversion.DINOV2_REVISION
     assert "text_encoder" in report["dropped_components"]
 
 

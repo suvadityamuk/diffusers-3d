@@ -8,11 +8,10 @@
 
 from __future__ import annotations
 
-from typing import Any
-
 import torch
 from diffusers import ModelMixin  # noqa: F401 - required by external-component loading
 from diffusers.configuration_utils import register_to_config
+from diffusers.loaders import PeftAdapterMixin
 from diffusers.models.attention import AttentionModuleMixin, FeedForward
 from diffusers.models.attention_dispatch import dispatch_attention_fn
 from diffusers.models.embeddings import TimestepEmbedding, Timesteps
@@ -20,10 +19,7 @@ from diffusers.models.modeling_outputs import Transformer2DModelOutput
 from diffusers.models.normalization import FP32LayerNorm, RMSNorm
 from torch import nn
 
-from ...execution.lora import Object3DPeftAdapterMixin
-from ...execution.metadata import ContributionStatus, ReviewStatus
 from ...execution.models import Object3DModel
-from ...objects import Object3DKind
 
 
 class TripoSGAttnProcessor:
@@ -147,19 +143,13 @@ class TripoSGTransformerBlock(nn.Module):
         return hidden_states + self.ff(self.norm3(hidden_states))
 
 
-class TripoSGTransformerModel(Object3DModel, Object3DPeftAdapterMixin):
+class TripoSGTransformerModel(Object3DModel, PeftAdapterMixin):
     """TripoSG rectified-flow transformer over a set of shape latent tokens, conditioned on DINOv2 image tokens.
 
     The timestep embedding is prepended as an extra token. Blocks after the middle one take a long skip from the
     mirrored block before it, as in U-ViT/HunyuanDiT. The model predicts the noise-to-data velocity.
     """
 
-    family_id = "triposg"
-    component_role = "transformer"
-    supported_object_kinds = (Object3DKind.MESH,)
-    required_backends = ()
-    contribution_status = ContributionStatus.REVIEWED_PACKAGE
-    review_status = ReviewStatus.REVIEWED
     _supports_gradient_checkpointing = True
     _no_split_modules = ["TripoSGTransformerBlock"]
     _repeated_blocks = ["TripoSGTransformerBlock"]
@@ -193,20 +183,6 @@ class TripoSGTransformerModel(Object3DModel, Object3DPeftAdapterMixin):
         self.norm_out = nn.LayerNorm(width)
         self.proj_out = nn.Linear(width, in_channels)
         self.gradient_checkpointing = False
-
-    @classmethod
-    def production_config(cls) -> dict[str, Any]:
-        return {
-            "in_channels": 64,
-            "width": 2048,
-            "num_layers": 21,
-            "num_attention_heads": 16,
-            "cross_attention_dim": 1024,
-        }
-
-    @classmethod
-    def tiny_config(cls) -> dict[str, Any]:
-        return {"in_channels": 4, "width": 16, "num_layers": 3, "num_attention_heads": 2, "cross_attention_dim": 12}
 
     def forward(
         self,

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import pytest
 import torch
+from _configs import small_trellis_slat_flow_config, tiny_config
 
 from diffusers_3d import TrellisSLatFlowModel, TrellisSparseStructureFlowModel, TrellisSparseTensor
 
@@ -33,7 +34,7 @@ def _sparse_inputs(model: TrellisSLatFlowModel):
 
 
 def test_sparse_structure_flow_forward_checkpointing_and_save_load(tmp_path):
-    model = TrellisSparseStructureFlowModel(**TrellisSparseStructureFlowModel.tiny_config())
+    model = TrellisSparseStructureFlowModel(**tiny_config(TrellisSparseStructureFlowModel))
     with torch.no_grad():
         model.out_layer.weight.normal_(std=0.02)
     model.enable_gradient_checkpointing()
@@ -56,7 +57,7 @@ def test_sparse_structure_flow_forward_checkpointing_and_save_load(tmp_path):
 
 
 def test_slat_flow_portable_core_forward_checkpointing_and_save_load(tmp_path):
-    model = TrellisSLatFlowModel(**TrellisSLatFlowModel.tiny_config())
+    model = TrellisSLatFlowModel(**tiny_config(TrellisSLatFlowModel))
     with torch.no_grad():
         model.out_layer.weight.normal_(std=0.02)
     model.enable_gradient_checkpointing()
@@ -76,7 +77,7 @@ def test_slat_flow_portable_core_forward_checkpointing_and_save_load(tmp_path):
 
 
 def test_state_names_match_pinned_trellis_layouts():
-    dense_keys = set(TrellisSparseStructureFlowModel(**TrellisSparseStructureFlowModel.tiny_config()).state_dict())
+    dense_keys = set(TrellisSparseStructureFlowModel(**tiny_config(TrellisSparseStructureFlowModel)).state_dict())
     assert {
         "t_embedder.mlp.0.weight",
         "pos_emb",
@@ -87,7 +88,7 @@ def test_state_names_match_pinned_trellis_layouts():
         "out_layer.weight",
     }.issubset(dense_keys)
 
-    sparse_keys = set(TrellisSLatFlowModel(**TrellisSLatFlowModel.tiny_config()).state_dict())
+    sparse_keys = set(TrellisSLatFlowModel(**tiny_config(TrellisSLatFlowModel)).state_dict())
     assert {
         "t_embedder.mlp.0.weight",
         "input_layer.weight",
@@ -99,7 +100,7 @@ def test_state_names_match_pinned_trellis_layouts():
 
 
 def test_slat_flow_io_stages_forward_and_released_key_layout(tmp_path):
-    model = TrellisSLatFlowModel(**TrellisSLatFlowModel.small_config())
+    model = TrellisSLatFlowModel(**small_trellis_slat_flow_config())
     with torch.no_grad():
         model.out_layer.weight.normal_(std=0.02)
         for block in (*model.input_blocks, *model.out_blocks):
@@ -133,4 +134,4 @@ def test_slat_flow_io_stages_forward_and_released_key_layout(tmp_path):
 
 def test_slat_flow_rejects_mismatched_io_stages():
     with pytest.raises(ValueError, match="io_block_channels"):
-        TrellisSLatFlowModel(**{**TrellisSLatFlowModel.small_config(), "patch_size": 4})
+        TrellisSLatFlowModel(**{**small_trellis_slat_flow_config(), "patch_size": 4})

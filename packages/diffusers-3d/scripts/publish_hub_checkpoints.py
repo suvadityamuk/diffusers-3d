@@ -6,16 +6,16 @@ Publishes one model repo per release under ``<owner>``:
 
 * ``TRELLIS-image-large-diffusers-3d`` (MIT TRELLIS weights plus the Apache-2.0 DINOv2 image encoder),
 * ``TRELLIS-text-large-diffusers-3d`` (MIT TRELLIS weights plus the MIT CLIP text encoder and tokenizer),
-* ``TRELLIS.2-4B-diffusers-3d`` (MIT TRELLIS.2 weights only: the DINOv3 image encoder is gated under Meta's own
-  license and is not redistributed; users pass it to ``from_pretrained``),
+* ``TRELLIS.2-4B-diffusers-3d`` (MIT TRELLIS.2 weights only),
 * ``TripoSG-diffusers-3d``, ``Step1X-3D-Geometry-1300m-diffusers-3d``, ``Hunyuan3D-2.1-diffusers-3d``,
   ``sam-3d-objects-diffusers-3d``, and ``Pixal3D-diffusers-3d``, each with its family's license and notice files.
-  Pixal3D, like TRELLIS.2, leaves out the gated DINOv3 image encoder.
 * ``Step1X-3D-Texture-diffusers-3d`` and ``Hunyuan3D-2.1-Paint-diffusers-3d``, the two mesh-texturing stages, with
   the license texts of the base models they redistribute.
 
-Each repo gets a model card with provenance and loading instructions. Needs ``HF_TOKEN`` with write access to the
-namespace and read access to the gated source weights (used locally to run the converters). Every release
+Only each model's own weights are published. Third-party components that a pipeline declares in
+``external_components`` (DINOv3, DINOv2, NAF, MoGe, ...) are never converted or uploaded: the pipelines load them
+from their original sources at pinned revisions, and their folders are excluded from every upload. Each repo gets a
+model card with provenance and loading instructions. Needs ``HF_TOKEN`` with write access to the namespace. Every release
 needs about twice its size under ``--work`` (source plus conversion); on hosts with little scratch space run one
 release per invocation with ``--releases``.
 """
@@ -31,7 +31,7 @@ import urllib.request
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from checkpoint_sources import RELEASES, convert_release  # noqa: E402
+from checkpoint_sources import RELEASES, convert_release, external_components  # noqa: E402
 
 REPOSITORIES = {
     "trellis-image": "TRELLIS-image-large-diffusers-3d",
@@ -65,8 +65,6 @@ EXTRA_LICENSES = {
         "a4abfb2979a7bbff3f69f58f58ae324608821e27/LICENSE",
     },
 }
-# Gated encoders the converters need but that must not be republished.
-WITHHELD = {"trellis2": ["image_encoder/*"], "pixal3d": ["image_encoder/*"]}
 TRELLIS_REVISION = "442aa1e1afb9014e80681d3bf604e8d728a86ee7"
 TRELLIS2_REVISION = "75fbf0183001ed9876c8dbb35de6b68552ee08bd"
 
@@ -113,8 +111,7 @@ def card_trellis_image(namespace: str, version: str) -> str:
 
 [microsoft/TRELLIS-image-large](https://huggingface.co/microsoft/TRELLIS-image-large) converted into a
 [diffusers-3d](https://github.com/suvadityamuk/diffusers-3d) pipeline: ordinary Diffusers component folders
-(`config.json` + `safetensors`) plus the `object3d_model_index.json` sidecar that the package's auto-loader
-validates before downloading anything. Nothing here requires remote code.
+(`config.json` + `safetensors`) that the installed package loads. Nothing here requires remote code.
 
 {_install_note()}
 ## Usage
@@ -225,25 +222,20 @@ def card_trellis2(namespace: str, version: str) -> str:
 [microsoft/TRELLIS.2-4B](https://huggingface.co/microsoft/TRELLIS.2-4B) converted into a
 [diffusers-3d](https://github.com/suvadityamuk/diffusers-3d) pipeline.
 
-**The DINOv3 image encoder is not included.** Its weights are gated under Meta's DINOv3 License, so this
-repository ships every TRELLIS.2 component except `image_encoder/`; you accept the license on
-[facebook/dinov3-vitl16-pretrain-lvd1689m](https://huggingface.co/facebook/dinov3-vitl16-pretrain-lvd1689m) and
-pass the image encoder in when loading.
+{_GATED_DINOV3_NOTE}
 
 {_install_note()}
 ## Usage
 
 ```python
 import torch
-from transformers import DINOv3ViTModel
 
-from diffusers_3d import AutoPipelineForImageTo3D, ImageCondition
+from diffusers_3d import AutoPipelineForImageTo3D
 
-image_encoder = DINOv3ViTModel.from_pretrained("facebook/dinov3-vitl16-pretrain-lvd1689m")
 pipeline = AutoPipelineForImageTo3D.from_pretrained(
-    "{namespace}/TRELLIS.2-4B-diffusers-3d", image_encoder=image_encoder, dtype=torch.bfloat16
+    "{namespace}/TRELLIS.2-4B-diffusers-3d", dtype=torch.bfloat16
 ).to("cuda")
-output = pipeline(ImageCondition(image=rgba), pipeline_type="512")
+output = pipeline("photo.png", pipeline_type="512")
 ovoxel = output.objects[0]  # OVoxelAsset: dual-grid surface with PBR channels
 ```
 
@@ -256,9 +248,9 @@ non-commercial license; see the package docs.
 
 | Folder | Class | Released file |
 |---|---|---|
-| `image_encoder` | `transformers.DINOv3ViTModel` | not included (gated `facebook/dinov3-vitl16-pretrain-lvd1689m`) |
+| `image_encoder` | `transformers.DINOv3ViTModel` | not included; loads from gated `facebook/dinov3-vitl16-pretrain-lvd1689m` |
 | `sparse_structure_flow_model` | `Trellis2SparseStructureFlowModel` | `ss_flow_img_dit_1_3B_64_bf16` |
-| `sparse_structure_decoder` | `Trellis2SparseStructureDecoder` | `ss_dec_conv3d_16l8_fp16` (from TRELLIS-image-large) |
+| `sparse_structure_decoder` | `Trellis2SparseStructureDecoder` | not included; loads from `microsoft/TRELLIS-image-large` |
 | `shape_slat_flow_model` | `Trellis2SLatFlowModel` | `slat_flow_img2shape_dit_1_3B_512_bf16` |
 | `shape_slat_flow_model_1024` | `Trellis2SLatFlowModel` | `slat_flow_img2shape_dit_1_3B_1024_bf16` |
 | `shape_slat_decoder` | `Trellis2ShapeDualGridDecoder` | `shape_dec_next_dc_f16c32_fp16` |
@@ -274,23 +266,32 @@ Converted with `diffusers-3d-convert-trellis2` from `diffusers-3d {version}` aga
 ## License and attribution
 
 TRELLIS.2 weights and architecture: MIT License, Copyright (c) Microsoft Corporation. The sparse-structure decoder
-comes from TRELLIS (MIT). No DINOv3 weights are redistributed. Not affiliated with or endorsed by Microsoft or Meta.
+is TRELLIS-image-large's (MIT) and loads from that repository. No DINOv3 or TRELLIS weights are redistributed. Not affiliated with or endorsed by Microsoft or Meta.
 """
     )
 
 
+_GATED_DINOV3_NOTE = """**The DINOv3 image encoder is not included.** Its weights are gated under Meta's DINOv3 License, so
+`from_pretrained` loads `image_encoder` from its original repository,
+[facebook/dinov3-vitl16-pretrain-lvd1689m](https://huggingface.co/facebook/dinov3-vitl16-pretrain-lvd1689m), at a
+pinned revision. Accept the license there and log in (`hf auth login`) first; without access, loading raises an
+error that says so. Inputs without transparency are cut out with BiRefNet using
+[briaai/RMBG-2.0](https://huggingface.co/briaai/RMBG-2.0) weights, as upstream does; they are gated under BRIA's
+non-commercial license and load from that repository the same way (`pipeline.disable_background_removal()` skips
+them for inputs that already carry alpha)."""
 _RGBA_NOTE = (
     "`rgba` is a `(4, H, W)` tensor in `[0, 1]` whose alpha channel masks the object; the pipeline crops and pads it "
     "as the released code does."
 )
 
 
-def _components(folder: Path, withheld: tuple[str, ...] = ()) -> str:
+def _components(folder: Path) -> str:
     index = json.loads((folder / "model_index.json").read_text())
+    external = external_components(folder)
     rows = ["| Folder | Class |", "|---|---|"]
     for name, value in sorted(index.items()):
         if isinstance(value, list) and len(value) == 2 and value[0]:
-            note = " (not included, pass it to `from_pretrained`)" if name in withheld else ""
+            note = f" (not included; loads from `{external[name]}`)" if name in external else ""
             rows.append(f"| `{name}` | `{value[0]}.{value[1]}`{note} |")
     return "\n".join(rows)
 
@@ -309,7 +310,6 @@ def _family_card(
     usage: str,
     notes: str,
     license_text: str,
-    withheld: tuple[str, ...] = (),
     extra_tags: tuple[str, ...] = ("image-to-3d",),
 ) -> str:
     return (
@@ -320,8 +320,8 @@ def _family_card(
 # {title} for diffusers-3d
 
 [{source}](https://huggingface.co/{source}) converted into a [diffusers-3d](https://github.com/suvadityamuk/diffusers-3d)
-pipeline: ordinary Diffusers and Transformers component folders plus the `object3d_model_index.json` sidecar that
-the package's auto-loader validates before downloading anything. Nothing here requires remote code.
+pipeline: ordinary Diffusers and Transformers component folders that the installed package loads. Nothing here
+requires remote code.
 
 {_install_note()}
 ## Usage
@@ -334,7 +334,7 @@ the package's auto-loader validates before downloading anything. Nothing here re
 
 ## Components
 
-{_components(folder, withheld)}
+{_components(folder)}
 
 ## Provenance
 
@@ -450,7 +450,11 @@ output = pipeline(ImageCondition(image=rgb, mask=mask), formats=("gaussian", "me
 gaussians, mesh = output.objects""",
         notes="`rgb` is a `(3, H, W)` tensor in `[0, 1]` and `mask` a `(1, H, W)` tensor selecting the object. The "
         "object comes back placed in the input camera's frame. Pass `pointmap=` (camera-space points per pixel) to "
-        "use depth; without it the pointmap tokens are zero, as in the model's training dropout.",
+        "use depth; without it the pipeline predicts one with MoGe, as upstream does. The frozen DINOv2 image encoder "
+        "and MoGe are not included: they load from "
+        "[facebook/dinov2-with-registers-large](https://huggingface.co/facebook/dinov2-with-registers-large) "
+        "(Apache-2.0; the release's DINOv2 copies equal it tensor for tensor) and "
+        "[Ruicheng/moge-vitl](https://huggingface.co/Ruicheng/moge-vitl) (MIT) at pinned revisions.",
         license_text="""SAM 3D Objects weights and code: SAM License, Copyright (c) Meta Platforms, Inc. and affiliates.
 This repository redistributes converted SAM Materials under that Agreement, a copy of which is in `LICENSE-SAM`;
 by using these files you agree to it. It is not an open-source license: it forbids military, warfare, nuclear,
@@ -471,32 +475,28 @@ def card_pixal3d(namespace: str, version: str, folder: Path) -> str:
         license="license: mit",
         converter="diffusers-3d-convert-pixal3d",
         usage="""import torch
-from transformers import DINOv3ViTModel
 
 from diffusers_3d import AutoPipelineForImageTo3D, ImageCondition
 
-image_encoder = DINOv3ViTModel.from_pretrained("facebook/dinov3-vitl16-pretrain-lvd1689m")
-pipeline = AutoPipelineForImageTo3D.from_pretrained(
-    "{repo}", image_encoder=image_encoder, dtype=torch.bfloat16
-).to("cuda")
+pipeline = AutoPipelineForImageTo3D.from_pretrained("{repo}", dtype=torch.bfloat16).to("cuda")
 output = pipeline(ImageCondition(image=rgba), camera_angle_x=0.35, formats=("o_voxel", "mesh"))""",
-        notes="**The DINOv3 image encoder is not included.** Its weights are gated under Meta's DINOv3 License; "
-        "accept it on [facebook/dinov3-vitl16-pretrain-lvd1689m](https://huggingface.co/facebook/dinov3-vitl16-"
-        "pretrain-lvd1689m) and pass the encoder in when loading. " + _RGBA_NOTE + " `camera_angle_x` is the input "
-        "camera's horizontal field of view in radians; the shape is reconstructed in that camera's frame.",
-        license_text="""Pixal3D weights and code: MIT License, Copyright (c) Tencent ARC Lab. The `feature_upsampler` is
-valeo.ai's NAF (Neighborhood Attention Filtering) upsampler, converted from the release checkpoint at
-https://github.com/valeoai/NAF/releases (NAF code is Apache-2.0; the checkpoint is published there without a
-separate license). No DINOv3 weights are redistributed. See `LICENSE-MIT` and `NOTICE`. Not affiliated with or
-endorsed by Tencent, valeo.ai, or Meta.""",
-        withheld=("image_encoder",),
+        notes=_GATED_DINOV3_NOTE + "\n\n" + _RGBA_NOTE + " `camera_angle_x` is the input camera's horizontal field of "
+        "view in radians; the shape is reconstructed in that camera's frame.",
+        license_text="""Pixal3D weights and code: MIT License, Copyright (c) Tencent ARC Lab. Only Pixal3D's own networks
+are included. The `feature_upsampler` is valeo.ai's NAF (Neighborhood Attention Filtering) upsampler, which loads
+from its release checkpoint at https://github.com/valeoai/NAF/releases (checked against its SHA-256; NAF code is
+Apache-2.0, and the checkpoint is published there without a separate license); the field-of-view estimator is MoGe-2,
+which loads from [Ruicheng/moge-2-vitl](https://huggingface.co/Ruicheng/moge-2-vitl). The release's sparse-structure,
+shape, and PBR decoders are byte-identical copies of `microsoft/TRELLIS-image-large` and `microsoft/TRELLIS.2-4B`
+files, so they load from those repositories too. No DINOv3, NAF, MoGe, or TRELLIS weights are redistributed. See
+`LICENSE-MIT` and `NOTICE`. Not affiliated with or endorsed by Tencent, valeo.ai, Microsoft, or Meta.""",
     )
 
 
 _TEXTURE_NOTE = (
     "`mesh` is any `MeshAsset`, for example a shape pipeline's output, and `rgba` a `(4, H, W)` tensor in `[0, 1]` "
     "whose alpha masks the object. The result is a UV-textured `MeshAsset`; export it with "
-    '`TrimeshBackend().export_mesh(textured.to("cpu"), "textured.glb")` (needs the `portable` extra).'
+    '`textured.save("textured.glb")` (needs the `portable` extra).'
 )
 
 
@@ -639,7 +639,9 @@ def main() -> int:
         folder = convert_release(name, args.work)
         (folder / "README.md").write_text(CARDS[name](args.namespace, diffusers_3d.__version__, folder))
         copy_license_files(name, folder)
-        ignore = WITHHELD.get(name, []) + ["conditioner/*"]
+        # Third-party components never leave this machine, even if a stale conversion holds their folders.
+        external = [f"{component}/*" for component in external_components(folder)]
+        ignore = external + ["conditioner/*"]
         if args.dry_run:
             print(f"   dry run: would upload {folder} to {repo_id} (ignoring {ignore})")
             continue
@@ -649,8 +651,9 @@ def main() -> int:
             repo_type="model",
             folder_path=str(folder),
             ignore_patterns=ignore + ["*.pyc"],
-            # Repos published before the stock Transformers encoders still hold a `conditioner/` folder.
-            delete_patterns=["conditioner/*"],
+            # Repos published before the stock Transformers encoders still hold a `conditioner/` folder, and older
+            # uploads may hold a third-party component's folder; both are removed.
+            delete_patterns=["conditioner/*", *external],
             commit_message=f"Convert {RELEASES[name]['source']} with diffusers-3d {diffusers_3d.__version__}",
         )
         print(f"   published https://huggingface.co/{repo_id}", flush=True)

@@ -14,16 +14,14 @@ from typing import Any
 import torch
 from diffusers import ModelMixin  # noqa: F401 - required by external-component loading
 from diffusers.configuration_utils import register_to_config
+from diffusers.loaders import PeftAdapterMixin
 from diffusers.models.attention import AttentionModuleMixin, FeedForward
 from diffusers.models.attention_dispatch import dispatch_attention_fn
 from diffusers.models.embeddings import TimestepEmbedding, Timesteps
 from diffusers.utils import BaseOutput
 from torch import nn
 
-from ...execution.lora import Object3DPeftAdapterMixin
-from ...execution.metadata import ContributionStatus, ReviewStatus
 from ...execution.models import Object3DModel
-from ...objects import Object3DKind
 
 
 @dataclass
@@ -140,7 +138,7 @@ class Hunyuan3DDiTBlock(nn.Module):
         return hidden_states + self.ff(self.norm3(hidden_states))
 
 
-class Hunyuan3DDiTModel(Object3DModel, Object3DPeftAdapterMixin):
+class Hunyuan3DDiTModel(Object3DModel, PeftAdapterMixin):
     """Hunyuan3D-DiT: the U-skip flow transformer that denoises ShapeVAE latent sets.
 
     The timestep embedding is prepended as an extra token; blocks in the second half take a skip connection from
@@ -148,12 +146,6 @@ class Hunyuan3DDiTModel(Object3DModel, Object3DPeftAdapterMixin):
     ``timestep`` is the flow time in ``[0, 1]``.
     """
 
-    family_id = "hunyuan3d-2.1"
-    component_role = "transformer"
-    supported_object_kinds = (Object3DKind.MESH,)
-    required_backends = ()
-    contribution_status = ContributionStatus.REVIEWED_PACKAGE
-    review_status = ReviewStatus.REVIEWED
     _supports_gradient_checkpointing = True
     _no_split_modules = ["Hunyuan3DDiTBlock"]
     _repeated_blocks = ["Hunyuan3DDiTBlock"]
@@ -191,32 +183,6 @@ class Hunyuan3DDiTModel(Object3DModel, Object3DPeftAdapterMixin):
         self.norm_out = nn.LayerNorm(hidden_size, eps=1e-6)
         self.proj_out = nn.Linear(hidden_size, in_channels)
 
-    @classmethod
-    def production_config(cls) -> dict[str, Any]:
-        return {
-            "in_channels": 64,
-            "hidden_size": 2048,
-            "context_dim": 1024,
-            "depth": 21,
-            "num_heads": 16,
-            "num_moe_layers": 6,
-            "num_experts": 8,
-            "moe_top_k": 2,
-        }
-
-    @classmethod
-    def tiny_config(cls) -> dict[str, Any]:
-        return {
-            "in_channels": 8,
-            "hidden_size": 32,
-            "context_dim": 24,
-            "depth": 4,
-            "num_heads": 4,
-            "num_moe_layers": 1,
-            "num_experts": 3,
-            "moe_top_k": 2,
-        }
-
     def forward(
         self,
         hidden_states: torch.Tensor,
@@ -242,4 +208,44 @@ class Hunyuan3DDiTModel(Object3DModel, Object3DPeftAdapterMixin):
         return Hunyuan3DDiTOutput(sample=sample)
 
 
-__all__ = ["Hunyuan3DAttention", "Hunyuan3DDiTModel", "Hunyuan3DDiTOutput"]
+# Meta's DINOv2-L/14. Hunyuan3D-2.1's conditioner is this model cast to float16, tensor for tensor; Hunyuan3D-Omni and
+# TripoSG use it unchanged. It loads from Meta's repository and is never converted.
+DINOV2_LARGE_REPOSITORY = "facebook/dinov2-large"
+DINOV2_LARGE_REVISION = "47b73eefe95e8d44ec3623f8890bd894b6ea2d6c"
+
+
+def load_dinov2(
+    repository: str,
+    *,
+    revision: str | None = None,
+    dtype: torch.dtype | None = None,
+    **hub_kwargs: Any,
+):
+    """Load a Transformers ``Dinov2Model`` from its repository in ``dtype``.
+
+    Pipelines pass the dtype given to ``from_pretrained``, so it matches their other components: float32 when none is
+    given (as Diffusers loads the rest), float16 to run as the upstream releases do.
+    """
+
+    from transformers import Dinov2Model
+
+    model, loading_info = Dinov2Model.from_pretrained(
+        repository,
+        revision=revision,
+        dtype=torch.float32 if dtype is None else dtype,
+        output_loading_info=True,
+        **hub_kwargs,
+    )
+    if any(loading_info[name] for name in ("missing_keys", "unexpected_keys", "mismatched_keys")):
+        raise ValueError(f"the DINOv2 weights do not match its config: {loading_info}")
+    return model.eval()
+
+
+__all__ = [
+    "DINOV2_LARGE_REPOSITORY",
+    "DINOV2_LARGE_REVISION",
+    "Hunyuan3DAttention",
+    "Hunyuan3DDiTModel",
+    "Hunyuan3DDiTOutput",
+    "load_dinov2",
+]

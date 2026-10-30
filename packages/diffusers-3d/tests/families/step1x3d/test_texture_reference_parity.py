@@ -11,17 +11,17 @@ from pathlib import Path
 import numpy as np
 import pytest
 import torch
-from diffusers import DDPMScheduler, EulerDiscreteScheduler
-from PIL import Image
-
-from diffusers_3d import ImageCondition, Step1X3DMultiViewAdapter, preprocess_step1x3d_reference_image
-from diffusers_3d._reference import (
+from _reference import (
     ReferenceCheckoutError,
     import_reference_dependency,
     reference_unavailable,
     validate_reference_checkout,
 )
-from diffusers_3d.backends import look_at_view, merge_views, orthographic_projection
+from diffusers import DDPMScheduler, EulerDiscreteScheduler
+from PIL import Image
+
+from diffusers_3d import ImageCondition, Step1X3DMultiViewAdapter, preprocess_step1x3d_reference_image
+from diffusers_3d.backends import inpaint_texture, look_at_view, merge_views, orthographic_projection
 from diffusers_3d.backends.mesh_rasterizer import Rasterization, interpolate, rasterize
 from diffusers_3d.data.image_processing import _quantized_rgba
 from diffusers_3d.families.step1x3d import texture_pipeline
@@ -320,11 +320,12 @@ def test_control_images_match_reference_render_maths(tiny_clip_tokenizer):
 
     pipeline = Step1X3DMeshTexturePipeline(**make_tiny_step1x3d_texture_components(tiny_clip_tokenizer))
     mesh = MeshAsset(vertices=torch.tensor(native.vertices, dtype=torch.float32), faces=torch.tensor(native.faces))
-    prepared, positions = pipeline.prepare_mesh(mesh, clean=False)
+    prepared, positions = pipeline.prepare_mesh(mesh, max_faces=None)
+    faces = torch.from_numpy(prepared.faces)
     world_to_clip = step1x3d_orthographic_projection() @ step1x3d_view_matrices()
-    actual = render_step1x3d_control_images(positions, prepared.faces, world_to_clip, 64).permute(0, 2, 3, 1)
+    actual = render_step1x3d_control_images(positions, faces, world_to_clip, 64).permute(0, 2, 3, 1)
 
-    assert torch.equal(prepared.faces, upstream_mesh.t_pos_idx)
+    assert torch.equal(faces, upstream_mesh.t_pos_idx)
     print(f"vertex max abs error {(positions - upstream_mesh.v_pos).abs().max().item():.3e}")
     torch.testing.assert_close(positions, upstream_mesh.v_pos, atol=1e-6, rtol=0)
     torch.testing.assert_close(world_to_clip[:, :2], cameras.mvp_mtx[:, :2], atol=1e-6, rtol=0)
@@ -430,21 +431,24 @@ def test_texture_sync_step_matches_reference_maths(tiny_clip_tokenizer):
     native = _test_mesh()
     pipeline = Step1X3DMeshTexturePipeline(**make_tiny_step1x3d_texture_components(tiny_clip_tokenizer))
     mesh = MeshAsset(vertices=torch.tensor(native.vertices, dtype=torch.float32), faces=torch.tensor(native.faces))
-    prepared, positions = pipeline.prepare_mesh(mesh, clean=False)
+    prepared, positions = pipeline.prepare_mesh(mesh, max_faces=None)
+    faces, uvs = torch.from_numpy(prepared.faces), torch.from_numpy(prepared.final_uvs)
+    positions = positions[torch.from_numpy(prepared.final_mapping)]
+    faces = torch.from_numpy(prepared.final_faces)
     world_to_camera = step1x3d_view_matrices()
     world_to_clip = step1x3d_orthographic_projection() @ world_to_camera
     camera_positions = torch.linalg.inv(world_to_camera)[:, :3, 3]
     sync = Step1X3DLatentTextureSync(
         positions,
-        prepared.faces,
-        prepared.uvs,
+        faces,
+        uvs,
         world_to_clip,
         camera_positions,
         image_size=24,
         texture_size=64,
         visibility_size=96,
     )
-    stand_in = _UVProjectionStandIn(sync, positions, prepared.faces, prepared.uvs, world_to_clip, camera_positions, 96)
+    stand_in = _UVProjectionStandIn(sync, positions, faces, uvs, world_to_clip, camera_positions, 96)
 
     betas = shifted_snr_betas(DDPMScheduler.from_config(SDXL_SCHEDULER_CONFIG).alphas_cumprod)
     scheduler = DDPMScheduler.from_config(SDXL_SCHEDULER_CONFIG, trained_betas=betas.tolist())
@@ -498,19 +502,20 @@ def test_final_bake_matches_reference_mesh_render(tiny_clip_tokenizer, monkeypat
     native = _test_mesh()
     pipeline = Step1X3DMeshTexturePipeline(**make_tiny_step1x3d_texture_components(tiny_clip_tokenizer))
     mesh = MeshAsset(vertices=torch.tensor(native.vertices, dtype=torch.float32), faces=torch.tensor(native.faces))
-    prepared, positions = pipeline.prepare_mesh(mesh, clean=False)
+    prepared, _ = pipeline.prepare_mesh(mesh, max_faces=None)
+    positions = texture_pipeline.view_frame(prepared.vertices[prepared.final_mapping])
+    faces, uvs = torch.from_numpy(prepared.final_faces), torch.from_numpy(prepared.final_uvs)
     with _upstream_import_environment():
         mesh_render = importlib.import_module("step1x3d_texture.differentiable_renderer.mesh_render")
         camera_utils = importlib.import_module("step1x3d_texture.differentiable_renderer.camera_utils")
         render = mesh_render.MeshRender(default_resolution=256, texture_size=256, device="cpu")
     # The released pipeline's mesh_bp: the Y-up mesh scaled to max |x| = 0.5, loaded without centring.
-    vertices = prepared.vertices.numpy()
-    faces = prepared.faces.numpy().astype(np.int32)
+    vertices = prepared.vertices[prepared.final_mapping]
     render.set_mesh(
-        vertices / np.abs(vertices).max() * 0.5,
-        faces,
-        prepared.uvs.numpy().copy(),
-        faces,
+        vertices,
+        faces.numpy().astype(np.int32),
+        prepared.final_uvs.copy(),
+        faces.numpy().astype(np.int32),
         scale_factor=1.0,
         auto_center=False,
     )
@@ -528,7 +533,7 @@ def test_final_bake_matches_reference_mesh_render(tiny_clip_tokenizer, monkeypat
     )
     merged = []
     monkeypatch.setattr(texture_pipeline, "merge_views", lambda *args: merged.append(merge_views(*args)) or merged[-1])
-    actual = pipeline.bake_views(views.float() / 255, positions, prepared.faces, prepared.uvs, texture_size=256)
+    actual = pipeline.bake_views(views.float() / 255, positions, faces, uvs, texture_size=256)
 
     assert STEP1X3D_BAKE_VIEWS == tuple(zip(elevations, azimuths, weights))
     assert STEP1X3D_BAKE_EXPONENT == config.bake_exp
@@ -542,4 +547,11 @@ def test_final_bake_matches_reference_mesh_render(tiny_clip_tokenizer, monkeypat
     error = (texture - expected).abs()[mask]
     print(f"final bake max abs error {error.max().item():.3e}, mean {error.mean().item():.3e}")
     torch.testing.assert_close(texture, expected, rtol=0, atol=1e-5)
-    assert torch.equal(actual[mask], texture[mask])
+    # The released inpainting (meshVerticeInpaint, then cv2.inpaint on 8 bits) of the released bake.
+    texture_inpaint = _pipeline_definition("texture_inpaint")
+    inpainted = texture_inpaint(None, render, expected, (expected_mask.numpy() * 255).astype(np.uint8))
+    ours = inpaint_texture(expected, expected_mask, -positions, faces, uvs, arithmetic="numpy")
+    difference = (ours - inpainted).abs()
+    print(f"inpainted texels differing: {int((difference > 0).any(-1).sum())}, max {difference.max().item():.3e}")
+    assert torch.equal(ours, inpainted)
+    assert torch.equal(actual, inpaint_texture(texture, mask, -positions, faces, uvs, arithmetic="numpy"))

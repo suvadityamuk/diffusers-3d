@@ -16,11 +16,13 @@ from __future__ import annotations
 
 import math
 
+import numpy as np
 import torch
 import torch.nn.functional as F
 
+from ..objects import CoordinateSystem, MeshAsset
 from .mesh_rasterizer import Rasterization, interpolate, rasterize
-from .texture_baking import TexelSurface, fill_texture
+from .texture_baking import TexelSurface
 
 CANNY_LOW_THRESHOLD = 30
 CANNY_HIGH_THRESHOLD = 80
@@ -302,65 +304,193 @@ def merge_views(
     return texture / total.clamp(min=1e-8)[..., None], total > 1e-8
 
 
-def _propagate_vertex_colors(
-    texture: torch.Tensor, mask: torch.Tensor, vertices: torch.Tensor, faces: torch.Tensor, uvs: torch.Tensor
-) -> tuple[torch.Tensor, torch.Tensor]:
-    """Colour mesh vertices whose texel is uncovered from coloured neighbours, then write them back to their texels.
+def file_geometry(mesh: MeshAsset) -> tuple[torch.Tensor, torch.Tensor]:
+    """Float32 CPU vertices and faces as ``mesh.save`` writes them to a GLB, which the released pipelines read."""
 
-    Vertices read the texel nearest their UV. An uncoloured vertex takes the inverse-squared-distance weighted mean of
-    its coloured neighbours (the next corner of every face it is in), ring by ring until no more can be coloured.
+    rotation = mesh.metadata.get("export_rotation")
+    faces = mesh.faces.detach().cpu()
+    if rotation is None:
+        mesh = mesh.to_coordinate_system(CoordinateSystem.RIGHT_HANDED_Y_UP)
+        vertices = mesh.vertices
+    else:
+        matrix = torch.tensor(rotation, dtype=mesh.vertices.dtype, device=mesh.vertices.device)
+        vertices = mesh.vertices @ matrix.T
+        faces = faces[:, [0, 2, 1]] if torch.det(matrix.double()) < 0 else faces
+    transform = mesh.transform.to(vertices)
+    vertices = vertices @ transform[:3, :3].T + transform[:3, 3]
+    return vertices.detach().cpu().float(), faces
+
+
+def _round_half_away(values: np.ndarray) -> np.ndarray:
+    """C ``round``: halves go away from zero."""
+
+    whole = np.trunc(values)
+    return (whole + np.sign(values) * (np.abs(values - whole) >= 0.5)).astype(np.int64)
+
+
+def _vertex_texels(uvs: np.ndarray, height: int, width: int, arithmetic: str) -> np.ndarray:
+    """Flat texel of every vertex as ``meshVerticeInpaint`` finds it, from float32 OpenGL-style ``(V, 2)`` UVs.
+
+    ``MeshRender`` stores ``1 - v`` and hands back ``1 - (1 - v)``, both in float32.
+    """
+
+    u, v = uvs[:, 0], np.float32(1) - (np.float32(1) - uvs[:, 1])
+    if arithmetic == "cpp":
+        # ``round(float * int)`` in float32, ``round((1.0 - float) * int)`` in double.
+        column = _round_half_away((u * np.float32(width - 1)).astype(np.float64))
+        row = _round_half_away((1.0 - v.astype(np.float64)) * (height - 1))
+    else:
+        # NumPy 1.x promotes these float32 scalars to float64; Python's ``round`` rounds halves to even.
+        column = np.rint(u.astype(np.float64) * (width - 1)).astype(np.int64)
+        row = np.rint((1.0 - v.astype(np.float64)) * (height - 1)).astype(np.int64)
+    return row * width + column
+
+
+def _edge_weights(vertices: np.ndarray, source: np.ndarray, target: np.ndarray, arithmetic: str):
+    """Inverse squared distance of every graph edge: the float32 weight and the weight that is summed."""
+
+    difference = vertices[source] - vertices[target]  # float32, as both implementations subtract
+    if arithmetic == "cpp":
+        # ``1.0f / max(sqrt(pow(dx, 2) + ...), 1E-4)`` in double, stored as float and squared in float.
+        squared = difference.astype(np.float64) ** 2
+        distance = np.sqrt((squared[:, 0] + squared[:, 1]) + squared[:, 2])
+        weight = (1.0 / np.maximum(distance, 1e-4)).astype(np.float32)
+        weight = weight * weight
+        return weight, weight
+    # ``np.sqrt(np.sum(d ** 2))`` in float32, then ``1.0 / max(dist, 1e-4)`` squared in float64.
+    squared = difference * difference
+    distance = np.sqrt((squared[:, 0] + squared[:, 1]) + squared[:, 2])
+    distance = distance.astype(np.float64)
+    weight = 1.0 / np.where(distance >= 1e-4, distance, 1e-4)
+    weight = weight * weight
+    return weight.astype(np.float32), weight
+
+
+def mesh_vertex_inpaint(
+    texture: np.ndarray,
+    mask: np.ndarray,
+    vertices: np.ndarray,
+    faces: np.ndarray,
+    uvs: np.ndarray,
+    *,
+    arithmetic: str = "cpp",
+) -> tuple[np.ndarray, np.ndarray]:
+    """``meshVerticeInpaint`` (method ``"smooth"``): colour uncovered vertices from their mesh neighbours.
+
+    ``texture`` is float32 ``(H, W, C)``, ``mask`` uint8 ``(H, W)`` (non-zero where covered), ``vertices`` float32
+    ``(V, 3)`` in any mirrored frame, ``faces`` ``(F, 3)``, and ``uvs`` float32 OpenGL-style ``(V, 2)`` indexed by
+    ``faces``. A vertex is coloured when the texel at its UV is covered. The others are listed once per face corner,
+    in face order, and swept in that order until the count of vertices without a coloured neighbour stops changing
+    twice: each takes the inverse-squared-distance weighted mean of its coloured neighbours (the next corner of every
+    face it is in) as they are at that moment. Every coloured vertex is then written to its texel (in face-corner
+    order) and marked 255 in the mask.
+
+    ``arithmetic="cpp"`` follows the C++ extension of Hunyuan3D-2.1 (float32 sums, distances in double);
+    ``"numpy"`` follows Step1X-3D's NumPy port under NumPy 1.x promotion (float32 colour sums, weights and their
+    total in float64).
     """
 
     height, width, channels = texture.shape
-    column = (uvs[:, 0] * (width - 1) + 0.5).floor().long()
-    row = ((1 - uvs[:, 1].double()) * (height - 1) + 0.5).floor().long()
-    texel = row * width + column
-    colors = texture.reshape(-1, channels)[texel]
-    referenced = torch.zeros_like(texel, dtype=torch.bool)
-    referenced[faces.flatten()] = True
-    colored = mask.flatten()[texel] & referenced
-    source, target = faces.flatten(), faces.roll(-1, dims=1).flatten()
-    weight = 1 / (vertices[source] - vertices[target]).norm(dim=1).clamp(min=1e-4) ** 2
-    while True:
-        active = colored[target] & ~colored[source]
-        if not bool(active.any()):
-            break
-        sums = colors.new_zeros(colors.shape[0], channels + 1)
-        contribution = torch.cat([colors[target[active]], torch.ones_like(weight[active, None])], dim=1)
-        sums.index_put_((source[active],), contribution * weight[active, None], accumulate=True)
-        reached = sums[:, -1] > 0
-        colors = torch.where(reached[:, None], sums[:, :-1] / sums[:, -1:].clamp(min=1e-30), colors)
-        colored = colored | reached
-    texture = texture.reshape(-1, channels).clone()
-    texture[texel[colored]] = colors[colored]
-    mask = mask.flatten().clone()
-    mask[texel[colored]] = True
-    return texture.view(height, width, channels), mask.view(height, width)
+    vertices = np.ascontiguousarray(vertices, dtype=np.float32)
+    corners = np.asarray(faces, dtype=np.int64).reshape(-1)
+    texel = _vertex_texels(np.asarray(uvs, dtype=np.float32), height, width, arithmetic)[corners]
+    flat_texture = texture.reshape(-1, channels)
+    covered = mask.reshape(-1)[texel] > 0
+
+    colored = np.zeros(len(vertices), dtype=bool)
+    colors = np.zeros((len(vertices), channels), dtype=np.float32)
+    # Every corner of a vertex shares its texel, so covered corners all agree on the colour.
+    colored[corners[covered]] = True
+    colors[corners[covered]] = flat_texture[texel[covered]]
+    pending = corners[~covered]
+
+    source = corners
+    target = np.asarray(faces, dtype=np.int64)[:, [1, 2, 0]].reshape(-1)
+    weight32, weight_sum = _edge_weights(vertices, source, target, arithmetic)
+    order = np.argsort(source, kind="stable")
+    starts = np.searchsorted(source[order], np.arange(len(vertices) + 1))
+    neighbours = {
+        vertex: (
+            target[order[starts[vertex] : starts[vertex + 1]]],
+            weight32[order[starts[vertex] : starts[vertex + 1]]],
+            weight_sum[order[starts[vertex] : starts[vertex + 1]]],
+        )
+        for vertex in np.unique(pending).tolist()
+    }
+
+    smooth_count, last_uncolored = 2, 0
+    while smooth_count > 0:
+        uncolored = 0
+        for vertex in pending.tolist():
+            targets, weights, summed = neighbours[vertex]
+            keep = colored[targets]
+            if not keep.any():
+                uncolored += 1
+                continue
+            contributions = colors[targets[keep]] * weights[keep][:, None]
+            color_sum = np.add.accumulate(contributions, axis=0)[-1]
+            total = np.add.accumulate(summed[keep])[-1]
+            colors[vertex] = color_sum / np.float32(total)
+            colored[vertex] = True
+        smooth_count += -1 if uncolored == last_uncolored else 1
+        last_uncolored = uncolored
+
+    texture, mask = texture.copy(), mask.copy()
+    # Corners write in face order, so the last corner on a texel wins.
+    written = np.flatnonzero(colored[corners])[::-1]
+    last = written[np.unique(texel[written], return_index=True)[1]]
+    texture.reshape(-1, channels)[texel[last]] = colors[corners[last]]
+    mask.reshape(-1)[texel[last]] = 255
+    return texture, mask
 
 
 def inpaint_texture(
-    texture: torch.Tensor, mask: torch.Tensor, vertices: torch.Tensor, faces: torch.Tensor, uvs: torch.Tensor
+    texture: torch.Tensor,
+    mask: torch.Tensor,
+    vertices: torch.Tensor,
+    faces: torch.Tensor,
+    uvs: torch.Tensor,
+    *,
+    arithmetic: str = "cpp",
 ) -> torch.Tensor:
-    """Fill the texels of an ``(H, W, C)`` texture in ``[0, 1]`` outside the boolean ``mask`` (``MeshRender.uv_inpaint``).
+    """Fill the texels of an ``(H, W, C)`` texture outside the boolean ``mask`` (``MeshRender.uv_inpaint``).
 
-    Uncovered vertices first take colours propagated over the mesh (written to the texel at their UV); every other
-    texel is then filled ring by ring from its known neighbours (:func:`~.texture_baking.fill_texture`). Upstream
-    fills this second step with ``cv2.inpaint(..., INPAINT_NS)`` on 8-bit colour instead, which this approximates
-    but does not reproduce.
+    Uncovered vertices take colours from their mesh neighbours (:func:`mesh_vertex_inpaint`); the texture is then
+    truncated to 8 bits and every texel still outside the mask is filled by ``cv2.inpaint(..., 3, INPAINT_NS)``,
+    three channels at a time (``C`` must be a multiple of 3). Returns the 8-bit result divided by 255 in float32,
+    as upstream hands it on.
     """
 
-    texture, mask = _propagate_vertex_colors(texture, mask, vertices, faces, uvs)
-    height, width = mask.shape
-    return fill_texture(texture, mask, torch.ones_like(mask), iterations=height + width)
+    import cv2
+
+    height, width, channels = texture.shape
+    if channels % 3:
+        raise ValueError("inpaint_texture fills three channels at a time")
+    texture_np, mask_np = mesh_vertex_inpaint(
+        texture.detach().cpu().float().numpy(),
+        mask.detach().cpu().numpy().astype(np.uint8) * 255,
+        vertices.detach().cpu().float().numpy(),
+        faces.detach().cpu().numpy(),
+        uvs.detach().cpu().float().numpy(),
+        arithmetic=arithmetic,
+    )
+    quantized = (texture_np * 255).astype(np.uint8)
+    filled = [
+        cv2.inpaint(np.ascontiguousarray(quantized[..., start : start + 3]), 255 - mask_np, 3, cv2.INPAINT_NS)
+        for start in range(0, channels, 3)
+    ]
+    return torch.from_numpy(np.concatenate(filled, axis=-1) / 255).float().to(texture.device)
 
 
 __all__ = [
     "CANNY_HIGH_THRESHOLD",
     "CANNY_LOW_THRESHOLD",
     "canny",
+    "file_geometry",
     "inpaint_texture",
     "look_at_view",
     "merge_views",
+    "mesh_vertex_inpaint",
     "orthographic_projection",
     "project_view",
     "rasterize_texels",

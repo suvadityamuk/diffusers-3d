@@ -3,6 +3,7 @@ from __future__ import annotations
 import pytest
 import torch
 import torch.nn.functional as F
+from _configs import production_config, tiny_config
 
 from diffusers_3d import (
     CoordinateSystem,
@@ -17,7 +18,7 @@ from diffusers_3d.families.trellis.sparse import trellis_grid_transform
 
 
 def test_sparse_structure_decoder_exact_reuse_metadata_and_shape():
-    decoder = Trellis2SparseStructureDecoder(**Trellis2SparseStructureDecoder.tiny_config())
+    decoder = Trellis2SparseStructureDecoder(**tiny_config(Trellis2SparseStructureDecoder))
     with torch.no_grad():
         decoder.out_layer[-1].weight.zero_()
         decoder.out_layer[-1].bias.fill_(1.0)
@@ -29,7 +30,7 @@ def test_sparse_structure_decoder_exact_reuse_metadata_and_shape():
 
 
 def test_sparse_structure_decoder_max_pools_occupancy_before_argwhere(monkeypatch):
-    decoder = Trellis2SparseStructureDecoder(**Trellis2SparseStructureDecoder.tiny_config())
+    decoder = Trellis2SparseStructureDecoder(**tiny_config(Trellis2SparseStructureDecoder))
     logits = torch.full((1, 1, 64, 64, 64), -1.0)
     logits[0, 0, 2, 4, 6] = 0.25
     logits[0, 0, 3, 5, 7] = 2.0
@@ -53,8 +54,8 @@ def test_shape_and_pbr_decoders_share_subdivision_and_expose_all_material_channe
     shape_slat = TrellisSparseTensor(coordinates, torch.randn(4, 4, generator=generator))
     texture_slat = TrellisSparseTensor(coordinates, torch.randn(4, 4, generator=generator))
     torch.manual_seed(0)
-    shape_decoder = Trellis2ShapeDualGridDecoder(**Trellis2ShapeDualGridDecoder.tiny_config())
-    pbr_decoder = Trellis2PBRSparseDecoder(**Trellis2PBRSparseDecoder.tiny_config())
+    shape_decoder = Trellis2ShapeDualGridDecoder(**tiny_config(Trellis2ShapeDualGridDecoder))
+    pbr_decoder = Trellis2PBRSparseDecoder(**tiny_config(Trellis2PBRSparseDecoder))
     with torch.no_grad():
         # Zero-initialised subdivision heads would pick no children; bias them so every block selects some.
         shape_decoder.blocks[0][-1].to_subdiv.bias.fill_(1.0)
@@ -102,7 +103,7 @@ def test_upsample_coordinates_matches_the_forward_grid():
     coordinates = torch.tensor([[0, 0, 0, 0], [0, 1, 2, 3], [0, 3, 3, 3]], dtype=torch.int64)
     slat = TrellisSparseTensor(coordinates, torch.randn(3, 4, generator=torch.Generator().manual_seed(3)))
     torch.manual_seed(1)
-    decoder = Trellis2ShapeDualGridDecoder(**Trellis2ShapeDualGridDecoder.tiny_config())
+    decoder = Trellis2ShapeDualGridDecoder(**tiny_config(Trellis2ShapeDualGridDecoder))
     with torch.no_grad():
         decoder.blocks[0][-1].to_subdiv.bias.fill_(1.0)
     grown = decoder.upsample_coordinates(slat, 1)
@@ -115,8 +116,8 @@ def test_upsample_coordinates_matches_the_forward_grid():
 
 def test_production_decoder_configs_build_the_released_layout():
     with torch.device("meta"):
-        shape = Trellis2ShapeDualGridDecoder(**Trellis2ShapeDualGridDecoder.production_config())
-        pbr = Trellis2PBRSparseDecoder(**Trellis2PBRSparseDecoder.production_config())
+        shape = Trellis2ShapeDualGridDecoder(**production_config(Trellis2ShapeDualGridDecoder))
+        pbr = Trellis2PBRSparseDecoder(**production_config(Trellis2PBRSparseDecoder))
     shape_keys = set(shape.state_dict())
     pbr_keys = set(pbr.state_dict())
     # Released shape_dec_next_dc_f16c32_fp16 / tex_dec_next_dc_f16c32_fp16 safetensors headers.
@@ -130,6 +131,6 @@ def test_production_decoder_configs_build_the_released_layout():
     assert shape.output_layer.weight.shape == (7, 64) and pbr.output_layer.weight.shape == (6, 64)
     assert shape.blocks[1][0].conv.weight.dtype is torch.float16 and shape.from_latent.weight.dtype is torch.float32
     with pytest.raises(ValueError, match="pred_subdiv=False"):
-        Trellis2PBRSparseDecoder(**{**Trellis2PBRSparseDecoder.tiny_config(), "pred_subdiv": True})
+        Trellis2PBRSparseDecoder(**{**tiny_config(Trellis2PBRSparseDecoder), "pred_subdiv": True})
     with pytest.raises(ValueError, match="unsupported block types"):
-        Trellis2ShapeDualGridDecoder(**{**Trellis2ShapeDualGridDecoder.tiny_config(), "up_block_type": ["Other"]})
+        Trellis2ShapeDualGridDecoder(**{**tiny_config(Trellis2ShapeDualGridDecoder), "up_block_type": ["Other"]})

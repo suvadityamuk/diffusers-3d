@@ -5,16 +5,18 @@ from diffusers.utils import BaseOutput
 from diffusers_3d import (
     CoordinateSystem,
     MeshAsset,
-    MetadataValidationError,
-    Object3D,
     Object3DKind,
     Object3DValidationError,
     PBRMaterial,
+)
+from diffusers_3d.objects import MeshAsset as ObjectsMeshAsset
+from diffusers_3d.objects import (
+    MetadataValidationError,
+    Object3D,
     TensorDeviceError,
     TensorDTypeError,
     TensorShapeError,
 )
-from diffusers_3d.objects import MeshAsset as ObjectsMeshAsset
 
 
 def test_public_exports_and_structural_protocol(mesh):
@@ -171,7 +173,7 @@ def test_base_output_is_a_pytree_node(mesh):
 
 
 def test_mesh_to_coordinate_system_matches_trellis_z_up_to_y_up_and_flips_winding_on_reflection():
-    from diffusers_3d import changes_handedness, coordinate_change_matrix
+    from diffusers_3d.objects import changes_handedness, coordinate_change_matrix
 
     vertices = torch.tensor([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]])
     faces = torch.tensor([[0, 1, 2], [0, 2, 3]])

@@ -191,7 +191,6 @@ def test_converted_release_round_trips_through_auto_pipeline(tmp_path, tiny_step
     report = json.loads((output / "step1x3d_conversion.json").read_text())
     assert report["reference_revision"] == STEP1X3D_REFERENCE_REVISION
     assert report["dropped_vae_keys"] == ["encoder.input_proj.weight", "pre_kl.bias"]
-    assert (output / "object3d_model_index.json").is_file()
 
 
 def test_label_variant_is_rejected_and_cli_converts(tmp_path, tiny_step1x3d_components):

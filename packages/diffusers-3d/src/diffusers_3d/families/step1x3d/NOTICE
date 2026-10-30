@@ -41,6 +41,13 @@ DINOv2-with-registers ViT-L/14 (facebook/dinov2-with-registers-large,
 Apache-2.0). The texture converter combines the release's adapter weights
 (Step1X-3D-Texture, Apache-2.0) with stabilityai/stable-diffusion-xl-base-1.0
 (CreativeML Open RAIL++-M License) and madebyollin/sdxl-vae-fp16-fix (MIT).
+The geometry stage's hierarchical occupancy decoder (diffusers_3d/backends/occupancy.py)
+is modified from Tencent Hunyuan3D-2.1 (https://github.com/Tencent-Hunyuan/Hunyuan3D-2.1,
+revision 82920d643c0dc2f7bfd7255f45f62d386edfe60c), as copied by Step1X-3D, and is
+provided under the Tencent Hunyuan 3D 2.1 Community License Agreement (see
+families/hunyuan3d/LICENSE-TENCENT-HUNYUAN-3D-2.1). Copyright (C) 2025 Tencent. It does
+not apply in the European Union, the United Kingdom, or South Korea.
+
 Model weights keep their own licenses.
 
 No affiliation, sponsorship, or endorsement by StepFun, Meta, Tencent,

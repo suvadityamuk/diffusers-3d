@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 
+import numpy as np
 import pytest
 import torch
 from diffusers import DDPMScheduler
@@ -23,6 +24,7 @@ from diffusers_3d.families.step1x3d.texture_pipeline import (
     render_step1x3d_control_images,
     step1x3d_orthographic_projection,
     step1x3d_view_matrices,
+    view_frame,
 )
 from diffusers_3d.families.step1x3d.texture_sync import Step1X3DLatentTextureSync, nearest_valid_index
 
@@ -48,6 +50,40 @@ def test_nearest_valid_index_finds_a_nearest_texel():
     assert valid.flatten()[nearest].all()
     assert torch.equal(found, distance.min(dim=1).values)
     assert (nearest_valid_index(torch.zeros(4, 4, dtype=torch.bool)) == -1).all()
+
+
+def _voronoi_kernel(valid: np.ndarray) -> np.ndarray:
+    """A line-by-line restatement of the released CuPy voronoiPass kernel and its ping-pong driver."""
+
+    height, width = valid.shape
+    ping = np.where(valid.flatten(), np.arange(height * width), -1)
+    pong = ping.copy()
+    step = max(height, width) // 2
+    while step:
+        for k in range(height * width):
+            for row_step in (-1, 0, 1):
+                for column_step in (-1, 0, 1):
+                    source = k + step * row_step * width + step * column_step
+                    if source < 0 or source >= height * width or ping[source] == -1:
+                        continue
+                    if pong[k] == -1:
+                        pong[k] = ping[source]
+                        continue
+                    current = (k // width - pong[k] // width) ** 2 + (k % width - pong[k] % width) ** 2
+                    jump = (k // width - ping[source] // width) ** 2 + (k % width - ping[source] % width) ** 2
+                    if jump < current:
+                        pong[k] = ping[source]
+        ping, pong = pong, ping
+        step //= 2
+    return ping
+
+
+@pytest.mark.parametrize("shape", [(9, 9), (7, 13), (16, 5)])
+def test_nearest_valid_index_is_the_released_voronoi_kernel(shape):
+    rng = np.random.default_rng(sum(shape))
+    for density in (0.03, 0.2):
+        valid = rng.random(shape) < density
+        assert np.array_equal(nearest_valid_index(torch.from_numpy(valid)).numpy(), _voronoi_kernel(valid))
 
 
 def test_view_layout_matches_the_released_cameras():
@@ -82,17 +118,18 @@ def test_reference_image_is_fitted_on_grey():
 
 def test_texture_sync_bakes_back_a_rendered_texture(tiny_step1x3d_texture_pipeline, icosphere_mesh):
     pytest.importorskip("xatlas")
-    mesh, positions = tiny_step1x3d_texture_pipeline.prepare_mesh(icosphere_mesh, clean=False)
+    meshes, positions = tiny_step1x3d_texture_pipeline.prepare_mesh(icosphere_mesh, max_faces=None)
     world_to_camera = step1x3d_view_matrices()
     sync = Step1X3DLatentTextureSync(
         positions,
-        mesh.faces,
-        mesh.uvs,
+        torch.from_numpy(meshes.faces),
+        torch.from_numpy(meshes.sync_uvs),
         step1x3d_orthographic_projection() @ world_to_camera,
         torch.linalg.inv(world_to_camera)[:, :3, 3],
         image_size=24,
         texture_size=48,
         visibility_size=64,
+        uv_faces=torch.from_numpy(meshes.sync_uv_faces),
     )
     texture = torch.rand(4, 48, 48, generator=torch.Generator().manual_seed(0))
     views = sync.render(texture)
@@ -112,11 +149,14 @@ def test_texture_sync_bakes_back_a_rendered_texture(tiny_step1x3d_texture_pipeli
 
 def test_bake_views_covers_the_atlas(tiny_step1x3d_texture_pipeline, icosphere_mesh):
     pytest.importorskip("xatlas")
-    mesh, positions = tiny_step1x3d_texture_pipeline.prepare_mesh(icosphere_mesh, clean=False)
+    meshes, _ = tiny_step1x3d_texture_pipeline.prepare_mesh(icosphere_mesh, max_faces=None)
+    positions = view_frame(meshes.vertices[meshes.final_mapping])
     color = torch.tensor([0.2, 0.4, 0.6])
     views = color[None, :, None, None].expand(6, 3, 32, 32)
-    texture = tiny_step1x3d_texture_pipeline.bake_views(views, positions, mesh.faces, mesh.uvs, texture_size=128)
-    torch.testing.assert_close(texture, color.expand(128, 128, 3))
+    faces, uvs = torch.from_numpy(meshes.final_faces), torch.from_numpy(meshes.final_uvs)
+    texture = tiny_step1x3d_texture_pipeline.bake_views(views, positions, faces, uvs, texture_size=128)
+    # The released inpainting hands on 8-bit texels.
+    torch.testing.assert_close(texture, (color * 255).floor().div(255).expand(128, 128, 3), atol=1 / 255, rtol=0)
 
 
 def test_multiview_attention_mixes_rows_and_columns_only():
@@ -153,7 +193,7 @@ def test_pipeline_textures_meshes_and_round_trips(tiny_step1x3d_texture_pipeline
         "resolution": 32,
         "latent_texture_size": 32,
         "texture_size": 64,
-        "clean_mesh": False,
+        "max_faces": None,
     }
     output = pipeline(icosphere_mesh, _reference_image(), generator=torch.Generator().manual_seed(0), **arguments)
 
@@ -166,7 +206,16 @@ def test_pipeline_textures_meshes_and_round_trips(tiny_step1x3d_texture_pipeline
     assert pipeline.unet.attn_processors == processors
 
     pipeline.save_pretrained(tmp_path)
-    loaded = AutoPipelineFor3D.from_pretrained(tmp_path)
+    assert sorted(path.name for path in tmp_path.iterdir()) == [
+        "adapter",
+        "model_index.json",
+        "mv_adapter",
+        "scheduler",
+        "tokenizer",
+        "tokenizer_2",
+    ]
+    external = {name: getattr(pipeline, name) for name in Step1X3DMeshTexturePipeline.external_components}
+    loaded = AutoPipelineFor3D.from_pretrained(tmp_path, **external)
     assert type(loaded) is Step1X3DMeshTexturePipeline
     reloaded = loaded(icosphere_mesh, _reference_image(), generator=torch.Generator().manual_seed(0), **arguments)
     torch.testing.assert_close(reloaded.latents.latents, output.latents.latents)
@@ -204,7 +253,7 @@ def _write_tiny_release(root, tokenizer):
     return components, release
 
 
-def test_conversion_loads_the_release_onto_stock_sdxl_components(tiny_clip_tokenizer, tmp_path):
+def test_conversion_writes_only_the_release_and_loads_it_onto_stock_sdxl_components(tiny_clip_tokenizer, tmp_path):
     components, release = _write_tiny_release(tmp_path, tiny_clip_tokenizer)
     output = tmp_path / "converted"
     # Revisions are ignored for local directories.
@@ -219,12 +268,22 @@ def test_conversion_loads_the_release_onto_stock_sdxl_components(tiny_clip_token
         ]
     )
 
-    pipeline = AutoPipelineFor3D.from_pretrained(output, task="mesh-texturing")
+    assert sorted(path.name for path in output.iterdir()) == [
+        "LICENSE-SDXL.md",
+        "adapter",
+        "model_index.json",
+        "mv_adapter",
+        "scheduler",
+        "step1x3d_texture_conversion.json",
+        "tokenizer",
+        "tokenizer_2",
+    ]
+    external = {name: components[name] for name in Step1X3DMeshTexturePipeline.external_components}
+    pipeline = AutoPipelineFor3D.from_pretrained(output, task="mesh-texturing", **external)
     state = {**{f"adapter.{k}": v for k, v in pipeline.adapter.adapter.state_dict().items()}}
     state.update(pipeline.mv_adapter.state_dict())
     assert state.keys() == release.keys()
     assert all(torch.equal(state[key], value) for key, value in release.items())
-    torch.testing.assert_close(pipeline.unet.state_dict(), components["unet"].state_dict())
     expected = shifted_snr_betas(components["scheduler"].alphas_cumprod)
     assert torch.equal(pipeline.scheduler.betas, expected)
     assert (output / "LICENSE-SDXL.md").read_text() == "CreativeML Open RAIL++-M\n"

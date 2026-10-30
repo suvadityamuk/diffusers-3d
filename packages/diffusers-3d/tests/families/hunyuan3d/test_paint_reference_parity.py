@@ -10,14 +10,14 @@ from pathlib import Path
 import numpy as np
 import pytest
 import torch
-
-from diffusers_3d import HUNYUAN3D_REFERENCE_REVISION, Hunyuan3DPaintUNet
-from diffusers_3d._reference import (
+from _reference import (
     ReferenceCheckoutError,
     import_reference_dependency,
     reference_unavailable,
     validate_reference_checkout,
 )
+
+from diffusers_3d import HUNYUAN3D_REFERENCE_REVISION, Hunyuan3DPaintUNet
 from diffusers_3d.backends import (
     look_at_view,
     merge_views,

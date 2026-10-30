@@ -1,7 +1,9 @@
-"""Pure-PyTorch triangle rasterizer: per-pixel face index, barycentrics, and depth on any device.
+"""Triangle rasterizer: per-pixel face index, barycentrics, and depth on any device.
 
-It reproduces the semantics of the ``custom_rasterizer`` CUDA extension that Hunyuan3D-2.1 Paint and the Step1X-3D
-texture baker call (an independent implementation, no upstream code): clip-space vertices, pixel centres at
+On CUDA, ``align_corners=True`` (``custom_rasterizer`` mode) runs the ``custom_rasterizer`` extension itself, which
+Hunyuan3D-2.1 Paint and the Step1X-3D texture baker call: its float32 edge tests differ from any restatement on a few
+pixels per view. Everywhere else the rasterizer is plain PyTorch. It follows ``custom_rasterizer``'s semantics (an
+independent implementation, no upstream code): clip-space vertices, pixel centres at
 ``+ 0.5``, row index growing with NDC ``y`` (no flip), closed barycentric coverage of both windings, a z-buffer on
 window depth ``z/w * 0.49999 + 0.5`` quantized to ``2^-18`` with ties going to the lowest face index, and
 perspective-correct barycentrics. Every triangle is enumerated over the pixel centres in its bounding box (shared
@@ -15,8 +17,13 @@ from dataclasses import dataclass
 import torch
 
 from ..objects import CameraRig, MeshAsset
-from .protocols import TensorMap
+from ._optional import require
 from .texture_baking import pixel_barycentrics
+
+CUSTOM_RASTERIZER_INSTALL = (
+    'pip install --no-build-isolation "git+https://github.com/Tencent-Hunyuan/Hunyuan3D-2.1.git@'
+    '82920d643c0dc2f7bfd7255f45f62d386edfe60c#subdirectory=hy3dpaint/custom_rasterizer" (needs the CUDA toolkit)'
+)
 
 
 @dataclass(frozen=True)
@@ -44,9 +51,15 @@ def rasterize(
     (just past NDC ``z = -1``) are dropped, there is no far plane, and triangles with a vertex at ``w <= 0`` are
     skipped rather than clipped. ``cull_backfaces`` keeps only triangles that are counter-clockwise in NDC (``x``
     right, ``y`` up). ``face_index`` is 0-based; ``custom_rasterizer`` and nvdiffrast report ``face_index + 1``.
+
+    On CUDA, ``align_corners=True`` without culling runs ``custom_rasterizer_kernel`` (an optional dependency, see
+    :data:`CUSTOM_RASTERIZER_INSTALL`) as the released pipelines do; its barycentrics are perspective-correct and
+    ``depth`` interpolates NDC ``z/w`` with them.
     """
 
     positions = clip_positions if clip_positions.ndim == 3 else clip_positions[None]
+    if align_corners and not cull_backfaces and positions.is_cuda:
+        return _custom_rasterize(positions, faces, image_size)
     views, face_count = positions.shape[0], faces.shape[0]
     height, width = image_size
     w = positions[..., 3:]
@@ -98,6 +111,25 @@ def rasterize(
     )
 
 
+def _custom_rasterize(positions: torch.Tensor, faces: torch.Tensor, image_size: tuple[int, int]) -> Rasterization:
+    """``custom_rasterizer.rasterize`` of every view, as ``MeshRender.raster_rasterize`` calls it."""
+
+    kernel = require("custom_rasterizer_kernel", CUSTOM_RASTERIZER_INSTALL)
+    height, width = image_size
+    triangles = faces.to(torch.int32).contiguous()
+    face_index, barycentrics = [], []
+    for view in positions.to(torch.float32):
+        found, weights = kernel.rasterize_image(view.contiguous(), triangles, torch.zeros(0), width, height, 1e-6, 0)
+        face_index.append(found.long() - 1)
+        barycentrics.append(weights)
+    face_index, barycentrics = torch.stack(face_index), torch.stack(barycentrics)
+    ndc_z = positions[..., 2] / positions[..., 3]
+    view = torch.arange(len(positions), device=positions.device)[:, None, None]
+    corners = faces.long()[face_index.clamp(min=0)]
+    depth = sum(barycentrics[..., k] * ndc_z[view, corners[..., k]] for k in range(3))
+    return Rasterization(face_index, barycentrics.to(positions.dtype), depth.to(positions.dtype))
+
+
 def interpolate(attributes: torch.Tensor, rasterization: Rasterization, faces: torch.Tensor) -> torch.Tensor:
     """Interpolate ``(V, C)`` (or per-view ``(N, V, C)``) vertex attributes into ``(N, H, W, C)`` maps.
 
@@ -113,7 +145,7 @@ def interpolate(attributes: torch.Tensor, rasterization: Rasterization, faces: t
     return sum(weights[..., k, None] * attributes[view, corners[..., k]] for k in range(3))
 
 
-def rasterize_mesh(mesh: MeshAsset, cameras: CameraRig) -> TensorMap:
+def rasterize_mesh(mesh: MeshAsset, cameras: CameraRig) -> dict[str, torch.Tensor]:
     """Rasterize ``mesh`` (with its ``transform``) for every OpenCV pinhole camera of ``cameras``.
 
     Pixel ``(row, column)`` spans ``[column, column + 1) x [row, row + 1)`` of the intrinsics' image plane, as in
@@ -148,4 +180,4 @@ def rasterize_mesh(mesh: MeshAsset, cameras: CameraRig) -> TensorMap:
     }
 
 
-__all__ = ["Rasterization", "interpolate", "rasterize", "rasterize_mesh"]
+__all__ = ["CUSTOM_RASTERIZER_INSTALL", "Rasterization", "interpolate", "rasterize", "rasterize_mesh"]

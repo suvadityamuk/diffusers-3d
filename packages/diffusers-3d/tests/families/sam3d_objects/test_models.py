@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import torch
+from _configs import tiny_config
 from transformers import Dinov2WithRegistersModel
 
 from diffusers_3d import Sam3DConditionEmbedder, Sam3DObjectsPipeline, Sam3DSparseStructureFlowModel
@@ -22,7 +23,7 @@ def _flow_inputs(model: Sam3DSparseStructureFlowModel, seed: int = 0):
 
 
 def test_flow_layout_save_load_and_gradient_checkpointing(tmp_path):
-    model = Sam3DSparseStructureFlowModel(**Sam3DSparseStructureFlowModel.tiny_config())
+    model = Sam3DSparseStructureFlowModel(**tiny_config(Sam3DSparseStructureFlowModel))
     _randomize(model, 0)
     latents, timesteps, context = _flow_inputs(model)
     assert list(latents) == ["shape", "rotation", "translation", "scale", "translation_scale"]
@@ -59,7 +60,7 @@ def test_flow_layout_save_load_and_gradient_checkpointing(tmp_path):
 
 
 def test_shape_stream_ignores_pose_tokens_but_not_the_shortcut_step():
-    model = Sam3DSparseStructureFlowModel(**Sam3DSparseStructureFlowModel.tiny_config()).eval()
+    model = Sam3DSparseStructureFlowModel(**tiny_config(Sam3DSparseStructureFlowModel)).eval()
     _randomize(model, 1)
     latents, timesteps, context = _flow_inputs(model, seed=2)
     perturbed = {**latents, "translation": latents["translation"] + 3.0}
@@ -74,7 +75,7 @@ def test_shape_stream_ignores_pose_tokens_but_not_the_shortcut_step():
 
 
 def test_condition_embedder_token_layout_and_pointmap_dropout(tmp_path):
-    embedder = Sam3DConditionEmbedder(**Sam3DConditionEmbedder.tiny_config()).eval()
+    embedder = Sam3DConditionEmbedder(**tiny_config(Sam3DConditionEmbedder)).eval()
     _randomize(embedder, 3)
     encoder = Dinov2WithRegistersModel(tiny_dinov2_config()).eval()
     generator = torch.Generator().manual_seed(4)

@@ -3,21 +3,32 @@ from __future__ import annotations
 import ast
 import contextlib
 import functools
+import hashlib
 import importlib.util
 import os
 import subprocess
 import sys
 import types
 from pathlib import Path
+from typing import Union
 
 import numpy as np
 import pytest
 import torch
+from _configs import small_trellis_slat_flow_config, tiny_config
+from _reference import (
+    ReferenceCheckoutError,
+    import_reference_dependency,
+    reference_unavailable,
+    validate_reference_checkout,
+)
 from PIL import Image
+from transformers import AutoTokenizer, CLIPTextConfig, CLIPTextModel, CLIPTokenizer, Dinov2WithRegistersModel
 
 from diffusers_3d import (
     TRELLIS_REFERENCE_REVISION,
     ImageCondition,
+    TrellisImageTo3DPipeline,
     TrellisSLatFlowModel,
     TrellisSLatGaussianDecoder,
     TrellisSLatMeshDecoder,
@@ -25,9 +36,11 @@ from diffusers_3d import (
     TrellisSparseStructureDecoder,
     TrellisSparseStructureFlowModel,
     TrellisSparseTensor,
-    preprocess_image_condition,
+    TrellisTextTo3DPipeline,
 )
-from diffusers_3d._reference import ReferenceCheckoutError, reference_unavailable, validate_reference_checkout
+from diffusers_3d.data import preprocess_image_condition
+from diffusers_3d.families.moge.models import match_dinov2_attention_names
+from diffusers_3d.families.trellis.conversion import TRELLIS_ENCODER_CHECKPOINTS
 from diffusers_3d.families.trellis.flexicubes import FLEXICUBES_REFERENCE_REVISION
 from diffusers_3d.objects import CoordinateSystem
 
@@ -37,6 +50,7 @@ REFERENCE_ROOT = Path(os.environ.get("DIFFUSERS_3D_TRELLIS_REFERENCE_ROOT", "/tm
 REFERENCE_REPOSITORY = "https://github.com/microsoft/TRELLIS.git"
 REFERENCE_PATHS = (
     "trellis/pipelines/trellis_image_to_3d.py",
+    "trellis/pipelines/trellis_text_to_3d.py",
     "trellis/models/sparse_structure_flow.py",
     "trellis/models/sparse_structure_vae.py",
     "trellis/modules/attention/__init__.py",
@@ -153,19 +167,25 @@ def _randomize_state(module: torch.nn.Module, *, seed: int) -> None:
                 value.copy_(torch.randn(value.shape, generator=generator, dtype=value.dtype) * 0.02)
 
 
-def _assert_soft_alpha_preprocessing_parity() -> None:
-    path = REFERENCE_ROOT / "trellis" / "pipelines" / "trellis_image_to_3d.py"
+def _pinned_method(file_name: str, class_name: str, method_name: str, namespace: dict):
+    """Compile one method of a pinned upstream pipeline class, without decorators, into ``namespace``."""
+
+    path = REFERENCE_ROOT / "trellis" / "pipelines" / file_name
     tree = ast.parse(path.read_text(encoding="utf-8"))
-    class_node = next(
-        node for node in tree.body if isinstance(node, ast.ClassDef) and node.name == "TrellisImageTo3DPipeline"
-    )
+    class_node = next(node for node in tree.body if isinstance(node, ast.ClassDef) and node.name == class_name)
     function_node = next(
-        node for node in class_node.body if isinstance(node, ast.FunctionDef) and node.name == "preprocess_image"
+        node for node in class_node.body if isinstance(node, ast.FunctionDef) and node.name == method_name
     )
     function_node.decorator_list = []
     module = ast.fix_missing_locations(ast.Module(body=[function_node], type_ignores=[]))
-    namespace = {"Image": Image, "np": np}
     exec(compile(module, str(path), "exec"), namespace)
+    return namespace[method_name]
+
+
+def _assert_soft_alpha_preprocessing_parity() -> None:
+    preprocess_image = _pinned_method(
+        "trellis_image_to_3d.py", "TrellisImageTo3DPipeline", "preprocess_image", {"Image": Image, "np": np}
+    )
 
     rgba = np.zeros((9, 11, 4), dtype=np.uint8)
     rgba[:, :, 0] = np.arange(11, dtype=np.uint8) * 23
@@ -174,7 +194,7 @@ def _assert_soft_alpha_preprocessing_parity() -> None:
     rgba[1:8, 2:10, 3] = np.linspace(1, 255, 56, dtype=np.uint8).reshape(7, 8)
     rgba[0, 0, 3] = 204
     rgba[8, 10, 3] = 205
-    reference = namespace["preprocess_image"](object(), Image.fromarray(rgba))
+    reference = preprocess_image(object(), Image.fromarray(rgba))
     expected = torch.from_numpy(np.array(reference, copy=True)).permute(2, 0, 1).float().div(255)
     condition = ImageCondition(torch.from_numpy(rgba.copy()).permute(2, 0, 1).float().div(255))
     actual = preprocess_image_condition(condition, image_size=518, foreground_scale=1.2).image
@@ -185,7 +205,7 @@ def test_tiny_sparse_structure_components_match_pinned_reference():
     reference_flow_type, reference_decoder_type = _load_pinned_reference()
     _assert_soft_alpha_preprocessing_parity()
 
-    flow_config = TrellisSparseStructureFlowModel.tiny_config()
+    flow_config = tiny_config(TrellisSparseStructureFlowModel)
     torch.manual_seed(0)
     reference_flow = reference_flow_type(**flow_config).eval()
     _randomize_state(reference_flow, seed=1)
@@ -202,7 +222,7 @@ def test_tiny_sparse_structure_components_match_pinned_reference():
         actual_flow = flow(hidden_states, timesteps, context).sample
     torch.testing.assert_close(actual_flow, expected_flow, atol=1e-6, rtol=1e-5)
 
-    decoder_config = TrellisSparseStructureDecoder.tiny_config()
+    decoder_config = tiny_config(TrellisSparseStructureDecoder)
     torch.manual_seed(3)
     reference_decoder = reference_decoder_type(**decoder_config).eval()
     _randomize_state(reference_decoder, seed=4)
@@ -217,7 +237,7 @@ def test_tiny_sparse_structure_components_match_pinned_reference():
 
 def test_tiny_sparse_structure_flow_backward_matches_pinned_reference():
     reference_flow_type, _ = _load_pinned_reference()
-    config = TrellisSparseStructureFlowModel.tiny_config()
+    config = tiny_config(TrellisSparseStructureFlowModel)
     torch.manual_seed(5)
     reference = reference_flow_type(**config)
     _randomize_state(reference, seed=6)
@@ -497,7 +517,7 @@ def _sparse_inputs(reference, coordinates: torch.Tensor, features: torch.Tensor)
 
 def test_slat_flow_io_stages_match_pinned_reference():
     reference = _load_pinned_sparse_reference()
-    config = TrellisSLatFlowModel.small_config()
+    config = small_trellis_slat_flow_config()
     generator = torch.Generator().manual_seed(40)
     # Two batches on an 8^3 grid; the IO stage pools them to 4^3 and back.
     coordinates = torch.tensor(
@@ -538,7 +558,7 @@ def test_slat_flow_io_stages_match_pinned_reference():
 
 def test_swin_gaussian_decoder_matches_pinned_reference():
     reference = _load_pinned_sparse_reference()
-    config = {**TrellisSLatGaussianDecoder.tiny_config(), "attn_mode": "swin", "window_size": 2}
+    config = {**tiny_config(TrellisSLatGaussianDecoder), "attn_mode": "swin", "window_size": 2}
     config["representation_config"] = {**config["representation_config"], "perturb_offset": True}
     generator = torch.Generator().manual_seed(50)
     coordinates = torch.tensor(
@@ -589,7 +609,7 @@ def test_swin_gaussian_decoder_matches_pinned_reference():
 
 def test_swin_radiance_field_decoder_matches_pinned_reference():
     reference = _load_pinned_sparse_reference()
-    config = {**TrellisSLatRadianceFieldDecoder.tiny_config(), "attn_mode": "swin", "window_size": 2}
+    config = {**tiny_config(TrellisSLatRadianceFieldDecoder), "attn_mode": "swin", "window_size": 2}
     generator = torch.Generator().manual_seed(70)
     coordinates = torch.tensor(
         [[0, 0, 0, 0], [0, 0, 0, 1], [0, 1, 2, 3], [0, 7, 0, 5], [1, 2, 1, 0], [1, 3, 1, 0], [1, 7, 7, 7]],
@@ -657,7 +677,7 @@ def test_swin_mesh_decoder_matches_pinned_reference():
                 "FlexiCubes submodule is not checked out; run `git submodule update --init` in the reference root"
             )
         )
-    config = {**TrellisSLatMeshDecoder.tiny_config(), "attn_mode": "swin", "window_size": 2}
+    config = {**tiny_config(TrellisSLatMeshDecoder), "attn_mode": "swin", "window_size": 2}
     generator = torch.Generator().manual_seed(60)
     coordinates = torch.tensor(
         [
@@ -705,3 +725,337 @@ def test_swin_mesh_decoder_matches_pinned_reference():
         assert torch.equal(actual_faces, expected_faces)
         torch.testing.assert_close(actual_colors, expected_colors, atol=1e-6, rtol=1e-5)
         assert asset.coordinate_system is CoordinateSystem.RIGHT_HANDED_Z_UP
+
+
+# --- Conditioning encoders and seeded noise ------------------------------------
+#
+# Upstream loads DINOv2 through ``torch.hub.load("facebookresearch/dinov2", "dinov2_vitl14_reg")``, which fetches
+# the dinov2 ``main`` branch and the ``.pth`` below. The test pins both: a dinov2 checkout and the downloaded file.
+
+DINOV2_REFERENCE_ROOT = Path(os.environ.get("DIFFUSERS_3D_DINOV2_REFERENCE_ROOT", "/tmp/dinov2"))
+DINOV2_REFERENCE_REVISION = "7764ea0f912e53c92e82eb78a2a1631e92725fc8"
+DINOV2_WEIGHTS = Path(
+    os.environ.get("DIFFUSERS_3D_DINOV2_REFERENCE_WEIGHTS", "/tmp/dinov2_weights/dinov2_vitl14_reg4_pretrain.pth")
+)
+# https://dl.fbaipublicfiles.com/dinov2/dinov2_vitl14/dinov2_vitl14_reg4_pretrain.pth
+DINOV2_WEIGHTS_SHA256 = "36e4deffbaef061a2576705b0c36f93621e2ae20bf6274694821b0b492551b51"
+
+
+def _dinov2_hub_model() -> torch.nn.Module:
+    """Build upstream's ``dinov2_vitl14_reg`` from the pinned checkout and load the pinned ``.pth``."""
+
+    try:
+        validate_reference_checkout(
+            DINOV2_REFERENCE_ROOT,
+            expected_revision=DINOV2_REFERENCE_REVISION,
+            expected_repository="https://github.com/facebookresearch/dinov2.git",
+            expected_paths=("dinov2/hub/backbones.py", "dinov2/models/vision_transformer.py"),
+        )
+        if not DINOV2_WEIGHTS.is_file():
+            raise ReferenceCheckoutError(f"DINOv2 reference weights are unavailable: {DINOV2_WEIGHTS}")
+        digest = hashlib.sha256()
+        with DINOV2_WEIGHTS.open("rb") as handle:
+            for block in iter(lambda: handle.read(1 << 24), b""):
+                digest.update(block)
+        if digest.hexdigest() != DINOV2_WEIGHTS_SHA256:
+            raise ReferenceCheckoutError(f"{DINOV2_WEIGHTS} does not match sha256 {DINOV2_WEIGHTS_SHA256}")
+    except ReferenceCheckoutError as error:
+        _reference_unavailable(error)
+
+    # The model kwargs are ``_make_dinov2_model``'s defaults overridden by the ``dinov2_vitl14_reg`` call.
+    tree = ast.parse((DINOV2_REFERENCE_ROOT / "dinov2" / "hub" / "backbones.py").read_text(encoding="utf-8"))
+    functions = {node.name: node for node in tree.body if isinstance(node, ast.FunctionDef)}
+    factory = functions["_make_dinov2_model"].args
+    kwargs = {
+        arg.arg: default.value
+        for arg, default in zip(factory.kwonlyargs, factory.kw_defaults)
+        if isinstance(default, ast.Constant)
+    }
+    call = next(node for node in ast.walk(functions["dinov2_vitl14_reg"]) if isinstance(node, ast.Call))
+    kwargs.update({k.arg: k.value.value for k in call.keywords if isinstance(k.value, ast.Constant)})
+    arch_name = kwargs["arch_name"]
+    model_kwargs = {
+        name: kwargs[name]
+        for name in (
+            "img_size",
+            "patch_size",
+            "init_values",
+            "ffn_layer",
+            "block_chunks",
+            "num_register_tokens",
+            "interpolate_antialias",
+            "interpolate_offset",
+        )
+    }
+
+    previous = os.environ.get("XFORMERS_DISABLED")
+    os.environ["XFORMERS_DISABLED"] = "1"
+    sys.path.insert(0, str(DINOV2_REFERENCE_ROOT))
+    try:
+        from dinov2.models import vision_transformer
+    finally:
+        sys.path.remove(str(DINOV2_REFERENCE_ROOT))
+        if previous is None:
+            del os.environ["XFORMERS_DISABLED"]
+        else:
+            os.environ["XFORMERS_DISABLED"] = previous
+    model = vision_transformer.__dict__[arch_name](**model_kwargs).eval()
+    model.load_state_dict(torch.load(DINOV2_WEIGHTS, map_location="cpu", weights_only=True), strict=True)
+    return model
+
+
+def _dinov2_hub_to_transformers(state_dict: dict[str, torch.Tensor]) -> dict[str, torch.Tensor]:
+    renamed = {
+        "cls_token": "embeddings.cls_token",
+        "mask_token": "embeddings.mask_token",
+        "register_tokens": "embeddings.register_tokens",
+        "pos_embed": "embeddings.position_embeddings",
+        "patch_embed.proj.weight": "embeddings.patch_embeddings.projection.weight",
+        "patch_embed.proj.bias": "embeddings.patch_embeddings.projection.bias",
+        "norm.weight": "layernorm.weight",
+        "norm.bias": "layernorm.bias",
+    }
+    block_modules = {
+        "norm1": "norm1",
+        "norm2": "norm2",
+        "attn.proj": "attention.output.dense",
+        "mlp.fc1": "mlp.fc1",
+        "mlp.fc2": "mlp.fc2",
+        "ls1": "layer_scale1",
+        "ls2": "layer_scale2",
+    }
+    converted = {}
+    for key, value in state_dict.items():
+        if key in renamed:
+            converted[renamed[key]] = value
+            continue
+        _, index, rest = key.split(".", 2)
+        module, parameter = rest.rsplit(".", 1)
+        prefix = f"encoder.layer.{index}."
+        if module == "attn.qkv":
+            for name, part in zip(("query", "key", "value"), value.chunk(3)):
+                converted[f"{prefix}attention.attention.{name}.{parameter}"] = part
+        else:
+            parameter = "lambda1" if parameter == "gamma" else parameter
+            converted[f"{prefix}{block_modules[module]}.{parameter}"] = value
+    return converted
+
+
+def _pinned_encoder(model_type: type, pipeline_type: type) -> torch.nn.Module:
+    repository, revision = TRELLIS_ENCODER_CHECKPOINTS[pipeline_type]
+    try:
+        return model_type.from_pretrained(repository, revision=revision, local_files_only=True).eval()
+    except OSError as error:
+        _reference_unavailable(ReferenceCheckoutError(f"download {repository}@{revision}: {error}"))
+
+
+def test_dinov2_encoder_matches_torch_hub_dinov2_vitl14_reg():
+    _validate_reference()
+    transforms = import_reference_dependency("torchvision.transforms")
+    hub_model = _dinov2_hub_model()
+    encoder = _pinned_encoder(Dinov2WithRegistersModel, TrellisImageTo3DPipeline)
+
+    expected_state = _dinov2_hub_to_transformers(hub_model.state_dict())
+    actual_state = encoder.state_dict()
+    match_dinov2_attention_names(expected_state, actual_state.keys())
+    assert len(hub_model.state_dict()) == 344
+    assert set(actual_state) == set(expected_state) and len(actual_state) == 440
+    for key, value in expected_state.items():
+        assert torch.equal(actual_state[key], value), key
+
+    config = encoder.config
+    assert hub_model.patch_embed.img_size == (config.image_size, config.image_size) == (518, 518)
+    assert hub_model.patch_size == config.patch_size == 14
+    assert hub_model.num_register_tokens == config.num_register_tokens == 4
+    assert hub_model.interpolate_antialias is config.interpolate_antialias is True
+    assert hub_model.interpolate_offset == config.interpolate_offset == 0.0
+    assert hub_model.norm.eps == hub_model.blocks[0].norm1.eps == config.layer_norm_eps == 1e-6
+    assert (config.hidden_act, config.use_swiglu_ffn, config.qkv_bias) == ("gelu", False, True)
+
+    # Upstream ``_init_image_cond_model`` (with torch.hub stubbed to return the pinned model) and ``encode_image``.
+    reference = types.SimpleNamespace(models={}, device=torch.device("cpu"))
+
+    def hub_load(repository, name, pretrained):
+        assert (repository, name, pretrained) == ("facebookresearch/dinov2", "dinov2_vitl14_reg", True)
+        return hub_model
+
+    init = _pinned_method(
+        "trellis_image_to_3d.py",
+        "TrellisImageTo3DPipeline",
+        "_init_image_cond_model",
+        {"torch": types.SimpleNamespace(hub=types.SimpleNamespace(load=hub_load)), "transforms": transforms},
+    )
+    init(reference, "dinov2_vitl14_reg")
+    encode_image = _pinned_method(
+        "trellis_image_to_3d.py",
+        "TrellisImageTo3DPipeline",
+        "encode_image",
+        {"torch": torch, "F": torch.nn.functional, "np": np, "Image": Image, "Union": Union},
+    )
+    pixels = np.random.default_rng(0).integers(0, 256, (518, 518, 3), dtype=np.uint8)
+    with torch.no_grad():
+        expected = encode_image(reference, [Image.fromarray(pixels)])
+        images = torch.from_numpy(pixels).permute(2, 0, 1)[None].float() / 255
+        conditional, unconditional = TrellisImageTo3DPipeline.encode_conditioning(
+            types.SimpleNamespace(image_encoder=encoder), images
+        )
+    assert expected.shape == (1, 1 + 4 + 37 * 37, 1024)
+    torch.testing.assert_close(conditional, expected, atol=0.0, rtol=0.0)
+    assert not unconditional.any()
+
+
+def test_clip_prompt_encoding_matches_pinned_encode_text():
+    _validate_reference()
+    repository, revision = TRELLIS_ENCODER_CHECKPOINTS[TrellisTextTo3DPipeline]
+    try:
+        tokenizer = CLIPTokenizer.from_pretrained(repository, revision=revision)
+        reference_tokenizer = AutoTokenizer.from_pretrained(repository, revision=revision)
+    except OSError as error:
+        _reference_unavailable(ReferenceCheckoutError(f"download {repository}@{revision} tokenizer: {error}"))
+    assert type(reference_tokenizer) is type(tokenizer)
+    config = CLIPTextConfig(
+        vocab_size=tokenizer.vocab_size,
+        hidden_size=12,
+        intermediate_size=24,
+        num_hidden_layers=1,
+        num_attention_heads=3,
+        max_position_embeddings=77,
+        eos_token_id=tokenizer.eos_token_id,
+    )
+    torch.manual_seed(0)
+    text_encoder = CLIPTextModel(config).eval()
+
+    def cpu_tokenizer(*args, **kwargs):
+        encoding = reference_tokenizer(*args, **kwargs)
+        input_ids = encoding["input_ids"]
+        input_ids.cuda = lambda: input_ids
+        return {"input_ids": input_ids}
+
+    encode_text = _pinned_method(
+        "trellis_text_to_3d.py", "TrellisTextTo3DPipeline", "encode_text", {"torch": torch, "List": list}
+    )
+    reference = types.SimpleNamespace(text_cond_model={"model": text_encoder, "tokenizer": cpu_tokenizer})
+    pipeline = types.SimpleNamespace(text_encoder=text_encoder, tokenizer=tokenizer)
+    prompts = ["", "A chair looking like an avocado.", "Röd café's  model\t!", "chair " * 100]
+    with torch.no_grad():
+        for prompt in prompts:
+            expected = encode_text(reference, [prompt])
+            actual = TrellisTextTo3DPipeline.encode_prompt(pipeline, [prompt])
+            torch.testing.assert_close(actual, expected, atol=0.0, rtol=0.0)
+
+
+def _pinned_noise(file_name: str, class_name: str, pipeline, seed: int):
+    """Run upstream ``sample_sparse_structure`` and ``sample_slat`` after ``torch.manual_seed`` with no-op samplers."""
+
+    drawn = []
+
+    def sample(model, noise, **kwargs):
+        drawn.append(noise)
+        return types.SimpleNamespace(samples=getattr(noise, "feats", noise))
+
+    sparse = types.SimpleNamespace(
+        SparseTensor=lambda feats, coords: types.SimpleNamespace(feats=feats, coords=coords)
+    )
+    namespace = {"torch": torch, "sp": sparse, "List": list}
+    sample_sparse_structure = _pinned_method(file_name, class_name, "sample_sparse_structure", namespace)
+    sample_slat = _pinned_method(file_name, class_name, "sample_slat", namespace)
+    flow = pipeline.sparse_structure_flow_model.config
+    channels = pipeline.slat_flow_model.config.in_channels
+    reference = types.SimpleNamespace(
+        models={
+            "sparse_structure_flow_model": types.SimpleNamespace(
+                resolution=flow.resolution, in_channels=flow.in_channels
+            ),
+            "sparse_structure_decoder": lambda latents: pipeline.sparse_structure_decoder(latents).sample,
+            "slat_flow_model": types.SimpleNamespace(in_channels=channels),
+        },
+        device=torch.device("cpu"),
+        sparse_structure_sampler=types.SimpleNamespace(sample=sample),
+        slat_sampler=types.SimpleNamespace(sample=sample),
+        sparse_structure_sampler_params={},
+        slat_sampler_params={},
+        slat_normalization={"mean": [0.0] * channels, "std": [1.0] * channels},
+    )
+    with torch.no_grad():
+        torch.manual_seed(seed)
+        coordinates = sample_sparse_structure(reference, {})
+        sample_slat(reference, {}, coordinates)
+    return drawn[0], drawn[1].coords, drawn[1].feats
+
+
+def _pipeline_noise(pipeline, prompt, generator):
+    drawn = []
+
+    def sample_flow(model, scheduler, latents, *args, **kwargs):
+        drawn.append(latents)
+        return latents
+
+    pipeline._sample_flow = sample_flow
+    pipeline(prompt, formats=("slat",), generator=generator)
+    return drawn[0], drawn[1].coordinates, drawn[1].features
+
+
+@pytest.mark.parametrize("modality", ["image", "text"])
+def test_seeded_noise_matches_pinned_global_rng_draws(
+    modality, tiny_trellis_full_pipeline, tiny_trellis_text_pipeline
+):
+    _validate_reference()
+    if modality == "image":
+        pipeline = tiny_trellis_full_pipeline
+        prompt = ImageCondition(torch.rand(4, 8, 8, generator=torch.Generator().manual_seed(0)))
+        file_name, class_name = "trellis_image_to_3d.py", "TrellisImageTo3DPipeline"
+    else:
+        pipeline, prompt = tiny_trellis_text_pipeline, "a red chair"
+        file_name, class_name = "trellis_text_to_3d.py", "TrellisTextTo3DPipeline"
+    seed = 42
+    expected = _pinned_noise(file_name, class_name, pipeline, seed)
+    from_generator = _pipeline_noise(pipeline, prompt, torch.Generator().manual_seed(seed))
+    torch.manual_seed(seed)
+    from_global_seed = _pipeline_noise(pipeline, prompt, None)
+    for actual in (from_generator, from_global_seed):
+        assert actual[0].dtype == actual[2].dtype == torch.float32
+        torch.testing.assert_close(actual[0], expected[0], atol=0.0, rtol=0.0)
+        assert torch.equal(actual[1].to(torch.int32), expected[1])
+        torch.testing.assert_close(actual[2], expected[2], atol=0.0, rtol=0.0)
+
+
+def test_float16_torso_matches_pinned_convert_to_fp16():
+    """Upstream ``use_fp16`` halves only convolution and linear layers; norms and RMS-norm gammas stay float32."""
+
+    reference = _load_pinned_sparse_reference()
+    reference_flow_type, _ = _load_pinned_reference()
+    generator = torch.Generator().manual_seed(43)
+    coordinates = torch.tensor([[0, 0, 0, 0], [0, 0, 0, 1], [0, 1, 2, 3], [0, 7, 0, 5], [1, 2, 1, 0], [1, 7, 7, 7]])
+    latents = torch.randn(coordinates.shape[0], 4, generator=generator)
+    timesteps = torch.rand(2, generator=generator) * 1000
+    context = torch.randn(2, 6, 12, generator=generator)
+    with _fake_backends(), torch.no_grad():
+        config = {**small_trellis_slat_flow_config(), "use_fp16": True}
+        torch.manual_seed(44)
+        reference_model = reference.SLatFlowModel(**config).eval()
+        _randomize_state(reference_model, seed=45)
+        model = TrellisSLatFlowModel(**config).eval()
+        model.load_state_dict(reference_model.state_dict(), strict=True)
+        expected_dtypes = {key: value.dtype for key, value in reference_model.state_dict().items()}
+        assert {key: value.dtype for key, value in model.state_dict().items()} == expected_dtypes
+        assert torch.float16 in expected_dtypes.values()
+        reference_x, x = _sparse_inputs(reference, coordinates, latents)
+        expected = reference_model(reference_x, timesteps, context)
+        actual = model(x, timesteps, context).sample
+    # Through the test's stand-in sparse backends the sparse model agrees to float16 rounding (5e-5 here, where a
+    # float32 torso is off by 4e-5); the dense flow below is bit-identical.
+    torch.testing.assert_close(actual.features, expected.feats, atol=1e-4, rtol=1e-3)
+
+    flow_config = {**tiny_config(TrellisSparseStructureFlowModel), "use_fp16": True}
+    torch.manual_seed(46)
+    reference_flow = reference_flow_type(**flow_config).eval()
+    _randomize_state(reference_flow, seed=47)
+    flow = TrellisSparseStructureFlowModel(**flow_config).eval()
+    flow.load_state_dict(reference_flow.state_dict(), strict=True)
+    expected_dtypes = {key: value.dtype for key, value in reference_flow.state_dict().items()}
+    assert {key: value.dtype for key, value in flow.state_dict().items()} == expected_dtypes
+    hidden_states = torch.randn(2, 2, 4, 4, 4, generator=generator)
+    with torch.no_grad():
+        expected_flow = reference_flow(hidden_states, timesteps, context)
+        actual_flow = flow(hidden_states, timesteps, context).sample
+    torch.testing.assert_close(actual_flow, expected_flow, atol=0, rtol=0)

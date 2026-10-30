@@ -5,8 +5,8 @@ from diffusers_3d import (
     GaussianSplatAsset,
     Object3DKind,
     Object3DValidationError,
-    TensorShapeError,
 )
+from diffusers_3d.objects import TensorShapeError
 
 
 def gaussian_arguments() -> dict:

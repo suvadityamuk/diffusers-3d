@@ -4,6 +4,7 @@ import math
 
 import pytest
 import torch
+from _configs import tiny_config
 
 from diffusers_3d import (
     CoordinateSystem,
@@ -59,7 +60,7 @@ def test_sparse_tensor_asset_roundtrip_and_normalization_are_lossless():
 
 
 def test_sparse_structure_decoder_threshold_and_native_grid_transform():
-    decoder = TrellisSparseStructureDecoder(**TrellisSparseStructureDecoder.tiny_config())
+    decoder = TrellisSparseStructureDecoder(**tiny_config(TrellisSparseStructureDecoder))
     with torch.no_grad():
         decoder.out_layer[-1].weight.zero_()
         decoder.out_layer[-1].bias.fill_(1.0)
@@ -75,7 +76,7 @@ def test_sparse_structure_decoder_threshold_and_native_grid_transform():
 
 
 def test_gaussian_decoder_maps_released_parameterization_to_canonical_asset():
-    decoder = TrellisSLatGaussianDecoder(**TrellisSLatGaussianDecoder.tiny_config()).eval()
+    decoder = TrellisSLatGaussianDecoder(**tiny_config(TrellisSLatGaussianDecoder)).eval()
     coordinates = torch.tensor([[0, 0, 0, 0], [0, 7, 7, 7]], dtype=torch.int64)
     sparse = TrellisSparseTensor(coordinates, torch.zeros(2, decoder.config.latent_channels))
     with torch.no_grad():
@@ -117,7 +118,7 @@ def test_flexicubes_closes_a_single_voxel_with_outward_faces():
 
 
 def test_mesh_decoder_returns_zup_mesh_assets_with_colors_and_normal_map():
-    decoder = TrellisSLatMeshDecoder(**TrellisSLatMeshDecoder.tiny_config()).eval()
+    decoder = TrellisSLatMeshDecoder(**tiny_config(TrellisSLatMeshDecoder)).eval()
     assert decoder.out_channels == 8 + 24 + 21 + 48
     coordinates = torch.tensor([[0, 0, 0, 0], [0, 0, 0, 1], [1, 7, 7, 7]], dtype=torch.int64)
     sparse = TrellisSparseTensor(coordinates, torch.zeros(3, decoder.config.latent_channels))
@@ -142,7 +143,7 @@ def test_mesh_decoder_returns_zup_mesh_assets_with_colors_and_normal_map():
     assert all(asset.vertices.dtype is torch.float32 and asset.faces.shape[0] > 0 for asset in half.assets)
     decoder.to(torch.float32)
 
-    plain = TrellisSLatMeshDecoder(**{**TrellisSLatMeshDecoder.tiny_config(), "representation_config": {}})
+    plain = TrellisSLatMeshDecoder(**{**tiny_config(TrellisSLatMeshDecoder), "representation_config": {}})
     assert plain.out_channels == 53 and plain.use_color is False
     with torch.no_grad():
         # Push every SDF corner outside the surface: nothing to extract.
@@ -152,7 +153,7 @@ def test_mesh_decoder_returns_zup_mesh_assets_with_colors_and_normal_map():
 
 
 def test_radiance_field_decoder_splits_the_released_strivec_layout():
-    config = TrellisSLatRadianceFieldDecoder.tiny_config()
+    config = tiny_config(TrellisSLatRadianceFieldDecoder)
     decoder = TrellisSLatRadianceFieldDecoder(**config).eval()
     rank, dim = config["representation_config"]["rank"], config["representation_config"]["dim"]
     assert decoder.out_channels == rank * 3 * dim + rank + rank * 3

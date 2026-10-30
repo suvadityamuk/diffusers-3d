@@ -1,15 +1,8 @@
 # Backends
 
-Optional libraries sit behind backends in `diffusers_3d.backends`. None is imported when the package is imported, and
-none is chosen for you when different choices would change the output. Each backend is registered with a
-`BackendSpec` in `BACKEND_REGISTRY` and falls into one of three classes:
-
-- **portable**: CPU, pip-installable, permissive license.
-- **accelerated**: compiled or JIT GPU code with a tested compatibility range.
-- **research_only**: restricted licenses. Never selected automatically, and loading requires an explicit
-  acknowledgement argument.
-
-`diffusers-3d-report` prints which backends are available in the current environment.
+`diffusers_3d.backends` holds plain-PyTorch rasterizers and bakers, plus thin adapters over optional libraries.
+Importing the package imports none of those libraries. Each adapter imports its library when you construct it, and
+raises an `ImportError` that names the install command when the library is missing.
 
 ## Built-in plain-PyTorch paths
 
@@ -23,7 +16,8 @@ These need no optional dependency and run on any device:
 - `texture_baking`: UV-atlas rasterization and per-texel averaging of rendered views.
 - `radiance_field.render_radiance_field`: volume-renders a TRELLIS `RadianceFieldAsset`.
 - `ovoxel_to_mesh`: TRELLIS.2 dual-grid mesh extraction, bit-identical to upstream.
-- O-Voxel schema conversion and `.npz` read/write.
+- O-Voxel conversion to and from upstream's tensors, and lossless `.npz` read/write (`OVoxelAsset.save`/`load`).
+- `splat_ply`: Gaussian splats in the 3D Gaussian Splatting PLY layout (`GaussianSplatAsset.save`/`load`).
 
 ## Portable
 
@@ -34,19 +28,28 @@ Install with the `portable` extra.
 - `ScikitImageBackend`: marching cubes.
 - `XAtlasBackend`: UV unwrapping.
 
-## Accelerated
+`MeshAsset.save`, `load`, `simplify`, `repair`, and `unwrap_uv` call these for you. The adapters expose the same
+operations as named methods (`TrimeshBackend().simplify(mesh, face_count)`, `XAtlasBackend().unwrap_uv(mesh)`).
 
-Install these yourself. Each source build is pinned to a commit in `requirements/backends/`, and the backend refuses
-to load an install that does not record that commit.
+## Background removal
 
-| Backend | Used for | Install |
+Each pipeline declares its upstream remover in `background_removal` (a `BackgroundRemoval`: remover, trigger, the
+resize upstream applies first, and whether it runs automatically); see the table in [inference.md](inference.md).
+
+- `RembgBackgroundRemover` wraps rembg (MIT; `u2net` weights Apache-2.0, downloaded on first use), always with an
+  explicit session name, because newer rembg defaults to a non-commercial model.
+- `BiRefNetBackgroundRemover` is a plain-PyTorch port of BiRefNet with `ZhengPeng7/BiRefNet`'s MIT weights, bit-identical
+  to upstream's code. Its `resize` argument picks the TRELLIS.2/Step1X wrapper (`"pil"`) or the IDOL/TripoSplat one
+  (`"tensor"`).
+
+Both need the `background` extra (rembg and torchvision).
+
+## GPU
+
+| Adapter | Used for | Install |
 |---|---|---|
-| `CuMeshBackend` | mesh repair, simplification, and UV unwrap for textured GLBs from TRELLIS and TRELLIS.2 | `cumesh.txt` |
-| gsplat | rasterizing Gaussian splats, and baking TRELLIS textured GLBs | `gaussian` extra |
-| `OVoxelBackend` (native) | `.vxz` files and voxel rendering | `o-voxel.txt`, see below |
-| `FlexGemmBackend` | sparse convolution; no pipeline needs it any more | `flex-gemm.txt` |
-| spconv | sparse convolution; no pipeline needs it any more | the wheel for your CUDA version |
-| `KaolinFlexiCubesBackend` | FlexiCubes surface extraction from the Apache-2.0 `kaolin.ops` module only | a Kaolin build matching your CUDA |
+| `GsplatBackend` | rasterizing Gaussian splats, and baking TRELLIS textured GLBs | `gaussian` extra |
+| `CuMeshBackend` | mesh repair, simplification, and UV unwrap for textured GLBs from TRELLIS and TRELLIS.2 | `requirements/backends/cumesh.txt` |
 
 ```bash
 pip install --no-build-isolation -r packages/diffusers-3d/requirements/backends/cumesh.txt
@@ -54,37 +57,11 @@ pip install --no-build-isolation -r packages/diffusers-3d/requirements/backends/
 
 CuMesh bundles cubvh, which is under an NVIDIA non-commercial license. Loading it warns.
 
-To install the native O-Voxel runtime, install FlexGEMM and CuMesh first. Then install O-Voxel without dependency
-resolution, so its unpinned Git dependencies cannot replace those pins:
-
-```bash
-pip install -r packages/diffusers-3d/requirements/backends/flex-gemm.txt \
-            -r packages/diffusers-3d/requirements/backends/cumesh.txt
-pip install --no-deps --no-build-isolation -r packages/diffusers-3d/requirements/backends/o-voxel.txt
-```
-
-The `o_voxel` package imports nvdiffrast at import time, so native O-Voxel loading also needs the nvdiffrast license
-acknowledgement. `.vxz` does not store the grid resolution, so pass it when reading. VXZ v0 only holds uint8
-attributes, so assets with float split weights are rejected; use `.npz` for lossless files.
-
 ## Textured mesh export
 
-- `Trellis2PBRPostprocessFacade.to_textured_mesh` (TRELLIS.2 and Pixal3D) follows upstream `to_glb` with CuMesh. Texel
+- `textured_mesh_from_ovoxel(asset)` (TRELLIS.2 and Pixal3D) follows upstream `to_glb` with CuMesh. Texel
   rasterization and PBR baking run in plain PyTorch instead of nvdiffrast and FlexGEMM.
-- `TrellisGlbPostprocessFacade.to_textured_mesh(mesh, gaussians)` (TRELLIS) uses CuMesh, xatlas, and gsplat renders
+- `textured_mesh_from_splats(mesh, gaussians)` (TRELLIS) uses CuMesh, xatlas, and gsplat renders
   baked with `texture_baking`.
 
-Export the result with `TrimeshBackend` after converting it to `right_handed_y_up`.
-
-## Research only
-
-nvdiffrast, nvdiffrec, diffoctreerast, mip-splatting, and utils3d (the EasternJournalist repository, not the PyPI
-package of the same name) are registered for reference comparisons only. No pipeline uses them. Review their licenses
-before installing:
-
-```bash
-pip install --no-build-isolation \
-  -r packages/diffusers-3d/requirements/backends/nvdiffrast.txt \
-  -r packages/diffusers-3d/requirements/backends/diffoctreerast.txt \
-  -r packages/diffusers-3d/requirements/backends/mip-splatting.txt
-```
+Write the result with `mesh.save("textured.glb")`.

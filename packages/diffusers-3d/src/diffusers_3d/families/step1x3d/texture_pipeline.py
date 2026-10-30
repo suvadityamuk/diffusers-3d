@@ -10,7 +10,11 @@
 from __future__ import annotations
 
 import math
+import os
+import random
+import tempfile
 from collections.abc import Sequence
+from dataclasses import dataclass
 
 import numpy as np
 import torch
@@ -20,29 +24,23 @@ from diffusers.utils.torch_utils import randn_tensor
 from PIL import Image
 from transformers import CLIPTextModel, CLIPTextModelWithProjection, CLIPTokenizer
 
-from ...backends import (
-    TrimeshBackend,
-    XAtlasBackend,
-    inpaint_texture,
-    look_at_view,
-    merge_views,
-    orthographic_projection,
-    splat_view,
-)
+from ...backends import inpaint_texture, look_at_view, merge_views, orthographic_projection, splat_view
+from ...backends._optional import require
 from ...backends.mesh_rasterizer import interpolate, rasterize
-from ...data import ImageCondition
+from ...backends.multiview_baking import file_geometry
+from ...data import ImageCondition, ImageInput
+from ...data.background import BackgroundRemoval, lacks_alpha_channel
+from ...data.birefnet import BiRefNetBackgroundRemover
 from ...data.image_processing import _quantized_rgba, validate_image_condition_pixels
-from ...execution.metadata import ContributionStatus, Object3DComponentSpec, ReviewStatus, fully_qualified_class_name
 from ...execution.pipelines import Object3DPipeline
 from ...objects import (
-    CoordinateSystem,
     Latent3DOutput,
     MeshAsset,
-    Object3DKind,
     Object3DPipelineOutput,
     PBRMaterial,
 )
 from .texture_attention import STEP1X3D_NUM_VIEWS, Step1X3DMultiViewAdapter
+from .texture_components import STEP1X3D_TEXTURE_EXTERNAL_COMPONENTS
 from .texture_sync import Step1X3DLatentTextureSync, vertex_normals
 
 # Released view layout: front, right, back, left, top, bottom (Z-up, front facing -Y).
@@ -70,6 +68,145 @@ _BACKGROUND_COLORS = (
     (0, -1, 0),
     (1, -1, 1),
 )
+
+
+NVDIFFRAST_INSTALL = 'pip install --no-build-isolation "git+https://github.com/NVlabs/nvdiffrast.git" (needs CUDA)'
+STEP1X3D_MAX_FACES = 50000  # ``reduce_face``'s max_facenum, which inference.py and app.py run before texturing
+_COLOR_NAMES = (
+    "black",
+    "white",
+    "maroon",
+    "red",
+    "olive",
+    "yellow",
+    "green",
+    "lime",
+    "teal",
+    "aqua",
+    "navy",
+    "blue",
+    "purple",
+    "fuchsia",
+)
+
+
+@dataclass(frozen=True)
+class Step1X3DTextureMeshes:
+    """The three UV layouts of one released texturing run, all over ``faces`` of ``vertices`` (float64, the GLB's
+    right-handed Y-up frame, scaled to ``max |x| = 0.5``)."""
+
+    vertices: np.ndarray  # mesh_bp: (V, 3) float64
+    faces: np.ndarray  # (F, 3) int64, split by the first unwrap
+    sync_uvs: np.ndarray  # second unwrap (texture synchronisation): (U, 2) float32
+    sync_uv_faces: np.ndarray  # (F, 3) int64 into sync_uvs
+    final_mapping: np.ndarray  # third unwrap (bake and output): (W,) int64 into vertices
+    final_faces: np.ndarray  # (F, 3) int64 into final_mapping
+    final_uvs: np.ndarray  # (W, 2) float32
+
+
+def _pymeshlab_round_trip(mesh, directory: str, operation=None):
+    """``trimesh2pymeshlab``, an optional filter, then ``pymeshlab2trimesh`` (both through PLY files)."""
+
+    pymeshlab = require("pymeshlab", "meshlab")
+    trimesh = require("trimesh", "portable")
+    path = os.path.join(directory, "mesh.ply")
+    mesh.export(path)
+    meshes = pymeshlab.MeshSet()
+    meshes.load_new_mesh(path)
+    if operation is not None:
+        operation(meshes)
+    meshes.save_current_mesh(path)
+    return trimesh.load(path)
+
+
+def step1x3d_texture_meshes(mesh: MeshAsset, max_faces: int | None = STEP1X3D_MAX_FACES) -> Step1X3DTextureMeshes:
+    """The meshes the released texturing run builds from the GLB of ``mesh``.
+
+    ``remove_degenerate_face`` and ``reduce_face(mesh, max_faces)`` (pymeshlab quadric decimation above
+    ``max_faces``; ``None`` skips both), then ``load_mesh(rescale=True)`` (xatlas unwrap, scaled to
+    ``max |x| = 0.5``), then the texture synchronisation's own xatlas unwrap (``max_iterations=4`` on float32
+    vertices) and the final ``mesh_uv_wrap``, both of the first unwrap's split mesh.
+    """
+
+    trimesh = require("trimesh", "portable")
+    xatlas = require("xatlas", "portable")
+    vertices, faces = file_geometry(mesh)
+    with tempfile.TemporaryDirectory() as directory:
+        path = os.path.join(directory, "mesh.glb")
+        MeshAsset(vertices=vertices, faces=faces).save(path)
+        loaded = trimesh.load(path)
+        loaded = loaded.to_geometry() if isinstance(loaded, trimesh.Scene) else loaded
+        if max_faces is not None:
+
+            def reload(meshes) -> None:  # remove_degenerate_face saves and reloads the pymeshlab mesh
+                meshes.save_current_mesh(os.path.join(directory, "reloaded.ply"))
+                meshes.clear()
+                meshes.load_new_mesh(os.path.join(directory, "reloaded.ply"))
+
+            loaded = _pymeshlab_round_trip(loaded, directory, reload)
+
+            def decimate(meshes) -> None:
+                if max_faces <= meshes.current_mesh().face_number():
+                    meshes.apply_filter(
+                        "meshing_decimation_quadric_edge_collapse",
+                        targetfacenum=max_faces,
+                        qualitythr=1.0,
+                        preserveboundary=True,
+                        boundaryweight=3,
+                        preservenormal=True,
+                        preservetopology=True,
+                        autoclean=True,
+                    )
+
+            loaded = _pymeshlab_round_trip(loaded, directory, decimate)
+    mapping, faces, _ = xatlas.parametrize(loaded.vertices, loaded.faces)
+    vertices = np.asarray(loaded.vertices)[mapping]
+    vertices = vertices / np.abs(vertices).max() * 0.5
+    atlas = xatlas.Atlas()
+    atlas.add_mesh(vertices.astype(np.float32), faces.astype(np.int64).astype(np.int32))
+    options = xatlas.ChartOptions()
+    options.max_iterations = 4
+    atlas.generate(chart_options=options)
+    _, sync_uv_faces, sync_uvs = atlas[0]
+    final_mapping, final_faces, final_uvs = xatlas.parametrize(vertices, faces)
+    return Step1X3DTextureMeshes(
+        vertices=vertices,
+        faces=faces.astype(np.int64),
+        sync_uvs=sync_uvs.astype(np.float32),
+        sync_uv_faces=sync_uv_faces.astype(np.int64),
+        final_mapping=final_mapping.astype(np.int64),
+        final_faces=final_faces.astype(np.int64),
+        final_uvs=final_uvs.astype(np.float32),
+    )
+
+
+def view_frame(vertices: np.ndarray) -> torch.Tensor:
+    """``load_mesh``'s ``mesh2std`` (Y-up, +x front) as float32: ``(x, y, z) -> (x, -z, y)``."""
+
+    return torch.from_numpy(np.stack([vertices[:, 0], -vertices[:, 2], vertices[:, 1]], axis=1).astype(np.float32))
+
+
+def export_texture(texture: torch.Tensor) -> torch.Tensor:
+    """``MeshRender.set_texture`` then ``save_mesh`` of an inpainted ``(T, T, 3)`` texture: two 8-bit truncations."""
+
+    first = Image.fromarray((texture.cpu().numpy() * 255).astype(np.uint8)).convert("RGB")
+    second = torch.from_numpy(np.array(first) / 255.0).float()
+    return torch.from_numpy((second.numpy() * 255).astype(np.uint8)).float() / 255
+
+
+def _upcast_vae(vae: AutoencoderKL) -> None:
+    """``StableDiffusionXLPipeline.upcast_vae``: float32, except the decoder's input layers keep their dtype.
+
+    Only a half-precision VAE is changed (upstream runs in float16).
+    """
+
+    dtype = vae.dtype
+    if dtype not in (torch.float16, torch.bfloat16):
+        return
+    vae.to(dtype=torch.float32)
+    vae.post_quant_conv.to(dtype)
+    vae.decoder.conv_in.to(dtype)
+    vae.decoder.mid_block.to(dtype)
 
 
 def step1x3d_view_matrices(
@@ -109,16 +246,29 @@ def render_step1x3d_control_images(
 ) -> torch.Tensor:
     """``(N, 6, H, W)`` geometry conditions in ``[0, 1]``: position ``+ 0.5`` and normal ``/ 2 + 0.5``.
 
-    Normals are area-weighted over vertices merged by position; the background is 0.5.
+    Normals are area-weighted over vertices merged by position; the background is 0.5. On CUDA the views are
+    rasterized and interpolated with nvdiffrast, as upstream renders them (an optional dependency,
+    :data:`NVDIFFRAST_INSTALL`); elsewhere with the package rasterizer, which differs on a fraction of a percent of
+    the pixels.
     """
 
     clip = torch.cat([positions, torch.ones_like(positions[:, :1])], dim=1) @ world_to_clip.transpose(1, 2)
-    raster = rasterize(clip, faces, (image_size, image_size))
     welded, index = positions.unique(dim=0, return_inverse=True)
     normals = vertex_normals(welded, index[faces], eps=1e-12)[index]
-    position = interpolate(positions, raster, faces) + 0.5
-    normal = F.normalize(interpolate(normals, raster, faces), dim=-1) / 2 + 0.5
-    return torch.cat([position, normal], dim=-1).clamp(0, 1).permute(0, 3, 1, 2)
+    if positions.is_cuda:
+        dr = require("nvdiffrast.torch", NVDIFFRAST_INSTALL)
+        triangles = faces.to(torch.int32).contiguous()
+        raster, _ = dr.rasterize(
+            dr.RasterizeCudaContext(device=positions.device), clip.float().contiguous(), triangles, (image_size,) * 2
+        )
+        position = dr.interpolate(positions[None].float().contiguous(), raster, triangles)[0] + 0.5
+        normal = F.normalize(dr.interpolate(normals[None].float().contiguous(), raster, triangles)[0], dim=-1)
+        normal = torch.where(raster[..., 3:] > 0, normal, 0.0) / 2 + 0.5
+    else:
+        raster = rasterize(clip, faces, (image_size, image_size))
+        position = interpolate(positions, raster, faces) + 0.5
+        normal = F.normalize(interpolate(normals, raster, faces), dim=-1) / 2 + 0.5
+    return torch.cat([position, normal], dim=-1).clamp(0, 1).permute(0, 3, 1, 2).to(positions.dtype)
 
 
 def preprocess_step1x3d_reference_image(condition: ImageCondition, *, image_size: int = 768) -> torch.Tensor:
@@ -151,17 +301,6 @@ def preprocess_step1x3d_reference_image(condition: ImageCondition, *, image_size
     return torch.from_numpy(rgb).permute(2, 0, 1).to(device=pixels.device, dtype=pixels.dtype) / 255
 
 
-def _component_spec(name: str, component_type: type) -> Object3DComponentSpec:
-    return Object3DComponentSpec(
-        name=name,
-        expected_class=fully_qualified_class_name(component_type),
-        subfolder=name,
-        optional=False,
-        review_status=ReviewStatus.REVIEWED,
-        loading_eligible=True,
-    )
-
-
 class Step1X3DMeshTexturePipeline(Object3DPipeline):
     """Step1X-3D mesh texturing: six orthographic views generated by SDXL with MV-Adapter, baked onto the mesh UVs.
 
@@ -170,29 +309,11 @@ class Step1X3DMeshTexturePipeline(Object3DPipeline):
     ``texture_sync_ratio`` of the schedule the six latent views step together through a shared latent texture.
     """
 
-    family_id = "step1x3d"
-    task_ids = ("mesh-texturing",)
-    output_object_types = (MeshAsset,)
-    output_representations = ("mesh",)
-    object_kinds = (Object3DKind.MESH,)
-    required_backends = ("trimesh", "xatlas")
-    contribution_status = ContributionStatus.REVIEWED_PACKAGE
-    review_status = ReviewStatus.REVIEWED
-    component_specs = tuple(
-        _component_spec(name, component_type)
-        for name, component_type in (
-            ("vae", AutoencoderKL),
-            ("text_encoder", CLIPTextModel),
-            ("text_encoder_2", CLIPTextModelWithProjection),
-            ("tokenizer", CLIPTokenizer),
-            ("tokenizer_2", CLIPTokenizer),
-            ("unet", UNet2DConditionModel),
-            ("adapter", T2IAdapter),
-            ("mv_adapter", Step1X3DMultiViewAdapter),
-            ("scheduler", DDPMScheduler),
-        )
-    )
+    # Upstream cuts out three-channel reference images with BiRefNet (ZhengPeng7/BiRefNet, MIT) at full size.
+    background_removal = BackgroundRemoval(BiRefNetBackgroundRemover, trigger=lacks_alpha_channel)
     model_cpu_offload_seq = "text_encoder->text_encoder_2->adapter->unet->vae"
+    # The SDXL base (unchanged by the release) and the fp16-fix VAE load from their original repositories.
+    external_components = STEP1X3D_TEXTURE_EXTERNAL_COMPONENTS
     _exclude_from_cpu_offload = ["mv_adapter"]
 
     def __init__(
@@ -222,18 +343,14 @@ class Step1X3DMeshTexturePipeline(Object3DPipeline):
             scheduler=scheduler,
         )
 
-    def prepare_mesh(self, mesh: MeshAsset, *, clean: bool = True) -> tuple[MeshAsset, torch.Tensor]:
-        """UV-unwrap ``mesh`` with xatlas (after trimesh's degenerate-face cleanup when ``clean``).
+    def prepare_mesh(
+        self, mesh: MeshAsset, *, max_faces: int | None = STEP1X3D_MAX_FACES
+    ) -> tuple[Step1X3DTextureMeshes, torch.Tensor]:
+        """The released meshes (:func:`step1x3d_texture_meshes`) and the float32 view-frame positions of their vertices
+        (Z-up, scaled to ``max |x| = 0.5``) on the execution device."""
 
-        Returns the unwrapped mesh and its world positions in the Z-up view frame, scaled to ``max |x| = 0.5``.
-        """
-
-        if clean:
-            mesh = TrimeshBackend().process_geometry(mesh, operation="cleanup")
-        mesh = XAtlasBackend().process_geometry(mesh, operation="unwrap_uv")
-        z_up = mesh.to_coordinate_system(CoordinateSystem.RIGHT_HANDED_Z_UP)
-        positions = z_up.vertices @ z_up.transform[:3, :3].T + z_up.transform[:3, 3]
-        return mesh, (positions / positions.abs().max() * 0.5).to(self._execution_device, torch.float32)
+        meshes = step1x3d_texture_meshes(mesh, max_faces)
+        return meshes, view_frame(meshes.vertices).to(self._execution_device)
 
     def encode_prompt(self, prompt: str, negative_prompt: str) -> tuple[torch.Tensor, torch.Tensor]:
         """SDXL prompt embeddings and pooled embeddings for ``[negative_prompt, prompt]``."""
@@ -290,26 +407,39 @@ class Step1X3DMeshTexturePipeline(Object3DPipeline):
         scaling = self.vae.config.scaling_factor
 
         def composite(background: torch.Tensor, foreground: torch.Tensor, timestep: int) -> torch.Tensor:
+            # composite_rendered_view: one global-RNG normal draw per view.
             if timestep > 0:
-                noise = randn_tensor(background.shape, generator=generator, device=device, dtype=background.dtype)
+                noise = torch.stack(
+                    [torch.normal(0, 1, view.shape, generator=global_generator, device=device) for view in background]
+                )
                 background = (1 - alphas_cumprod[timestep]) * noise + alphas_cumprod[timestep] * background
             return (foreground * texture_sync.masks + background * (1 - texture_sync.masks)).to(dtype)
 
-        def pick_backgrounds(count: int) -> torch.Tensor:
-            index = torch.randint(count, (views,), generator=generator, device=getattr(generator, "device", None))
-            return index.to(device)
+        def pick_backgrounds(names: Sequence[str]) -> torch.Tensor:
+            return torch.tensor([_COLOR_NAMES.index(colors_random.choice(names)) for _ in range(views)], device=device)
 
+        # Upstream draws the latents, the reference posterior and the scheduler noise from ``generator``; the noise
+        # texture, every background noise and the colour posteriors from the global torch RNG; the background
+        # colours from Python's ``random``. It never seeds the global RNGs. The package draws the torch ones in the
+        # same order from a generator seeded like a fresh global RNG (``torch.initial_seed()``), and the colours from
+        # a ``random.Random`` seeded from ``generator``, so a run is reproducible and leaves the global RNGs alone.
+        global_generator = torch.Generator(device).manual_seed(torch.initial_seed())
+        colors_random = random.Random(generator.initial_seed() if generator is not None else None)
         latents = randn_tensor((views, 4, latent_size, latent_size), generator=generator, device=device, dtype=dtype)
-        texture = randn_tensor((4, *(texture_sync.texture_size,) * 2), generator=generator, device=device)
+        backgrounds = pick_backgrounds(_COLOR_NAMES)
+        texture = torch.normal(0, 1, (4, *(texture_sync.texture_size,) * 2), generator=global_generator, device=device)
         if texture_sync_ratio > 0:
             latents = composite(latents, texture_sync.render(texture), int(timesteps[0]) + 1)
 
         vae = self.vae
         reference = reference_image[None].to(device, vae.dtype) * 2 - 1
         reference_latents = vae.encode(reference).latent_dist.sample(generator) * scaling
+        # The released pipeline then upcasts the VAE (keeping the decoder's input layers) for the colour latents and
+        # the final decode; ``__call__`` restores its dtype.
+        _upcast_vae(vae)
         colors = torch.tensor(_BACKGROUND_COLORS, device=device, dtype=vae.dtype)[:, :, None, None]
-        colors = vae.encode(colors.expand(-1, -1, size, size)).latent_dist.sample(generator) * scaling
-        backgrounds = pick_backgrounds(len(_BACKGROUND_COLORS))
+        colors = vae.encode(colors.expand(-1, -1, size, size)).latent_dist.sample(global_generator) * scaling
+        colors = colors.to(dtype)
 
         cache = {}
         self.unet(
@@ -353,11 +483,11 @@ class Step1X3DMeshTexturePipeline(Object3DPipeline):
             # Random colours early on, then only black or white backgrounds.
             progress = 1 - timestep / train_steps
             if progress < 0.4:
-                backgrounds = pick_backgrounds(len(_BACKGROUND_COLORS))
+                backgrounds = pick_backgrounds(_COLOR_NAMES)
             elif progress < 0.99:
-                backgrounds = pick_backgrounds(2)
+                backgrounds = pick_backgrounds(("black", "white"))
 
-        images = vae.decode(latents.to(vae.dtype) / scaling).sample
+        images = vae.decode(latents / scaling).sample
         return (images.float() / 2 + 0.5).clamp(0, 1), latents
 
     def bake_views(
@@ -382,7 +512,7 @@ class Step1X3DMeshTexturePipeline(Object3DPipeline):
         for image, (elevation, azimuth, view_weight) in zip(images, STEP1X3D_BAKE_VIEWS):
             image = Image.fromarray(image).resize((texture_size, texture_size), Image.Resampling.LANCZOS)
             texture, cosine = splat_view(
-                torch.from_numpy(np.array(image)).to(vertices) / 255,
+                torch.from_numpy(np.array(image) / 255.0).to(vertices),
                 vertices,
                 faces,
                 uvs,
@@ -394,13 +524,13 @@ class Step1X3DMeshTexturePipeline(Object3DPipeline):
             textures.append(texture)
             weights.append(view_weight * cosine**STEP1X3D_BAKE_EXPONENT)
         texture, mask = merge_views(textures, weights)
-        return inpaint_texture(texture, mask, vertices, faces, uvs)
+        return inpaint_texture(texture, mask, vertices, faces, uvs, arithmetic="numpy")
 
     @torch.no_grad()
     def __call__(
         self,
         mesh: MeshAsset | Sequence[MeshAsset],
-        image: ImageCondition | Sequence[ImageCondition],
+        image: ImageInput | list[ImageInput],
         *,
         prompt: str = "high quality",
         negative_prompt: str = "watermark, ugly, deformed, noisy, blurry, low contrast",
@@ -412,18 +542,24 @@ class Step1X3DMeshTexturePipeline(Object3DPipeline):
         resolution: int = 768,
         latent_texture_size: int = 1536,
         texture_size: int = 2048,
-        clean_mesh: bool = True,
+        max_faces: int | None = STEP1X3D_MAX_FACES,
         generator: torch.Generator | None = None,
         return_latents: bool = True,
         return_dict: bool = True,
     ) -> Object3DPipelineOutput | tuple[tuple[MeshAsset, ...], Latent3DOutput | None]:
-        """Texture each mesh from its reference image (defaults follow the released pipeline).
+        """Texture each mesh from its reference image (defaults follow the released ``inference.py``).
 
-        Returns UV-textured meshes; ``previews`` holds each mesh's six ``(6, 3, H, W)`` views.
+        Each mesh is read as its GLB export holds it, cleaned and decimated to ``max_faces`` with pymeshlab
+        (``None`` skips both), and unwrapped three times as upstream does (:func:`step1x3d_texture_meshes`). Noise
+        comes from ``generator`` where upstream uses its generator; where upstream draws from its (unseeded) global
+        torch RNG the package uses a generator seeded with ``torch.initial_seed()``, which is what a fresh upstream
+        process holds, and Python ``random`` draws come from ``random.Random(generator.initial_seed())``. Returns the meshes upstream exports:
+        right-handed Y-up, scaled to ``max |x| = 0.5``, with the final xatlas UVs and the 8-bit texture;
+        ``previews`` holds each mesh's six ``(6, 3, H, W)`` views.
         """
 
         meshes = (mesh,) if isinstance(mesh, MeshAsset) else tuple(mesh)
-        images = (image,) if isinstance(image, ImageCondition) else tuple(image)
+        images = tuple(self.image_conditions(image))
         if len(meshes) != len(images) or not meshes:
             raise ValueError("pass one reference image per mesh")
         device = self._execution_device
@@ -432,23 +568,24 @@ class Step1X3DMeshTexturePipeline(Object3DPipeline):
         camera_positions = torch.linalg.inv(world_to_camera)[:, :3, 3]
         prompt_embeds, pooled_prompt_embeds = self.encode_prompt(prompt, negative_prompt)
 
-        original_processors = self.unet.attn_processors
+        original_processors, vae_dtype = self.unet.attn_processors, self.vae.dtype
         self.unet.set_attn_processor(self.mv_adapter.attn_processors_for(self.unet))
         textured, all_latents, previews = [], [], []
         try:
             for mesh, image in zip(meshes, images):
-                mesh, positions = self.prepare_mesh(mesh, clean=clean_mesh)
-                faces, uvs = mesh.faces.to(device), mesh.uvs.to(device)
+                prepared, positions = self.prepare_mesh(mesh, max_faces=max_faces)
+                faces = torch.from_numpy(prepared.faces).to(device)
                 control_images = render_step1x3d_control_images(positions, faces, world_to_clip, resolution)
                 latent_size = resolution // 2 ** (len(self.vae.config.block_out_channels) - 1)
                 sync = Step1X3DLatentTextureSync(
                     positions,
                     faces,
-                    uvs,
+                    torch.from_numpy(prepared.sync_uvs).to(device),
                     world_to_clip,
                     camera_positions,
                     image_size=latent_size,
                     texture_size=latent_texture_size,
+                    uv_faces=torch.from_numpy(prepared.sync_uv_faces).to(device),
                 )
                 views, latents = self.generate_views(
                     control_images,
@@ -463,15 +600,19 @@ class Step1X3DMeshTexturePipeline(Object3DPipeline):
                     texture_sync_ratio=texture_sync_ratio,
                     generator=generator,
                 )
-                texture = self.bake_views(views, positions, faces, uvs, texture_size=texture_size)
+                self.vae.to(vae_dtype)
+                vertices = prepared.vertices[prepared.final_mapping]
+                final_faces = torch.from_numpy(prepared.final_faces).to(device)
+                uvs = torch.from_numpy(prepared.final_uvs).to(device)
+                texture = self.bake_views(
+                    views, view_frame(vertices).to(device), final_faces, uvs, texture_size=texture_size
+                )
                 textured.append(
                     MeshAsset(
-                        vertices=mesh.vertices.to(device),
-                        faces=faces,
-                        transform=mesh.transform.to(device),
-                        coordinate_system=mesh.coordinate_system,
+                        vertices=torch.from_numpy(vertices.astype(np.float32)).to(device),
+                        faces=final_faces,
                         uvs=uvs,
-                        materials=(PBRMaterial(base_color=texture.to(device)),),
+                        materials=(PBRMaterial(base_color=export_texture(texture).to(device)),),
                         metadata={"family": "step1x3d", "representation": "mesh"},
                     )
                 )
@@ -479,6 +620,7 @@ class Step1X3DMeshTexturePipeline(Object3DPipeline):
                 previews.append(views)
         finally:
             self.unet.set_attn_processor(original_processors)
+            self.vae.to(vae_dtype)
 
         latent_output = (
             Latent3DOutput(latents=torch.stack(all_latents), metadata={"family": "step1x3d"})
@@ -495,12 +637,17 @@ __all__ = [
     "STEP1X3D_BAKE_EXPONENT",
     "STEP1X3D_BAKE_VIEWS",
     "STEP1X3D_CAMERA_DISTANCE",
+    "STEP1X3D_MAX_FACES",
     "STEP1X3D_ORTHO_HALF_EXTENT",
     "STEP1X3D_VIEW_AZIMUTHS",
     "STEP1X3D_VIEW_ELEVATIONS",
     "Step1X3DMeshTexturePipeline",
+    "Step1X3DTextureMeshes",
+    "export_texture",
     "preprocess_step1x3d_reference_image",
     "render_step1x3d_control_images",
     "step1x3d_orthographic_projection",
+    "step1x3d_texture_meshes",
     "step1x3d_view_matrices",
+    "view_frame",
 ]

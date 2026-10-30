@@ -1,0 +1,40 @@
+Stability AI / Tripo AI TripoSR integration notice
+
+Portions of the triplane tokenizer, backbone, upsampler, and NeRF decoder
+architecture, image preprocessing, mesh extraction, and the NeRF volume
+renderer in this family are modified from:
+
+  VAST-AI-Research/TripoSR
+  https://github.com/VAST-AI-Research/TripoSR
+  revision 107cefdc244c39106fa830359024f6a2f1c78871
+
+Those portions are provided under the accompanying MIT License:
+
+  MIT License
+  Copyright (c) 2024 Tripo AI & Stability AI
+
+All ported source files carry a prominent modification notice. Independently
+written diffusers-3d package glue remains under the package Apache-2.0 license.
+
+Upstream's transformer files are modified copies of Hugging Face Diffusers
+(Apache-2.0). This family uses Diffusers' own Transformer2DModel instead.
+The converter reproduces the ViT position-embedding interpolation of Hugging
+Face Transformers 4.35 (Apache-2.0).
+
+Not included:
+
+- torchmcubes (compiled marching cubes). The package's plain-PyTorch marching
+  cubes is an independent implementation of the same rules. It uses Paul
+  Bourke's public lookup table, which torchmcubes and PyMCubes (BSD-3-Clause)
+  also ship;
+- video export and texture baking;
+- the rembg background remover, which the package offers as an opt-in.
+
+Weights are not redistributed. The stabilityai/TripoSR model card declares the
+MIT license. It lists gating fields, but the Hub reported the repository as not
+gated at revision 5b521936b01fbe1890f6f9baed0254ab6351c04a. Its image encoder
+derives from facebook/dino-vitb16 (Apache-2.0). Converted checkpoints keep their
+own licenses.
+
+No affiliation, sponsorship, or endorsement by Stability AI, Tripo AI,
+VAST-AI-Research, or Meta is claimed.

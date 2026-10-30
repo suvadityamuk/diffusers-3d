@@ -3,7 +3,7 @@ from __future__ import annotations
 import pytest
 import torch
 
-from diffusers_3d import Object3D
+from diffusers_3d.objects import Object3D
 
 
 @pytest.mark.parametrize("fixture_name", ("mesh", "gaussian", "sparse_voxel", "o_voxel"))

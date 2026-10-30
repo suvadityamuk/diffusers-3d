@@ -9,14 +9,12 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
-import torch
 from diffusers import __version__ as diffusers_version
-from safetensors.torch import load_file
-from transformers import DINOv3ViTModel
 
+from ..trellis.conversion import _component_source, _load_json, _save_component, _validate_normalization
 from .decoders import Trellis2PBRSparseDecoder, Trellis2ShapeDualGridDecoder, Trellis2SparseStructureDecoder
-from .models import Trellis2SLatFlowModel, Trellis2SparseStructureFlowModel
-from .pipeline import Trellis2ImageTo3DPipeline
+from .models import DINOV3_VITL16_REPO, Trellis2SLatFlowModel, Trellis2SparseStructureFlowModel
+from .pipeline import RELEASED_STEMS, TRELLIS_IMAGE_LARGE_REPO, Trellis2ImageTo3DPipeline
 from .scheduler import Trellis2FlowEulerScheduler
 
 TRELLIS2_REFERENCE_REVISION = "75fbf0183001ed9876c8dbb35de6b68552ee08bd"
@@ -65,67 +63,42 @@ _PIPELINE_ARGUMENTS = {
 }
 
 
-def _load_json(path: Path) -> dict[str, Any]:
-    if not path.is_file():
-        raise FileNotFoundError(f"configuration does not exist: {path}")
-    value = json.loads(path.read_text(encoding="utf-8"))
-    if not isinstance(value, dict):
-        raise ValueError(f"configuration must contain a mapping: {path}")
-    return value
+def _validate_image_cond_model(image_model: object) -> None:
+    """The released DINOv3 conditioner, whose gated weights the pipeline loads from their own repository."""
+
+    if (
+        not isinstance(image_model, Mapping)
+        or image_model.get("name") != "DinoV3FeatureExtractor"
+        or not isinstance(image_model.get("args"), Mapping)
+    ):
+        raise ValueError("only the released DinoV3FeatureExtractor image conditioner is supported")
+    model_name = image_model["args"].get("model_name", DINOV3_VITL16_REPO)
+    if model_name != DINOV3_VITL16_REPO:
+        raise ValueError(
+            f"the image conditioner must be {DINOV3_VITL16_REPO}, which the pipeline loads; got {model_name}"
+        )
 
 
-def _load_component_descriptor(path: Path) -> tuple[str, dict[str, Any]]:
-    descriptor = _load_json(path)
-    if set(descriptor) != {"name", "args"}:
-        raise ValueError(f"component descriptor {path} must contain exactly 'name' and 'args'")
-    if not isinstance(descriptor["name"], str) or not isinstance(descriptor["args"], Mapping):
-        raise ValueError(f"component descriptor {path} has invalid name or args")
-    return descriptor["name"], dict(descriptor["args"])
-
-
-def _component_source(root: Path, reference: str) -> Path:
-    candidate = root / reference
-    if candidate.with_suffix(".json").is_file() and candidate.with_suffix(".safetensors").is_file():
-        return candidate
-    direct = Path(reference)
-    if direct.with_suffix(".json").is_file() and direct.with_suffix(".safetensors").is_file():
-        return direct
-    raise FileNotFoundError(f"TRELLIS.2 component pair does not exist for reference {reference!r}")
-
-
-def _save_component(
-    component_key: str, source_stem: Path, destination: Path, *, safe_serialization: bool
+def _save_released_component(
+    component_key: str, source_stem: Path, destination: Path, *, safe_serialization: bool = True
 ) -> tuple[type[Any], dict[str, Any]]:
-    model_name, model_config = _load_component_descriptor(source_stem.with_suffix(".json"))
-    model_types = _COMPONENT_TYPES[component_key]
-    if model_name not in model_types:
-        raise ValueError(
-            f"unsupported TRELLIS.2 model {model_name!r} for {component_key!r}; expected {sorted(model_types)}"
-        )
-    weights_path = source_stem.with_suffix(".safetensors")
-    if not weights_path.is_file():
-        raise FileNotFoundError(f"component weights do not exist: {weights_path}")
-    model_type = model_types[model_name]
-    with torch.device("meta"):
-        model = model_type(**model_config)
-    state_dict = load_file(weights_path, device="cpu")
-    incompatible = model.load_state_dict(state_dict, strict=True, assign=True)
-    if incompatible.missing_keys or incompatible.unexpected_keys:
-        raise ValueError(
-            f"{component_key} state mismatch: missing={incompatible.missing_keys}, "
-            f"unexpected={incompatible.unexpected_keys}"
-        )
-    model.save_pretrained(destination, safe_serialization=safe_serialization)
-    return model_type, model_config
+    """Convert one released component pair into ``destination``, as :func:`convert_trellis2_checkpoint` does."""
 
-
-def _load_image_encoder(pretrained_model_name_or_path: str | Path) -> DINOv3ViTModel:
-    image_encoder, loading_info = DINOv3ViTModel.from_pretrained(
-        pretrained_model_name_or_path, output_loading_info=True
+    return _save_component(
+        component_key,
+        source_stem,
+        destination,
+        model_types=_COMPONENT_TYPES[component_key],
+        family="TRELLIS.2",
+        safe_serialization=safe_serialization,
     )
-    if any(loading_info[name] for name in ("missing_keys", "unexpected_keys", "mismatched_keys")):
-        raise ValueError(f"the DINOv3 weights do not match its config: {loading_info}")
-    return image_encoder.eval()
+
+
+# Components TRELLIS.2 references from another release; the pipeline loads them from there (see
+# ``Trellis2ImageTo3DPipeline.external_components``), so they are named in ``model_index.json`` but not converted.
+_EXTERNAL_REFERENCES = {
+    "sparse_structure_decoder": f"{TRELLIS_IMAGE_LARGE_REPO}/{RELEASED_STEMS['sparse_structure_decoder']}",
+}
 
 
 def _validate_sampler(value: object, *, name: str) -> tuple[float, dict[str, Any]]:
@@ -166,39 +139,20 @@ def _validate_sampler(value: object, *, name: str) -> tuple[float, dict[str, Any
     return sigma_min, normalized
 
 
-def _validate_normalization(value: object, *, name: str) -> tuple[list[float], list[float]]:
-    if not isinstance(value, Mapping) or set(value) != {"mean", "std"}:
-        raise ValueError(f"{name} must contain exact mean/std arrays")
-    try:
-        mean = [float(item) for item in value["mean"]]
-        std = [float(item) for item in value["std"]]
-    except (TypeError, ValueError) as error:
-        raise ValueError(f"{name} mean/std must be numeric arrays") from error
-    if (
-        not mean
-        or len(mean) != len(std)
-        or not all(math.isfinite(item) for item in mean)
-        or not all(math.isfinite(item) and item > 0 for item in std)
-    ):
-        raise ValueError(f"{name} must contain matching finite means and positive standard deviations")
-    return mean, std
-
-
 def convert_trellis2_checkpoint(
     source_directory: str | Path,
     output_directory: str | Path,
     *,
-    image_encoder_path: str | Path,
     safe_serialization: bool = True,
 ) -> Path:
     """Convert a released TRELLIS.2 ``pipeline.json`` plus component pairs into a Diffusers pipeline folder.
 
     Every model named in ``pipeline.json`` is converted; the two sparse-structure components are required, the
     SLAT flow models and decoders are optional (a pipeline without them only produces sparse structures).
-    Component references are resolved relative to ``source_directory`` and then as-is, so cross-repository
-    references such as the TRELLIS image-large sparse-structure decoder work once that file pair is present.
-    ``image_encoder_path`` is a Transformers DINOv3 folder or Hub id, such as
-    ``facebook/dinov3-vitl16-pretrain-lvd1689m``.
+    Component references are resolved relative to ``source_directory`` and then as-is. Only TRELLIS.2's own networks
+    are converted: the sparse-structure decoder it references from ``microsoft/TRELLIS-image-large`` and the gated
+    DINOv3 ``image_encoder`` are named in ``model_index.json`` but never read or written, and the pipeline loads them
+    from those repositories at pinned revisions.
     """
 
     source = Path(source_directory)
@@ -210,12 +164,7 @@ def convert_trellis2_checkpoint(
     if not isinstance(args, Mapping) or set(args) != _PIPELINE_ARGUMENTS:
         raise ValueError(f"pipeline args must contain exactly {sorted(_PIPELINE_ARGUMENTS)}")
     image_model = args["image_cond_model"]
-    if (
-        not isinstance(image_model, Mapping)
-        or image_model.get("name") != "DinoV3FeatureExtractor"
-        or not isinstance(image_model.get("args"), Mapping)
-    ):
-        raise ValueError("only the released DinoV3FeatureExtractor image conditioner is supported")
+    _validate_image_cond_model(image_model)
     models = args["models"]
     if not isinstance(models, Mapping):
         raise ValueError("pipeline args.models must be a mapping")
@@ -232,10 +181,21 @@ def convert_trellis2_checkpoint(
         if not isinstance(reference, str) or not reference:
             raise ValueError(f"pipeline model reference {component_key!r} must be a non-empty string")
         output_name = _OUTPUT_NAMES[component_key]
+        if component_key in _EXTERNAL_REFERENCES:
+            if reference != _EXTERNAL_REFERENCES[component_key]:
+                raise ValueError(
+                    f"{component_key} must reference {_EXTERNAL_REFERENCES[component_key]}, which the pipeline "
+                    f"loads; got {reference!r}"
+                )
+            model_type = next(iter(_COMPONENT_TYPES[component_key].values()))
+            component_index[output_name] = [model_type.__module__, model_type.__name__]
+            continue
         model_type, model_config = _save_component(
             component_key,
             _component_source(source, reference),
             destination / output_name,
+            model_types=_COMPONENT_TYPES[component_key],
+            family="TRELLIS.2",
             safe_serialization=safe_serialization,
         )
         component_index[output_name] = [model_type.__module__, model_type.__name__]
@@ -246,7 +206,6 @@ def convert_trellis2_checkpoint(
             "config": model_config,
         }
 
-    _load_image_encoder(image_encoder_path).save_pretrained(destination / "image_encoder")
     component_index["image_encoder"] = ["transformers", "DINOv3ViTModel"]
 
     sampler_values = {}
@@ -302,13 +261,6 @@ def convert_trellis2_checkpoint(
     (destination / "model_index.json").write_text(
         json.dumps(model_index, indent=2, sort_keys=True) + "\n", encoding="utf-8"
     )
-    metadata = Trellis2ImageTo3DPipeline.object3d_model_index()
-    metadata.validate_diffusers_model_index(
-        destination / "model_index.json",
-        pipeline_class_name=Trellis2ImageTo3DPipeline.__name__,
-        enforce_loading_eligibility=False,
-    )
-    metadata.save_pretrained(destination)
     report = {
         "components": component_report,
         "reference_revision": TRELLIS2_REFERENCE_REVISION,
@@ -326,13 +278,11 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("source_directory", type=Path)
     parser.add_argument("output_directory", type=Path)
-    parser.add_argument("--image-encoder-path", required=True, help="Transformers DINOv3 folder or Hub id")
     parser.add_argument("--no-safe-serialization", action="store_true")
     args = parser.parse_args(argv)
     convert_trellis2_checkpoint(
         args.source_directory,
         args.output_directory,
-        image_encoder_path=args.image_encoder_path,
         safe_serialization=not args.no_safe_serialization,
     )
     return 0

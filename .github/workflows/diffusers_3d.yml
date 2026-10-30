@@ -31,10 +31,10 @@ jobs:
       - name: Install quality dependencies
         run: |
           python -m pip install --upgrade pip
-          python -m pip install torch --index-url https://download.pytorch.org/whl/cpu
+          python -m pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
           python -m pip install -e .
           python -m pip install -e "packages/diffusers-3d[test]" --no-deps
-          python -m pip install accelerate build pytest ruff safetensors "transformers>=5.5.0"
+          python -m pip install accelerate opencv-python-headless "rembg[cpu]" build pytest ruff safetensors "transformers>=5.5.0"
       - name: Check project AI guides
         run: python utils/check_ai.py
       - name: Check formatting, imports, and strict marker collection
@@ -57,16 +57,16 @@ jobs:
       - name: Install CPU dependencies
         run: |
           python -m pip install --upgrade pip
-          python -m pip install torch --index-url https://download.pytorch.org/whl/cpu
+          python -m pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
           python -m pip install -e .
           python -m pip install -e "packages/diffusers-3d[test]" --no-deps
           python -m pip install \
-            accelerate peft pytest pytest-cov safetensors "transformers>=5.5.0"
+            accelerate opencv-python-headless "rembg[cpu]" pymeshlab peft pytest pytest-cov safetensors "transformers>=5.5.0"
       - name: Verify CPU import and all backend-independent tests
         run: |
           python -c "import diffusers_3d"
           python -m pytest packages/diffusers-3d/tests \
-            -m "not portable and not accelerated and not research_only and not reference_parity and not release"
+            -m "not portable and not accelerated and not reference_parity and not release"
 
   portable:
     runs-on: ubuntu-latest
@@ -79,10 +79,10 @@ jobs:
       - name: Install portable backends
         run: |
           python -m pip install --upgrade pip
-          python -m pip install torch --index-url https://download.pytorch.org/whl/cpu
+          python -m pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
           python -m pip install -e .
           python -m pip install -e "packages/diffusers-3d[portable,test]" --no-deps
-          python -m pip install accelerate pytest pytest-cov safetensors scikit-image "transformers>=5.5.0" trimesh xatlas
+          python -m pip install accelerate opencv-python-headless "rembg[cpu]" pymeshlab pytest pytest-cov safetensors scikit-image "transformers>=5.5.0" trimesh xatlas
       - name: Run portable backend tests
         run: python -m pytest packages/diffusers-3d/tests -m portable
 
@@ -102,7 +102,8 @@ jobs:
           python -m pip install -e "packages/diffusers-3d[reference-test,test]" --no-deps
           # Upstream reference modules import these at module level.
           python -m pip install accelerate einops opencv-python-headless optree pytest pyyaml safetensors scikit-image \
-            timm tqdm "transformers>=5.5.0" trimesh xatlas
+            torchdiffeq omegaconf tensordict plyfile timm tqdm "transformers>=5.5.0" trimesh xatlas \
+            "rembg[cpu]" fast-simplification pymeshlab peft
           # NATTEN ships only an sdist; without CUDA it builds its pure-Python Flex backend.
           python -m pip install --no-build-isolation natten==0.21.0
       - name: Fetch exact trusted reference revisions
@@ -152,6 +153,51 @@ jobs:
             https://github.com/Tencent-Hunyuan/Hunyuan3D-2.1.git \
             82920d643c0dc2f7bfd7255f45f62d386edfe60c \
             "$RUNNER_TEMP/Hunyuan3D-2.1"
+          clone_exact \
+            https://github.com/microsoft/MoGe.git \
+            a8c37341bc0325ca99b9d57981cc3bb2bd3e255b \
+            "$RUNNER_TEMP/MoGe-a8c3734"
+          clone_exact \
+            https://github.com/microsoft/MoGe.git \
+            74fbce054ebed49800de42d0ad0e83495065719a \
+            "$RUNNER_TEMP/MoGe"
+          clone_exact \
+            https://github.com/EasternJournalist/utils3d.git \
+            3913c65d81e05e47b9f367250cf8c0f7462a0900 \
+            "$RUNNER_TEMP/utils3d-3913c65"
+          clone_exact \
+            https://github.com/EasternJournalist/utils3d-moge.git \
+            62f09d58509485564e24d5d9f6aac9ee9ebc0c37 \
+            "$RUNNER_TEMP/utils3d-moge-62f09d5"
+          clone_exact \
+            https://github.com/facebookresearch/dinov2.git \
+            7764ea0f912e53c92e82eb78a2a1631e92725fc8 \
+            "$RUNNER_TEMP/dinov2"
+          # TRELLIS's DINOv2 weight-identity test compares the torch.hub checkpoint upstream loads.
+          mkdir -p "$RUNNER_TEMP/dinov2_weights"
+          curl -fsSL -o "$RUNNER_TEMP/dinov2_weights/dinov2_vitl14_reg4_pretrain.pth" \
+            https://dl.fbaipublicfiles.com/dinov2/dinov2_vitl14/dinov2_vitl14_reg4_pretrain.pth
+          echo "36e4deffbaef061a2576705b0c36f93621e2ae20bf6274694821b0b492551b51  $RUNNER_TEMP/dinov2_weights/dinov2_vitl14_reg4_pretrain.pth" | sha256sum -c -
+          clone_exact \
+            https://github.com/speridlabs/idol-sdk.git \
+            4702a7f00850e34b6e83a2170cc123c3e9570744 \
+            "$RUNNER_TEMP/idol-sdk"
+          clone_exact \
+            https://github.com/VAST-AI-Research/TripoSplat.git \
+            d8db9e018b413dd9c4a9fe22463781bf98e8e68d \
+            "$RUNNER_TEMP/TripoSplat"
+          clone_exact \
+            https://github.com/VAST-AI-Research/TripoSR.git \
+            107cefdc244c39106fa830359024f6a2f1c78871 \
+            "$RUNNER_TEMP/TripoSR"
+          clone_exact \
+            https://github.com/tatsy/torchmcubes.git \
+            3381600ddc3d2e4d74222f8495866be5fafbace4 \
+            "$RUNNER_TEMP/torchmcubes"
+          clone_exact \
+            https://github.com/Tencent-Hunyuan/Hunyuan3D-Omni.git \
+            4d47c0cc2bd0c4281963a7314ab330a5af36bfa8 \
+            "$RUNNER_TEMP/Hunyuan3D-Omni"
           {
             echo "DIFFUSERS_3D_TRELLIS_REFERENCE_ROOT=$RUNNER_TEMP/TRELLIS"
             echo "DIFFUSERS_3D_TRELLIS2_REFERENCE_ROOT=$RUNNER_TEMP/TRELLIS.2"
@@ -161,28 +207,40 @@ jobs:
             echo "DIFFUSERS_3D_PIXAL3D_REFERENCE_ROOT=$RUNNER_TEMP/Pixal3D"
             echo "DIFFUSERS_3D_NAF_REFERENCE_ROOT=$RUNNER_TEMP/NAF"
             echo "DIFFUSERS_3D_HUNYUAN3D_REFERENCE_ROOT=$RUNNER_TEMP/Hunyuan3D-2.1"
+            echo "DIFFUSERS_3D_MOGE_REFERENCE_ROOT=$RUNNER_TEMP/MoGe-a8c3734"
+            echo "DIFFUSERS_3D_MOGE2_REFERENCE_ROOT=$RUNNER_TEMP/MoGe"
+            echo "DIFFUSERS_3D_UTILS3D_REFERENCE_ROOT=$RUNNER_TEMP/utils3d-3913c65"
+            echo "DIFFUSERS_3D_UTILS3D_MOGE_REFERENCE_ROOT=$RUNNER_TEMP/utils3d-moge-62f09d5"
+            echo "DIFFUSERS_3D_DINOV2_REFERENCE_ROOT=$RUNNER_TEMP/dinov2"
+            echo "DIFFUSERS_3D_DINOV2_REFERENCE_WEIGHTS=$RUNNER_TEMP/dinov2_weights/dinov2_vitl14_reg4_pretrain.pth"
+            echo "DIFFUSERS_3D_IDOL_REFERENCE_ROOT=$RUNNER_TEMP/idol-sdk"
+            echo "DIFFUSERS_3D_TRIPOSPLAT_REFERENCE_ROOT=$RUNNER_TEMP/TripoSplat"
+            echo "DIFFUSERS_3D_TRIPOSR_REFERENCE_ROOT=$RUNNER_TEMP/TripoSR"
+            echo "DIFFUSERS_3D_TORCHMCUBES_REFERENCE_ROOT=$RUNNER_TEMP/torchmcubes"
+            echo "DIFFUSERS_3D_HUNYUAN3D_OMNI_REFERENCE_ROOT=$RUNNER_TEMP/Hunyuan3D-Omni"
           } >> "$GITHUB_ENV"
       - name: Run required pinned-reference parity without skips
         env:
           DIFFUSERS_3D_REQUIRE_REFERENCE: "1"
         run: |
           python -m pytest packages/diffusers-3d/tests \
-            -m reference_parity \
+            -m "reference_parity and not real_weights" \
             --junitxml="$RUNNER_TEMP/reference-parity.xml"
           python - <<'PY'
           import os
           import xml.etree.ElementTree as ET
 
           root = ET.parse(os.path.join(os.environ["RUNNER_TEMP"], "reference-parity.xml")).getroot()
-          suites = [root] if root.tag == "testsuite" else list(root.findall("testsuite"))
-          tests = sum(int(suite.attrib["tests"]) for suite in suites)
-          skipped = sum(int(suite.attrib.get("skipped", 0)) for suite in suites)
-          failures = sum(int(suite.attrib.get("failures", 0)) for suite in suites)
-          errors = sum(int(suite.attrib.get("errors", 0)) for suite in suites)
-          assert tests == 48, f"expected 48 reference-parity cases, collected {tests}"
-          assert (skipped, failures, errors) == (0, 0, 0), (
-              f"reference parity was not clean: skipped={skipped}, "
-              f"failures={failures}, errors={errors}"
+          cases = list(root.iter("testcase"))
+          xfailed = [case for case in cases if any(child.get("type") == "pytest.xfail" for child in case.findall("skipped"))]
+          skipped = [case for case in cases if case.find("skipped") is not None and case not in xfailed]
+          broken = [case for case in cases if case.find("failure") is not None or case.find("error") is not None]
+          assert len(cases) == 179, f"expected 179 reference-parity cases, collected {len(cases)}"
+          # Strict xfails document known deviations on inputs upstream mishandles (see the background tests).
+          assert len(xfailed) == 8, f"expected 8 documented deviations, got {len(xfailed)}"
+          assert not skipped and not broken, (
+              f"reference parity was not clean: skipped={[c.get('name') for c in skipped]}, "
+              f"failed={[c.get('name') for c in broken]}"
           )
           PY
 
@@ -197,10 +255,10 @@ jobs:
       - name: Install release-test dependencies
         run: |
           python -m pip install --upgrade pip
-          python -m pip install torch --index-url https://download.pytorch.org/whl/cpu
+          python -m pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
           python -m pip install -e .
           python -m pip install -e "packages/diffusers-3d[test]" --no-deps
-          python -m pip install accelerate build pytest safetensors "transformers>=5.5.0"
+          python -m pip install accelerate opencv-python-headless "rembg[cpu]" build pytest safetensors "transformers>=5.5.0"
       - name: Check release metadata and distribution contents
         run: python -m pytest packages/diffusers-3d/tests -m release
 
@@ -215,9 +273,9 @@ jobs:
       - name: Install build and local Diffusers dependencies
         run: |
           python -m pip install --upgrade pip
-          python -m pip install torch --index-url https://download.pytorch.org/whl/cpu
+          python -m pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
           python -m pip install -e .
-          python -m pip install accelerate build safetensors "transformers>=5.5.0"
+          python -m pip install accelerate build opencv-python-headless "rembg[cpu]" safetensors "transformers>=5.5.0"
       - name: Build and verify wheel and source distribution contents
         run: |
           python -m build --outdir packages/diffusers-3d/wheelhouse packages/diffusers-3d
@@ -239,10 +297,12 @@ jobs:
           diffusers-3d-convert-step1x3d --help > /dev/null
           diffusers-3d-convert-step1x3d-texture --help > /dev/null
           diffusers-3d-convert-pixal3d --help > /dev/null
-          diffusers-3d-report --help > /dev/null
+          diffusers-3d-convert-idol --help > /dev/null
+          diffusers-3d-convert-triposplat --help > /dev/null
+          diffusers-3d-convert-triposr --help > /dev/null
+          diffusers-3d-convert-hunyuan3d-omni --help > /dev/null
           cd /tmp
           python -I -c "import diffusers_3d; print(diffusers_3d.__version__)"
-          diffusers-3d-report --compact
 
   minimum-supported-stack:
     runs-on: ubuntu-latest
@@ -255,11 +315,11 @@ jobs:
       - name: Install local packages and exact minimum dependency stack
         run: |
           python -m pip install --upgrade pip
-          python -m pip install torch --index-url https://download.pytorch.org/whl/cpu
+          python -m pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
           python -m pip install -e .
           python -m pip install -e "packages/diffusers-3d[test]" --no-deps
           python -m pip install \
-            "accelerate==1.1.0" build huggingface-hub numpy Pillow \
+            "accelerate==1.1.0" build huggingface-hub numpy opencv-python-headless Pillow "rembg[cpu]" \
             pytest pytest-cov ruff safetensors "transformers==5.5.0"
       - name: Verify declared local and minimum compatibility
         run: |
