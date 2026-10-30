@@ -10,12 +10,16 @@ from typing import Any, ClassVar
 import huggingface_hub
 import torch
 from diffusers import DiffusionPipeline
+from diffusers.utils import logging
 
 from ..data import ImageCondition, ImageInput, as_image_conditions
 from ..data._hub import require_hub_access
 from ..data.background import BackgroundRemoval, BackgroundRemover, remove_background
 
 _HUB_KWARGS = ("cache_dir", "force_download", "proxies", "token", "local_files_only", "revision")
+
+
+logger = logging.get_logger(__name__)
 
 
 @dataclass(frozen=True)
@@ -39,6 +43,10 @@ class ExternalComponent:
                 used_for=f"{pipeline}'s {name!r}",
                 alternative=f"pass {name}=... to from_pretrained yourself",
                 token=hub_kwargs.get("token"),
+            )
+            logger.warning(
+                f"{pipeline}'s {name!r} loads from {self.repository}, a third-party repository under its own license. "
+                f"Check that license before use; pass {name}=... to supply your own copy."
             )
         return self.load(self.repository, revision=self.revision, dtype=dtype, **hub_kwargs)
 

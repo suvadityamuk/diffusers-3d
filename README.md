@@ -84,15 +84,12 @@ mesh = pipeline("chair.jpg", generator=torch.Generator("cuda").manual_seed(0)).o
 mesh.save("mesh.glb")
 ```
 
-TRELLIS.2 and Pixal3D take the gated DINOv3 encoder as an argument:
+TRELLIS.2 and Pixal3D use the gated DINOv3 encoder, which the library downloads from its original repository on first
+use. Accept its license at https://huggingface.co/facebook/dinov3-vitl16-pretrain-lvd1689m and log in with
+`hf auth login`; without access, loading raises an error that says what to do.
 
 ```python
-from transformers import DINOv3ViTModel
-
-image_encoder = DINOv3ViTModel.from_pretrained("facebook/dinov3-vitl16-pretrain-lvd1689m")
-pipeline = AutoPipelineForImageTo3D.from_pretrained(
-    "suvadityamuk/TRELLIS.2-4B-diffusers-3d", image_encoder=image_encoder, dtype=torch.bfloat16
-).to("cuda")
+pipeline = AutoPipelineForImageTo3D.from_pretrained("suvadityamuk/TRELLIS.2-4B-diffusers-3d", dtype=torch.bfloat16).to("cuda")
 output = pipeline("chair.png", formats=("o_voxel", "mesh"))
 ```
 

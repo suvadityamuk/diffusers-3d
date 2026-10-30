@@ -10,21 +10,23 @@ Converted checkpoints for every family are on the Hub; the
 
 ```python
 import torch
-from transformers import DINOv3ViTModel
 from diffusers_3d import AutoPipelineForImageTo3D
 
-# The DINOv3 encoder is gated, so the Hub repo leaves it out. Accept its license on the Hub, then pass it in.
-image_encoder = DINOv3ViTModel.from_pretrained("facebook/dinov3-vitl16-pretrain-lvd1689m")
 pipeline = AutoPipelineForImageTo3D.from_pretrained(
-    "suvadityamuk/TRELLIS.2-4B-diffusers-3d", image_encoder=image_encoder, dtype=torch.bfloat16
+    "suvadityamuk/TRELLIS.2-4B-diffusers-3d", dtype=torch.bfloat16
 ).to("cuda")
 ```
+
+The DINOv3 image encoder is gated third-party weights. The library downloads it from `facebook/dinov3-vitl16-pretrain-lvd1689m`
+at a pinned revision, and logs a notice that its license applies. Accept the license on that repository and log in with
+`hf auth login`. If this account cannot read it, loading raises a `PermissionError` that says what to do. To use your own
+copy, pass `image_encoder=...` and the library skips the download.
 
 The auto-loader reads `_class_name` from the repo's `model_index.json` and calls that pipeline's `from_pretrained`,
 so it takes the same arguments (`revision`, `cache_dir`, `token`, `local_files_only`, `subfolder`, `dtype`, and so
 on). `AutoPipelineForImageTo3D`, `AutoPipelineForTextTo3D`, and `AutoPipelineForMeshTexturing` also check that the
-checkpoint is that kind of pipeline. A keyword argument named after a component, such as `image_encoder=`, replaces
-that component and skips its download. A locally converted folder already contains the
+checkpoint is that kind of pipeline. A keyword argument named after a component replaces that component and skips its
+download. A locally converted folder already contains the
 encoder and needs no extra argument.
 
 The concrete class works too: `Trellis2ImageTo3DPipeline.from_pretrained(...)`. Pipelines are `DiffusionPipeline`s,
@@ -164,7 +166,7 @@ All load with `AutoPipelineForImageTo3D` and return assets in `output.objects`. 
 | TripoSR | RGBA | vertex-coloured mesh, Z-up; `pipeline.render_views(output.latents.latents)` renders the NeRF | `mc_resolution`, `mc_threshold`; one feed-forward pass, no sampling |
 | TripoSplat | RGBA | Gaussian splats, Z-up | `num_inference_steps=20`, `guidance_scale=3.0`, `num_gaussians` (32768 to 262144); guidance runs sequentially as upstream, `batch_guidance=True` batches it |
 | IDOL | RGBA | Gaussian splats, Z-up; predicted input camera in `metadata["camera"]` | `num_inference_steps=50`, `guidance_scale=4.0`, `num_gaussians`; runs TripoSplat's networks |
-| Pixal3D | RGBA plus `camera_angle_x` (horizontal FOV, radians) | same as TRELLIS.2 | TRELLIS.2's `formats` and `pipeline_type` (default `"1536_cascade"`); needs `image_encoder=` like TRELLIS.2 |
+| Pixal3D | RGBA plus `camera_angle_x` (horizontal FOV, radians) | same as TRELLIS.2 | TRELLIS.2's `formats` and `pipeline_type` (default `"1536_cascade"`); loads its DINOv3 encoder like TRELLIS.2 |
 
 TripoSG, Hunyuan3D-2.1, Hunyuan3D-Omni, SAM 3D Objects, and Hunyuan3D-2.1 Paint warn about their license terms when constructed.
 
