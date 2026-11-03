@@ -1,0 +1,54 @@
+StepFun Step1X-3D integration notice
+
+Portions of the geometry flow transformer, shape-VAE decoder, image
+conditioning, image framing, sampling loop, and surface-extraction mapping in
+this family are modified from:
+
+  stepfun-ai/Step1X-3D
+  https://github.com/stepfun-ai/Step1X-3D
+  revision cb5ac944709c6c913109070c7b90c3447f57f3d4
+
+Those portions are provided under the accompanying Apache License 2.0
+(LICENSE-APACHE-2.0). Copyright (c) StepFun. All ported source files carry a
+prominent modification notice. Independently written diffusers-3d package glue
+remains under the package Apache-2.0 license.
+
+The texture stage's attention processors, multi-view loop, and conversion
+are modified from Step1X-3D's step1x3d_texture (Apache-2.0), which adapts
+MV-Adapter (https://github.com/huanngzh/MV-Adapter, Apache-2.0). Its latent
+texture synchronisation is modified from Step1X-3D's texture_sync, which
+derives from SyncMVD (https://github.com/LIU-Yuxin/SyncMVD); those portions
+are provided under the accompanying MIT License (LICENSE-MIT), Copyright (c)
+2023 LIU-Yuxin. The CuPy Voronoi solver in texture_sync carries no license
+and is not used.
+
+Step1X-3D's shape VAE descends from Michelangelo
+(https://github.com/NeuralCarver/Michelangelo, GPL-3.0), whose perceiver
+attention layers in turn follow OpenAI Shap-E (MIT). Step1X-3D distributes its
+version without a GPL notice under Apache-2.0; this family re-implements the
+decoder on stock Diffusers blocks and copies no Michelangelo source.
+
+Not included: upstream files carrying the Tencent Hunyuan 3D non-commercial
+license header (step1x3d_geometry/models/autoencoders/volume_decoders.py and
+the texture-stage custom_rasterizer and differentiable_renderer). Occupancy is
+evaluated on a dense grid written for this package instead of upstream's
+hierarchical volume decoder. pymeshlab (GPL) post-processing is not used.
+
+The converted weights come from https://huggingface.co/stepfun-ai/Step1X-3D
+(Apache-2.0; layout checked at revision
+bf7084495b3a72222f36549b7942948aa4d9daa7). The visual encoder weights are a
+DINOv2-with-registers ViT-L/14 (facebook/dinov2-with-registers-large,
+Apache-2.0). The texture converter combines the release's adapter weights
+(Step1X-3D-Texture, Apache-2.0) with stabilityai/stable-diffusion-xl-base-1.0
+(CreativeML Open RAIL++-M License) and madebyollin/sdxl-vae-fp16-fix (MIT).
+The geometry stage's hierarchical occupancy decoder (diffusers_3d/backends/occupancy.py)
+is modified from Tencent Hunyuan3D-2.1 (https://github.com/Tencent-Hunyuan/Hunyuan3D-2.1,
+revision 82920d643c0dc2f7bfd7255f45f62d386edfe60c), as copied by Step1X-3D, and is
+provided under the Tencent Hunyuan 3D 2.1 Community License Agreement (see
+families/hunyuan3d/LICENSE-TENCENT-HUNYUAN-3D-2.1). Copyright (C) 2025 Tencent. It does
+not apply in the European Union, the United Kingdom, or South Korea.
+
+Model weights keep their own licenses.
+
+No affiliation, sponsorship, or endorsement by StepFun, Meta, Tencent,
+OpenAI, or Stability AI is claimed.

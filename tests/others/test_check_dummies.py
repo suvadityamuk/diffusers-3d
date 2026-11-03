@@ -47,11 +47,9 @@ class TestCheckDummies:
         objects = read_init()
         # We don't assert on the exact list of keys to allow for smooth grow of backend-specific objects
         assert "torch" in objects
-        assert "torch_and_transformers" in objects
 
         # Likewise, we can't assert on the exact content of a key
-        assert "UNet2DModel" in objects["torch"]
-        assert "StableDiffusionPipeline" in objects["torch_and_transformers"]
+        assert "ModelMixin" in objects["torch"]
         assert "LMSDiscreteScheduler" in objects["torch_and_scipy"]
 
     def test_create_dummy_object(self):

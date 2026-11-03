@@ -5,7 +5,6 @@ from .common import (
 )
 from .guider import ModularGuiderTesterMixin
 from .loading import ModularLoadingTesterMixin
-from .lora import ModularLoraMemoryTesterMixin, ModularLoraTesterMixin
 from .memory import (
     ModularAutoOffloadTesterMixin,
     ModularGroupOffloadTesterMixin,
@@ -23,8 +22,6 @@ __all__ = [
     "ModularGroupOffloadTesterMixin",
     "ModularGuiderTesterMixin",
     "ModularLoadingTesterMixin",
-    "ModularLoraMemoryTesterMixin",
-    "ModularLoraTesterMixin",
     "ModularMemoryTesterMixin",
     "ModularOffloadTesterMixin",
     "ModularPipelineTesterMixin",

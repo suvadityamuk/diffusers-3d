@@ -1,0 +1,26 @@
+Meta SAM 3D Objects integration notice
+
+The mixture-of-transformers sparse-structure flow, condition embedders, image, mask and pointmap preprocessing, layout
+decoding, sparse-structure pruning and downsampling, sampler settings, and checkpoint key mapping in this directory are
+modified from:
+
+  facebookresearch/sam-3d-objects
+  https://github.com/facebookresearch/sam-3d-objects
+  revision f91db411c50efee93d8db7aeb323885650f6f722
+
+Those portions are SAM Materials provided under the accompanying SAM License (LICENSE-SAM):
+
+  SAM License, Last Updated: November 19, 2025
+  Copyright (c) Meta Platforms, Inc. and affiliates.
+
+The SAM License is not an open-source license; it restricts certain uses and requires that a copy of it accompany any
+redistribution of SAM Materials or derivative works. If you publish research results obtained with these materials,
+you must acknowledge their use. All ported source files carry a prominent modification notice.
+
+The released checkpoint (facebook/sam-3d-objects) is distributed by Meta under the same SAM License and is not
+included in this package. It embeds DINOv2 ViT-L/14 (with registers) image encoders; DINOv2 was originally released
+by Meta under the Apache License 2.0.
+
+The TRELLIS stages this family reuses (sparse-structure decoder, structured-latent flow, Gaussian and mesh decoders,
+scheduler) live in ../trellis and keep their MIT License and notice. Independently written diffusers-3d package glue
+remains under the package Apache-2.0 license. No affiliation, sponsorship, or endorsement by Meta is claimed.

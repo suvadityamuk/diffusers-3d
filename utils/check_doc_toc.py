@@ -69,6 +69,14 @@ def clean_doc_toc(doc_list):
     return result
 
 
+def _find_section(sections, title):
+    """Return the index of the section with `title`, or None when the toc has no such section."""
+    for idx, section in enumerate(sections):
+        if section["title"] == title:
+            return idx
+    return None
+
+
 def check_scheduler_doc(overwrite=False):
     with open(PATH_TO_TOC, encoding="utf-8") as f:
         content = yaml.safe_load(f.read())
@@ -80,9 +88,9 @@ def check_scheduler_doc(overwrite=False):
     api_doc = content[api_idx]["sections"]
 
     # Then to the model doc
-    scheduler_idx = 0
-    while api_doc[scheduler_idx]["title"] != "Schedulers":
-        scheduler_idx += 1
+    scheduler_idx = _find_section(api_doc, "Schedulers")
+    if scheduler_idx is None:
+        return
 
     scheduler_doc = api_doc[scheduler_idx]["sections"]
     new_scheduler_doc = clean_doc_toc(scheduler_doc)
@@ -115,9 +123,9 @@ def check_pipeline_doc(overwrite=False):
     api_doc = content[api_idx]["sections"]
 
     # Then to the model doc
-    pipeline_idx = 0
-    while api_doc[pipeline_idx]["title"] != "Pipelines":
-        pipeline_idx += 1
+    pipeline_idx = _find_section(api_doc, "Pipelines")
+    if pipeline_idx is None:
+        return
 
     diff = False
     pipeline_docs = api_doc[pipeline_idx]["sections"]
@@ -164,9 +172,9 @@ def check_model_doc(overwrite=False):
     api_doc = content[api_idx]["sections"]
 
     # Then to the model doc
-    model_idx = 0
-    while api_doc[model_idx]["title"] != "Models":
-        model_idx += 1
+    model_idx = _find_section(api_doc, "Models")
+    if model_idx is None:
+        return
 
     diff = False
     model_docs = api_doc[model_idx]["sections"]

@@ -1,0 +1,46 @@
+VAST-AI TripoSG integration notice
+
+Portions of the rectified-flow transformer and shape-VAE decoder architecture,
+image preprocessing, sampling equations, and hierarchical surface extraction in
+this family are modified from:
+
+  VAST-AI-Research/TripoSG
+  https://github.com/VAST-AI-Research/TripoSG
+  revision fc5c40990181e2a756c4e0b1c2f4d6b5202faf8c
+
+Those portions are provided under the accompanying MIT License:
+
+  MIT License
+  Copyright (c) 2025 VAST-AI-Research and contributors.
+
+All ported source files carry a prominent modification notice. Independently
+written diffusers-3d package glue remains under the package Apache-2.0 license.
+
+The upstream transformer file states that it is based on Tencent HunyuanDiT.
+The upstream NOTICE reads:
+
+  This software contains code derived from HunyuanDiT
+  (https://github.com/Tencent/HunyuanDiT). Notice: Tencent Hunyuan is licensed
+  under the Tencent Hunyuan Community License Agreement, Copyright © 2024
+  Tencent. All Rights Reserved. The trademark rights of “Tencent Hunyuan” are
+  owned by Tencent or its affiliate.
+
+This family implements the TripoSG transformer architecture with Diffusers
+building blocks (Apache-2.0). Whether that architecture's HunyuanDiT
+derivation carries Tencent Hunyuan Community License obligations for this code
+has not been determined.
+
+Not included:
+
+- the FlashVDM decoder, its attention processor, and flash_extract_geometry,
+  which upstream distributes under the Tencent Hunyuan FlashVDM Community
+  License Agreement (triposg/LICENSE upstream);
+- diso dual marching cubes (CC BY-NC 4.0);
+- the briaai/RMBG-1.4 background remover (bria-rmbg-1.4 license).
+
+Weights are not redistributed. The VAST-AI/TripoSG model card declares the MIT
+license; its DINOv2-L image encoder derives from facebook/dinov2-large
+(Apache-2.0). Converted checkpoints keep their own licenses.
+
+No affiliation, sponsorship, or endorsement by VAST-AI-Research, Tripo,
+Tencent, Meta, or BRIA AI is claimed.

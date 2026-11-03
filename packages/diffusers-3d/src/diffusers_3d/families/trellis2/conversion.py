@@ -1,0 +1,295 @@
+"""Convert a released TRELLIS.2 checkpoint layout into a Diffusers pipeline folder."""
+
+from __future__ import annotations
+
+import argparse
+import json
+import math
+from collections.abc import Mapping
+from pathlib import Path
+from typing import Any
+
+from diffusers import __version__ as diffusers_version
+
+from ..trellis.conversion import _component_source, _load_json, _save_component, _validate_normalization
+from .decoders import Trellis2PBRSparseDecoder, Trellis2ShapeDualGridDecoder, Trellis2SparseStructureDecoder
+from .models import DINOV3_VITL16_REPO, Trellis2SLatFlowModel, Trellis2SparseStructureFlowModel
+from .pipeline import RELEASED_STEMS, TRELLIS_IMAGE_LARGE_REPO, Trellis2ImageTo3DPipeline
+from .scheduler import Trellis2FlowEulerScheduler
+
+TRELLIS2_REFERENCE_REVISION = "75fbf0183001ed9876c8dbb35de6b68552ee08bd"
+
+_SLAT_FLOW_TYPES = {"SLatFlowModel": Trellis2SLatFlowModel, "ElasticSLatFlowModel": Trellis2SLatFlowModel}
+_COMPONENT_TYPES = {
+    "sparse_structure_flow_model": {"SparseStructureFlowModel": Trellis2SparseStructureFlowModel},
+    "sparse_structure_decoder": {"SparseStructureDecoder": Trellis2SparseStructureDecoder},
+    "shape_slat_flow_model_512": _SLAT_FLOW_TYPES,
+    "shape_slat_flow_model_1024": _SLAT_FLOW_TYPES,
+    "tex_slat_flow_model_512": _SLAT_FLOW_TYPES,
+    "tex_slat_flow_model_1024": _SLAT_FLOW_TYPES,
+    "shape_slat_decoder": {"FlexiDualGridVaeDecoder": Trellis2ShapeDualGridDecoder},
+    "tex_slat_decoder": {"SparseUnetVaeDecoder": Trellis2PBRSparseDecoder},
+}
+# Released ``pipeline.json`` model keys -> pipeline component subfolders.
+_OUTPUT_NAMES = {
+    "sparse_structure_flow_model": "sparse_structure_flow_model",
+    "sparse_structure_decoder": "sparse_structure_decoder",
+    "shape_slat_flow_model_512": "shape_slat_flow_model",
+    "shape_slat_flow_model_1024": "shape_slat_flow_model_1024",
+    "shape_slat_decoder": "shape_slat_decoder",
+    "tex_slat_flow_model_512": "texture_slat_flow_model",
+    "tex_slat_flow_model_1024": "texture_slat_flow_model_1024",
+    "tex_slat_decoder": "pbr_decoder",
+}
+_REQUIRED_COMPONENTS = {"sparse_structure_flow_model", "sparse_structure_decoder"}
+_OPTIONAL_OUTPUTS = (
+    "shape_slat_flow_model",
+    "shape_slat_flow_model_1024",
+    "shape_slat_decoder",
+    "texture_slat_flow_model",
+    "texture_slat_flow_model_1024",
+    "pbr_decoder",
+)
+_PIPELINE_ARGUMENTS = {
+    "default_pipeline_type",
+    "image_cond_model",
+    "models",
+    "rembg_model",
+    "shape_slat_normalization",
+    "shape_slat_sampler",
+    "sparse_structure_sampler",
+    "tex_slat_normalization",
+    "tex_slat_sampler",
+}
+
+
+def _validate_image_cond_model(image_model: object) -> None:
+    """The released DINOv3 conditioner, whose gated weights the pipeline loads from their own repository."""
+
+    if (
+        not isinstance(image_model, Mapping)
+        or image_model.get("name") != "DinoV3FeatureExtractor"
+        or not isinstance(image_model.get("args"), Mapping)
+    ):
+        raise ValueError("only the released DinoV3FeatureExtractor image conditioner is supported")
+    model_name = image_model["args"].get("model_name", DINOV3_VITL16_REPO)
+    if model_name != DINOV3_VITL16_REPO:
+        raise ValueError(
+            f"the image conditioner must be {DINOV3_VITL16_REPO}, which the pipeline loads; got {model_name}"
+        )
+
+
+def _save_released_component(
+    component_key: str, source_stem: Path, destination: Path, *, safe_serialization: bool = True
+) -> tuple[type[Any], dict[str, Any]]:
+    """Convert one released component pair into ``destination``, as :func:`convert_trellis2_checkpoint` does."""
+
+    return _save_component(
+        component_key,
+        source_stem,
+        destination,
+        model_types=_COMPONENT_TYPES[component_key],
+        family="TRELLIS.2",
+        safe_serialization=safe_serialization,
+    )
+
+
+# Components TRELLIS.2 references from another release; the pipeline loads them from there (see
+# ``Trellis2ImageTo3DPipeline.external_components``), so they are named in ``model_index.json`` but not converted.
+_EXTERNAL_REFERENCES = {
+    "sparse_structure_decoder": f"{TRELLIS_IMAGE_LARGE_REPO}/{RELEASED_STEMS['sparse_structure_decoder']}",
+}
+
+
+def _validate_sampler(value: object, *, name: str) -> tuple[float, dict[str, Any]]:
+    if not isinstance(value, Mapping) or set(value) != {"name", "args", "params"}:
+        raise ValueError(f"{name} must contain exactly 'name', 'args', and 'params'")
+    if value["name"] != "FlowEulerGuidanceIntervalSampler":
+        raise ValueError(f"{name} must use FlowEulerGuidanceIntervalSampler")
+    args = value["args"]
+    params = value["params"]
+    expected_params = {"steps", "guidance_strength", "guidance_rescale", "guidance_interval", "rescale_t"}
+    if not isinstance(args, Mapping) or set(args) != {"sigma_min"}:
+        raise ValueError(f"{name}.args must contain exactly 'sigma_min'")
+    if not isinstance(params, Mapping) or set(params) != expected_params:
+        raise ValueError(f"{name}.params must contain exactly {sorted(expected_params)}")
+    try:
+        normalized = {
+            "steps": int(params["steps"]),
+            "guidance_strength": float(params["guidance_strength"]),
+            "guidance_rescale": float(params["guidance_rescale"]),
+            "guidance_interval": [float(value) for value in params["guidance_interval"]],
+            "rescale_t": float(params["rescale_t"]),
+        }
+        sigma_min = float(args["sigma_min"])
+    except (TypeError, ValueError) as error:
+        raise ValueError(f"{name} contains non-numeric sampler values") from error
+    if (
+        isinstance(params["steps"], bool)
+        or normalized["steps"] <= 0
+        or not math.isfinite(sigma_min)
+        or not 0 <= sigma_min < 1
+        or not math.isfinite(normalized["guidance_strength"])
+        or not 0 <= normalized["guidance_rescale"] <= 1
+        or len(normalized["guidance_interval"]) != 2
+        or not 0 <= normalized["guidance_interval"][0] <= normalized["guidance_interval"][1] <= 1
+        or normalized["rescale_t"] <= 0
+    ):
+        raise ValueError(f"{name} contains invalid sampler values")
+    return sigma_min, normalized
+
+
+def convert_trellis2_checkpoint(
+    source_directory: str | Path,
+    output_directory: str | Path,
+    *,
+    safe_serialization: bool = True,
+) -> Path:
+    """Convert a released TRELLIS.2 ``pipeline.json`` plus component pairs into a Diffusers pipeline folder.
+
+    Every model named in ``pipeline.json`` is converted; the two sparse-structure components are required, the
+    SLAT flow models and decoders are optional (a pipeline without them only produces sparse structures).
+    Component references are resolved relative to ``source_directory`` and then as-is. Only TRELLIS.2's own networks
+    are converted: the sparse-structure decoder it references from ``microsoft/TRELLIS-image-large`` and the gated
+    DINOv3 ``image_encoder`` are named in ``model_index.json`` but never read or written, and the pipeline loads them
+    from those repositories at pinned revisions.
+    """
+
+    source = Path(source_directory)
+    pipeline_path = source / "pipeline.json"
+    pipeline_config = _load_json(pipeline_path)
+    if set(pipeline_config) != {"name", "args"} or pipeline_config["name"] != "Trellis2ImageTo3DPipeline":
+        raise ValueError("pipeline.json must describe Trellis2ImageTo3DPipeline with exact name/args keys")
+    args = pipeline_config["args"]
+    if not isinstance(args, Mapping) or set(args) != _PIPELINE_ARGUMENTS:
+        raise ValueError(f"pipeline args must contain exactly {sorted(_PIPELINE_ARGUMENTS)}")
+    image_model = args["image_cond_model"]
+    _validate_image_cond_model(image_model)
+    models = args["models"]
+    if not isinstance(models, Mapping):
+        raise ValueError("pipeline args.models must be a mapping")
+    missing = _REQUIRED_COMPONENTS.difference(models)
+    unknown = set(models).difference(_COMPONENT_TYPES)
+    if missing or unknown:
+        raise ValueError(f"pipeline component mismatch: missing={sorted(missing)}, unknown={sorted(unknown)}")
+
+    destination = Path(output_directory)
+    destination.mkdir(parents=True, exist_ok=True)
+    component_index: dict[str, list[str | None]] = {}
+    component_report: dict[str, dict[str, Any]] = {}
+    for component_key, reference in models.items():
+        if not isinstance(reference, str) or not reference:
+            raise ValueError(f"pipeline model reference {component_key!r} must be a non-empty string")
+        output_name = _OUTPUT_NAMES[component_key]
+        if component_key in _EXTERNAL_REFERENCES:
+            if reference != _EXTERNAL_REFERENCES[component_key]:
+                raise ValueError(
+                    f"{component_key} must reference {_EXTERNAL_REFERENCES[component_key]}, which the pipeline "
+                    f"loads; got {reference!r}"
+                )
+            model_type = next(iter(_COMPONENT_TYPES[component_key].values()))
+            component_index[output_name] = [model_type.__module__, model_type.__name__]
+            continue
+        model_type, model_config = _save_component(
+            component_key,
+            _component_source(source, reference),
+            destination / output_name,
+            model_types=_COMPONENT_TYPES[component_key],
+            family="TRELLIS.2",
+            safe_serialization=safe_serialization,
+        )
+        component_index[output_name] = [model_type.__module__, model_type.__name__]
+        component_report[output_name] = {
+            "source": reference,
+            "target": output_name,
+            "class": model_type.__name__,
+            "config": model_config,
+        }
+
+    component_index["image_encoder"] = ["transformers", "DINOv3ViTModel"]
+
+    sampler_values = {}
+    for source_name, output_name, required_component in (
+        ("sparse_structure_sampler", "sparse_structure_scheduler", "sparse_structure_flow_model"),
+        ("shape_slat_sampler", "shape_slat_scheduler", "shape_slat_flow_model"),
+        ("tex_slat_sampler", "texture_slat_scheduler", "texture_slat_flow_model"),
+    ):
+        sigma_min, parameters = _validate_sampler(args[source_name], name=source_name)
+        sampler_values[source_name] = parameters
+        has_component = required_component in component_index or f"{required_component}_1024" in component_index
+        if has_component:
+            scheduler = Trellis2FlowEulerScheduler(sigma_min=sigma_min)
+            scheduler.save_pretrained(destination / output_name)
+            component_index[output_name] = [Trellis2FlowEulerScheduler.__module__, Trellis2FlowEulerScheduler.__name__]
+        else:
+            component_index[output_name] = [None, None]
+    for optional in _OPTIONAL_OUTPUTS:
+        component_index.setdefault(optional, [None, None])
+
+    def normalization(name: str, *flow_names: str) -> tuple[list[float] | None, list[float] | None]:
+        mean, std = _validate_normalization(args[name], name=name)
+        converted = [component_report[flow] for flow in flow_names if flow in component_report]
+        if not converted:
+            return None, None
+        for flow in converted:
+            if len(mean) != int(flow["config"]["out_channels"]):
+                raise ValueError(f"{name} must match the converted flow output channels")
+        return mean, std
+
+    shape_mean, shape_std = normalization(
+        "shape_slat_normalization", "shape_slat_flow_model", "shape_slat_flow_model_1024"
+    )
+    texture_mean, texture_std = normalization(
+        "tex_slat_normalization", "texture_slat_flow_model", "texture_slat_flow_model_1024"
+    )
+    default_pipeline_type = Trellis2ImageTo3DPipeline._validate_pipeline_type(args["default_pipeline_type"])
+    model_index: dict[str, Any] = {
+        "_class_name": Trellis2ImageTo3DPipeline.__name__,
+        "_diffusers_version": diffusers_version,
+        **component_index,
+        "shape_slat_mean": shape_mean,
+        "shape_slat_std": shape_std,
+        "texture_slat_mean": texture_mean,
+        "texture_slat_std": texture_std,
+        "default_pipeline_type": default_pipeline_type,
+        "image_size": int(image_model["args"].get("image_size", 512)),
+        "sparse_structure_sampler_defaults": sampler_values["sparse_structure_sampler"],
+        "shape_slat_sampler_defaults": sampler_values["shape_slat_sampler"],
+        "texture_slat_sampler_defaults": sampler_values["tex_slat_sampler"],
+        "capability_limitations": {"official_full_checkpoint_parity": False, "production_gpu_quality_verified": False},
+    }
+    (destination / "model_index.json").write_text(
+        json.dumps(model_index, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+    )
+    report = {
+        "components": component_report,
+        "reference_revision": TRELLIS2_REFERENCE_REVISION,
+        "samplers": sampler_values,
+        "source_pipeline": str(pipeline_path.resolve()),
+        "production_gpu_quality_verified": False,
+    }
+    (destination / "trellis2_conversion.json").write_text(
+        json.dumps(report, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+    )
+    return destination
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("source_directory", type=Path)
+    parser.add_argument("output_directory", type=Path)
+    parser.add_argument("--no-safe-serialization", action="store_true")
+    args = parser.parse_args(argv)
+    convert_trellis2_checkpoint(
+        args.source_directory,
+        args.output_directory,
+        safe_serialization=not args.no_safe_serialization,
+    )
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
+
+
+__all__ = ["TRELLIS2_REFERENCE_REVISION", "convert_trellis2_checkpoint", "main"]

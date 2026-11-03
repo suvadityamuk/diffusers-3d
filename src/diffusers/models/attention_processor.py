@@ -312,7 +312,6 @@ class Attention(nn.Module):
         self,
         use_xla_flash_attention: bool,
         partition_spec: tuple[str | None, ...] | None = None,
-        is_flux=False,
     ) -> None:
         r"""
         Set whether to use xla flash attention from `torch_xla` or not.
@@ -331,10 +330,7 @@ class Attention(nn.Module):
             elif is_spmd() and is_torch_xla_version("<", "2.4"):
                 raise "flash attention pallas kernel using SPMD is supported from torch_xla version 2.4"
             else:
-                if is_flux:
-                    processor = XLAFluxFlashAttnProcessor2_0(partition_spec)
-                else:
-                    processor = XLAFlashAttnProcessor2_0(partition_spec)
+                processor = XLAFlashAttnProcessor2_0(partition_spec)
         else:
             processor = (
                 AttnProcessor2_0() if hasattr(F, "scaled_dot_product_attention") and self.scale_qk else AttnProcessor()
@@ -5502,111 +5498,6 @@ class PAGIdentitySanaLinearAttnProcessor2_0:
         return hidden_states
 
 
-class FluxAttnProcessor2_0:
-    def __new__(cls, *args, **kwargs):
-        deprecation_message = "`FluxAttnProcessor2_0` is deprecated and this will be removed in a future version. Please use `FluxAttnProcessor`"
-        deprecate("FluxAttnProcessor2_0", "1.0.0", deprecation_message)
-
-        from .transformers.transformer_flux import FluxAttnProcessor
-
-        return FluxAttnProcessor(*args, **kwargs)
-
-
-class FluxSingleAttnProcessor2_0:
-    r"""
-    Processor for implementing scaled dot-product attention (enabled by default if you're using PyTorch 2.0).
-    """
-
-    def __new__(cls, *args, **kwargs):
-        deprecation_message = "`FluxSingleAttnProcessor` is deprecated and will be removed in a future version. Please use `FluxAttnProcessorSDPA` instead."
-        deprecate("FluxSingleAttnProcessor2_0", "1.0.0", deprecation_message)
-
-        from .transformers.transformer_flux import FluxAttnProcessor
-
-        return FluxAttnProcessor(*args, **kwargs)
-
-
-class FusedFluxAttnProcessor2_0:
-    def __new__(cls, *args, **kwargs):
-        deprecation_message = "`FusedFluxAttnProcessor2_0` is deprecated and this will be removed in a future version. Please use `FluxAttnProcessor`"
-        deprecate("FusedFluxAttnProcessor2_0", "1.0.0", deprecation_message)
-
-        from .transformers.transformer_flux import FluxAttnProcessor
-
-        return FluxAttnProcessor(*args, **kwargs)
-
-
-class FluxIPAdapterJointAttnProcessor2_0:
-    def __new__(cls, *args, **kwargs):
-        deprecation_message = "`FluxIPAdapterJointAttnProcessor2_0` is deprecated and this will be removed in a future version. Please use `FluxIPAdapterAttnProcessor`"
-        deprecate("FluxIPAdapterJointAttnProcessor2_0", "1.0.0", deprecation_message)
-
-        from .transformers.transformer_flux import FluxIPAdapterAttnProcessor
-
-        return FluxIPAdapterAttnProcessor(*args, **kwargs)
-
-
-class FluxAttnProcessor2_0_NPU:
-    def __new__(cls, *args, **kwargs):
-        deprecation_message = (
-            "FluxAttnProcessor2_0_NPU is deprecated and will be removed in a future version. An "
-            "alternative solution to use NPU Flash Attention will be provided in the future."
-        )
-        deprecate("FluxAttnProcessor2_0_NPU", "1.0.0", deprecation_message, standard_warn=False)
-
-        from .transformers.transformer_flux import FluxAttnProcessor
-
-        processor = FluxAttnProcessor()
-        processor._attention_backend = "_native_npu"
-        return processor
-
-
-class FusedFluxAttnProcessor2_0_NPU:
-    def __new__(self):
-        deprecation_message = (
-            "FusedFluxAttnProcessor2_0_NPU is deprecated and will be removed in a future version. An "
-            "alternative solution to use NPU Flash Attention will be provided in the future."
-        )
-        deprecate("FusedFluxAttnProcessor2_0_NPU", "1.0.0", deprecation_message, standard_warn=False)
-
-        from .transformers.transformer_flux import FluxAttnProcessor
-
-        processor = FluxAttnProcessor()
-        processor._attention_backend = "_fused_npu"
-        return processor
-
-
-class XLAFluxFlashAttnProcessor2_0:
-    r"""
-    Processor for implementing scaled dot-product attention with pallas flash attention kernel if using `torch_xla`.
-    """
-
-    def __new__(cls, *args, **kwargs):
-        deprecation_message = (
-            "XLAFluxFlashAttnProcessor2_0 is deprecated and will be removed in diffusers 1.0.0. An "
-            "alternative solution to using XLA Flash Attention will be provided in the future."
-        )
-        deprecate("XLAFluxFlashAttnProcessor2_0", "1.0.0", deprecation_message, standard_warn=False)
-
-        if is_torch_xla_version("<", "2.3"):
-            raise ImportError("XLA flash attention requires torch_xla version >= 2.3.")
-        if is_spmd() and is_torch_xla_version("<", "2.4"):
-            raise ImportError("SPMD support for XLA flash attention needs torch_xla version >= 2.4.")
-
-        from .transformers.transformer_flux import FluxAttnProcessor
-
-        if len(args) > 0 or kwargs.get("partition_spec", None) is not None:
-            deprecation_message = (
-                "partition_spec was not used in the processor implementation when it was added. Passing it "
-                "is a no-op and support for it will be removed."
-            )
-            deprecate("partition_spec", "1.0.0", deprecation_message)
-
-        processor = FluxAttnProcessor(*args, **kwargs)
-        processor._attention_backend = "_native_xla"
-        return processor
-
-
 ADDED_KV_ATTENTION_PROCESSORS = (
     AttnAddedKVProcessor,
     SlicedAttnAddedKVProcessor,
@@ -5621,7 +5512,6 @@ CROSS_ATTENTION_PROCESSORS = (
     SlicedAttnProcessor,
     IPAdapterAttnProcessor,
     IPAdapterAttnProcessor2_0,
-    FluxIPAdapterJointAttnProcessor2_0,
 )
 
 AttentionProcessor = (
@@ -5636,10 +5526,6 @@ AttentionProcessor = (
     | AllegroAttnProcessor2_0
     | AuraFlowAttnProcessor2_0
     | FusedAuraFlowAttnProcessor2_0
-    | FluxAttnProcessor2_0
-    | FluxAttnProcessor2_0_NPU
-    | FusedFluxAttnProcessor2_0
-    | FusedFluxAttnProcessor2_0_NPU
     | CogVideoXAttnProcessor2_0
     | FusedCogVideoXAttnProcessor2_0
     | XFormersAttnAddedKVProcessor

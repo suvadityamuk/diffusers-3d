@@ -19,7 +19,6 @@ import logging
 import pytest
 import torch
 
-from diffusers import AutoencoderKL
 from diffusers.hooks import HookRegistry, ModelHook
 from diffusers.models import ModelMixin
 from diffusers.pipelines.pipeline_utils import DiffusionPipeline
@@ -442,28 +441,6 @@ class TestGroupOffload:
                 cumulated_absmax += absmax
             assert cumulated_absmax < 1e-5, f"Output differences for {name} exceeded threshold: {cumulated_absmax:.5f}"
 
-    def test_vae_like_model_without_streams(self):
-        """Test VAE-like model with block-level offloading but without streams."""
-        if torch.device(torch_device).type not in ["cuda", "xpu"]:
-            return
-
-        config = self.get_autoencoder_kl_config()
-        model = AutoencoderKL(**config)
-
-        model_ref = AutoencoderKL(**config)
-        model_ref.load_state_dict(model.state_dict(), strict=True)
-        model_ref.to(torch_device)
-
-        model.enable_group_offload(torch_device, offload_type="block_level", num_blocks_per_group=1, use_stream=False)
-
-        x = torch.randn(2, 3, 32, 32).to(torch_device)
-
-        with torch.no_grad():
-            out_ref = model_ref(x).sample
-            out = model(x).sample
-
-        assert torch.allclose(out_ref, out, atol=1e-5), "Outputs do not match for VAE-like model without streams."
-
     def test_model_with_only_standalone_layers(self):
         """Test that models with only standalone layers (no ModuleList/Sequential) work with block-level offloading."""
         if torch.device(torch_device).type not in ["cuda", "xpu"]:
@@ -486,53 +463,6 @@ class TestGroupOffload:
                 assert torch.allclose(out_ref, out, atol=1e-5), (
                     f"Outputs do not match at iteration {i} for model with standalone layers."
                 )
-
-    @pytest.mark.parametrize("offload_type", ["block_level", "leaf_level"])
-    def test_standalone_conv_layers_with_both_offload_types(self, offload_type: str):
-        """Test that standalone Conv2d layers work correctly with both block-level and leaf-level offloading."""
-        if torch.device(torch_device).type not in ["cuda", "xpu"]:
-            return
-
-        config = self.get_autoencoder_kl_config()
-        model = AutoencoderKL(**config)
-
-        model_ref = AutoencoderKL(**config)
-        model_ref.load_state_dict(model.state_dict(), strict=True)
-        model_ref.to(torch_device)
-
-        model.enable_group_offload(torch_device, offload_type=offload_type, num_blocks_per_group=1, use_stream=True)
-
-        x = torch.randn(2, 3, 32, 32).to(torch_device)
-
-        with torch.no_grad():
-            out_ref = model_ref(x).sample
-            out = model(x).sample
-
-        assert torch.allclose(out_ref, out, atol=1e-5), (
-            f"Outputs do not match for standalone Conv layers with {offload_type}."
-        )
-
-    def test_multiple_invocations_with_vae_like_model(self):
-        """Test that multiple forward passes work correctly with VAE-like model."""
-        if torch.device(torch_device).type not in ["cuda", "xpu"]:
-            return
-
-        config = self.get_autoencoder_kl_config()
-        model = AutoencoderKL(**config)
-
-        model_ref = AutoencoderKL(**config)
-        model_ref.load_state_dict(model.state_dict(), strict=True)
-        model_ref.to(torch_device)
-
-        model.enable_group_offload(torch_device, offload_type="block_level", num_blocks_per_group=1, use_stream=True)
-
-        x = torch.randn(2, 3, 32, 32).to(torch_device)
-
-        with torch.no_grad():
-            for i in range(2):
-                out_ref = model_ref(x).sample
-                out = model(x).sample
-                assert torch.allclose(out_ref, out, atol=1e-5), f"Outputs do not match at iteration {i}."
 
     def test_nested_container_parameters_offloading(self):
         """Test that parameters from non-computational layers in nested containers are handled correctly."""

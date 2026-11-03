@@ -24,7 +24,6 @@ else:
     FSDP = None
     transformer_auto_wrap_policy = None
 
-from .models import UNet2DConditionModel
 from .pipelines import DiffusionPipeline
 from .schedulers import SchedulerMixin
 from .utils import (
@@ -246,7 +245,7 @@ def resolve_interpolation_mode(interpolation_type: str):
 
 
 def compute_dream_and_update_latents(
-    unet: UNet2DConditionModel,
+    unet: torch.nn.Module,
     noise_scheduler: SchedulerMixin,
     timesteps: torch.Tensor,
     noise: torch.Tensor,
@@ -297,25 +296,6 @@ def compute_dream_and_update_latents(
         raise ValueError(f"Unknown prediction type {noise_scheduler.config.prediction_type}")
 
     return _noisy_latents, _target
-
-
-def unet_lora_state_dict(unet: UNet2DConditionModel) -> dict[str, torch.Tensor]:
-    r"""
-    Returns:
-        A state dict containing just the LoRA parameters.
-    """
-    lora_state_dict = {}
-
-    for name, module in unet.named_modules():
-        if hasattr(module, "set_lora_layer"):
-            lora_layer = getattr(module, "lora_layer")
-            if lora_layer is not None:
-                current_lora_layer_sd = lora_layer.state_dict()
-                for lora_layer_matrix_name, lora_param in current_lora_layer_sd.items():
-                    # The matrix name can either be "down" or "up".
-                    lora_state_dict[f"{name}.lora.{lora_layer_matrix_name}"] = lora_param
-
-    return lora_state_dict
 
 
 def cast_training_params(model: torch.nn.Module | list[torch.nn.Module], dtype=torch.float32):

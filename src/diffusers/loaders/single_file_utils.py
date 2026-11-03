@@ -848,7 +848,6 @@ def set_image_size(checkpoint, image_size=None):
     return image_size
 
 
-# Copied from diffusers.pipelines.stable_diffusion.convert_from_ckpt.conv_attn_to_linear
 def conv_attn_to_linear(checkpoint):
     keys = list(checkpoint.keys())
     attn_keys = ["query.weight", "key.weight", "value.weight"]

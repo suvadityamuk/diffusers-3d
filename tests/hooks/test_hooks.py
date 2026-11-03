@@ -264,7 +264,8 @@ class TestHooks:
         input = torch.zeros(1, 4, device=torch_device)
 
         registry.register_hook(SkipLayerHook(skip_layer=True), "skip_layer_hook")
-        with pytest.raises(RuntimeError, match="mat1 and mat2 shapes cannot be multiplied"):
+        # torch < 2.9: "mat1 and mat2 shapes cannot be multiplied"; newer: "input and weight.T shapes cannot be multiplied"
+        with pytest.raises(RuntimeError, match="shapes cannot be multiplied"):
             self.model(input).mean().detach().cpu().item()
 
         registry.remove_hook("skip_layer_hook")

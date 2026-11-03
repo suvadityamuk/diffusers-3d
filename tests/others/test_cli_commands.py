@@ -26,7 +26,6 @@ from types import SimpleNamespace
 
 import pytest
 import torch
-from huggingface_hub.cli._output import OutputFormat, out
 from PIL import Image
 
 from diffusers.commands.custom_blocks import CustomBlocksCommand
@@ -37,7 +36,6 @@ from diffusers.commands.run import (
     _download_outputs_from_sandbox,
     _kwargs_to_argv,
     _load_lora,
-    _load_pipeline,
     _parse_pipeline_kwargs,
     _resolve_dtype,
     _resolve_media_inputs,
@@ -45,12 +43,7 @@ from diffusers.commands.run import (
     _unwrap_pipeline_output,
     _upload_inputs_to_sandbox,
 )
-from diffusers.commands.schema import SchemaCommand, _parse_docstring_args
-from diffusers.utils.testing_utils import (
-    require_accelerator,
-    require_kernels_version_greater_or_equal,
-    require_torch_gpu,
-)
+from diffusers.commands.schema import _parse_docstring_args
 
 
 AVAILABLE_COMMANDS = ("env", "fp16_safetensors", "custom_blocks", "run", "schema", "skills")
@@ -178,15 +171,8 @@ class TestRunCommand:
             "vae_tiling": True,
         }
 
-    # -----------------------------------------------------------------------
-    # Route flags through the CLI parser and call `_load_pipeline` directly to assert
-    # their effect on a real tiny pipeline. `hf-internal-testing/tiny-flux-pipe` is small
-    # enough to load without a GPU and is already used across the pipeline suite.
-    # -----------------------------------------------------------------------
-
-    pretrained_model_name_or_path = "hf-internal-testing/tiny-flux-pipe"
-
     def _parse_run_argv(self, extra_argv: list[str]) -> Namespace:
+        # Only parses argv; no pipeline is loaded, so the model id is just a placeholder string.
         parser = ArgumentParser()
         subparsers = parser.add_subparsers()
         RunCommand.register_subcommand(subparsers)
@@ -194,72 +180,12 @@ class TestRunCommand:
             [
                 "run",
                 "--model",
-                self.pretrained_model_name_or_path,
+                "org/model",
                 "--pipeline-kwargs",
                 '{"prompt": "a cat"}',
                 *extra_argv,
             ]
         )
-
-    @require_torch_gpu
-    def test_group_offload_arg(self):
-        from diffusers.hooks.group_offloading import _is_group_offload_enabled
-
-        args = self._parse_run_argv(["--cpu-offload", "group"])
-        pipeline = _load_pipeline(args)
-        assert _is_group_offload_enabled(pipeline.transformer)
-
-    @require_accelerator
-    def test_model_cpu_offload_arg(self):
-        import accelerate
-
-        args = self._parse_run_argv(["--cpu-offload", "model"])
-        pipeline = _load_pipeline(args)
-        assert isinstance(pipeline.transformer._hf_hook, accelerate.hooks.CpuOffload)
-
-    def test_vae_tiling_arg(self):
-        args = self._parse_run_argv(["--vae-tiling"])
-        pipeline = _load_pipeline(args)
-        assert pipeline.vae.use_tiling is True
-
-    def test_vae_slicing_arg(self):
-        args = self._parse_run_argv(["--vae-slicing"])
-        pipeline = _load_pipeline(args)
-        assert pipeline.vae.use_slicing is True
-
-    @require_torch_gpu
-    def test_compile_arg(self):
-        args = self._parse_run_argv(["--compile"])
-        pipeline = _load_pipeline(args)
-        # `FluxTransformer2DModel` declares `_repeated_blocks`, so `_compile_denoiser` takes the
-        # regional path: `compile_repeated_blocks` calls `nn.Module.compile()` on each repeated
-        # block, which sets that block's `_compiled_call_impl` in place (no `OptimizedModule`
-        # wrapper, hence no `_orig_mod`, is created).
-        compiled_blocks = [
-            m for m in pipeline.transformer.modules() if m.__class__.__name__ in pipeline.transformer._repeated_blocks
-        ]
-        assert compiled_blocks
-        assert all(m._compiled_call_impl is not None for m in compiled_blocks)
-
-    @require_torch_gpu
-    # `--attention-backend` only exposes Hub-hosted kernels, all of which need `kernels>=0.12`.
-    @require_kernels_version_greater_or_equal("0.12")
-    def test_attention_backend_arg(self):
-        from diffusers.models.attention_dispatch import AttentionBackendName
-
-        args = self._parse_run_argv(["--attention-backend", "flash_hub"])
-        try:
-            pipeline = _load_pipeline(args)
-        except FileNotFoundError as e:
-            # The Hub kernel has no prebuilt variant for this torch/CUDA/arch combination.
-            pytest.skip(f"`flash_hub` kernel unavailable in this environment: {e}")
-        # `set_attention_backend` stamps each attention processor's `_attention_backend` attr.
-        backends = {
-            m.processor._attention_backend
-            for m in pipeline.transformer.modules()
-            if hasattr(m, "processor") and hasattr(m.processor, "_attention_backend")
-        }
-        assert backends == {AttentionBackendName.FLASH_HUB}
 
     def test_save_output_video_saves_mp4_and_frames(self, tmp_path, monkeypatch):
         # `output_type="pt"` video is (B, F, C, H, W) from `postprocess_video`: one mp4 per batch
@@ -387,8 +313,6 @@ class TestRunCommand:
 
 
 class TestSchemaCommand:
-    pretrained_model_name_or_path = "hf-internal-testing/tiny-flux-pipe"
-
     def test_parse_docstring_args(self):
         docstring = """Description.
 
@@ -402,26 +326,6 @@ class TestSchemaCommand:
         assert result["steps"] == "Steps to run."
         assert "wraps across multiple lines" in result["prompt"]
         assert "\n" not in result["prompt"]
-
-    def test_schema(self, monkeypatch):
-        # End-to-end: parse real argv → SchemaCommand.run → capture the emitted payload and
-        # verify it contains the pipeline class + at least a `prompt` input parsed from the
-        # pipeline's `__call__` signature.
-        captured: dict = {}
-        monkeypatch.setattr(out, "dict", lambda payload: captured.update(payload))
-
-        parser = ArgumentParser()
-        subparsers = parser.add_subparsers()
-        SchemaCommand.register_subcommand(subparsers)
-        args = parser.parse_args(["schema", "-m", self.pretrained_model_name_or_path])
-
-        out.set_mode(OutputFormat.json)
-        args.func(args).run()
-
-        assert captured["pipeline_class"] == "FluxPipeline"
-        assert captured["model"] == self.pretrained_model_name_or_path
-        input_names = [p["name"] for p in captured["inputs"]]
-        assert "prompt" in input_names
 
 
 class TestCustomBlocksCommand:

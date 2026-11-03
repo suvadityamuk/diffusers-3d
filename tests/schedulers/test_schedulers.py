@@ -28,15 +28,11 @@ import diffusers
 from diffusers import (
     CMStochasticIterativeScheduler,
     DDIMScheduler,
-    DEISMultistepScheduler,
-    DiffusionPipeline,
     EDMEulerScheduler,
     EulerAncestralDiscreteScheduler,
     EulerDiscreteScheduler,
     IPNDMScheduler,
     LMSDiscreteScheduler,
-    PNDMScheduler,
-    UniPCMultistepScheduler,
     VQDiffusionScheduler,
 )
 from diffusers.configuration_utils import ConfigMixin, register_to_config
@@ -214,44 +210,6 @@ class SchedulerBaseTests(unittest.TestCase):
         assert cap_logger_1.out == ""
         assert cap_logger_2.out == "{'f'} was not found in config. Values will be initialized to default values.\n"
         assert cap_logger_3.out == "{'f'} was not found in config. Values will be initialized to default values.\n"
-
-    def test_default_arguments_not_in_config(self):
-        pipe = DiffusionPipeline.from_pretrained(
-            "hf-internal-testing/tiny-stable-diffusion-torch", torch_dtype=torch.float16
-        )
-        assert pipe.scheduler.__class__ == PNDMScheduler
-
-        # Default for PNDMScheduler
-        assert pipe.scheduler.config.timestep_spacing == "leading"
-
-        # Switch to a different one, verify we use the default for that class
-        pipe.scheduler = EulerDiscreteScheduler.from_config(pipe.scheduler.config)
-        assert pipe.scheduler.config.timestep_spacing == "linspace"
-
-        # Override with kwargs
-        pipe.scheduler = EulerDiscreteScheduler.from_config(pipe.scheduler.config, timestep_spacing="trailing")
-        assert pipe.scheduler.config.timestep_spacing == "trailing"
-
-        # Verify overridden kwargs stick
-        pipe.scheduler = LMSDiscreteScheduler.from_config(pipe.scheduler.config)
-        assert pipe.scheduler.config.timestep_spacing == "trailing"
-
-        # And stick
-        pipe.scheduler = LMSDiscreteScheduler.from_config(pipe.scheduler.config)
-        assert pipe.scheduler.config.timestep_spacing == "trailing"
-
-    def test_default_solver_type_after_switch(self):
-        pipe = DiffusionPipeline.from_pretrained(
-            "hf-internal-testing/tiny-stable-diffusion-torch", torch_dtype=torch.float16
-        )
-        assert pipe.scheduler.__class__ == PNDMScheduler
-
-        pipe.scheduler = DEISMultistepScheduler.from_config(pipe.scheduler.config)
-        assert pipe.scheduler.config.solver_type == "logrho"
-
-        # Switch to UniPC, verify the solver is the default
-        pipe.scheduler = UniPCMultistepScheduler.from_config(pipe.scheduler.config)
-        assert pipe.scheduler.config.solver_type == "bh2"
 
 
 class SchedulerCommonTest(unittest.TestCase):

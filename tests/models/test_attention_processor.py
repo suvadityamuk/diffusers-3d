@@ -1,15 +1,6 @@
-import importlib.metadata
-import tempfile
-
-import numpy as np
-import pytest
 import torch
-from packaging import version
 
-from diffusers import DiffusionPipeline
 from diffusers.models.attention_processor import Attention, AttnAddedKVProcessor
-
-from ..testing_utils import torch_device
 
 
 class TestAttnAddedKVProcessor:
@@ -80,55 +71,3 @@ class TestAttnAddedKVProcessor:
         only_cross_attn_out = attn(**forward_args)
 
         assert (only_cross_attn_out != self_and_cross_attn_out).all()
-
-
-class TestDeprecatedAttentionBlock:
-    @pytest.fixture(scope="session")
-    def is_dist_enabled(pytestconfig):
-        return pytestconfig.getoption("dist") == "loadfile"
-
-    @pytest.mark.xfail(
-        condition=(torch.device(torch_device).type == "cuda" and is_dist_enabled)
-        or version.parse(importlib.metadata.version("transformers")).is_devrelease,
-        reason="Test currently fails on our GPU CI because of `loadfile` or with source installation of transformers due to CLIPTextModel key prefix changes.",
-        strict=False,
-    )
-    def test_conversion_when_using_device_map(self):
-        pipe = DiffusionPipeline.from_pretrained(
-            "hf-internal-testing/tiny-stable-diffusion-torch", safety_checker=None
-        )
-
-        pre_conversion = pipe(
-            "foo",
-            num_inference_steps=2,
-            generator=torch.Generator("cpu").manual_seed(0),
-            output_type="np",
-        ).images
-
-        # the initial conversion succeeds
-        pipe = DiffusionPipeline.from_pretrained(
-            "hf-internal-testing/tiny-stable-diffusion-torch", device_map="balanced", safety_checker=None
-        )
-
-        conversion = pipe(
-            "foo",
-            num_inference_steps=2,
-            generator=torch.Generator("cpu").manual_seed(0),
-            output_type="np",
-        ).images
-
-        with tempfile.TemporaryDirectory() as tmpdir:
-            # save the converted model
-            pipe.save_pretrained(tmpdir)
-
-            # can also load the converted weights
-            pipe = DiffusionPipeline.from_pretrained(tmpdir, device_map="balanced", safety_checker=None)
-        after_conversion = pipe(
-            "foo",
-            num_inference_steps=2,
-            generator=torch.Generator("cpu").manual_seed(0),
-            output_type="np",
-        ).images
-
-        assert np.allclose(pre_conversion, conversion, atol=1e-3)
-        assert np.allclose(conversion, after_conversion, atol=1e-3)
