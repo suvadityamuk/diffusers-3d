@@ -11,6 +11,8 @@ Publishes one model repo per release under ``<owner>``:
   ``sam-3d-objects-diffusers-3d``, and ``Pixal3D-diffusers-3d``, each with its family's license and notice files.
 * ``Step1X-3D-Texture-diffusers-3d`` and ``Hunyuan3D-2.1-Paint-diffusers-3d``, the two mesh-texturing stages, with
   the license texts of the base models they redistribute.
+* ``Hunyuan3D-Omni-diffusers-3d``, ``TripoSR-diffusers-3d``, ``TripoSplat-diffusers-3d``, and ``idol-diffusers-3d``,
+  each with its family's license files.
 
 Only each model's own weights are published. Third-party components that a pipeline declares in
 ``external_components`` (DINOv3, DINOv2, NAF, MoGe, ...) are never converted or uploaded: the pipelines load them
@@ -44,6 +46,10 @@ REPOSITORIES = {
     "pixal3d": "Pixal3D-diffusers-3d",
     "step1x3d-texture": "Step1X-3D-Texture-diffusers-3d",
     "hunyuan3d-paint": "Hunyuan3D-2.1-Paint-diffusers-3d",
+    "hunyuan3d-omni": "Hunyuan3D-Omni-diffusers-3d",
+    "triposr": "TripoSR-diffusers-3d",
+    "triposplat": "TripoSplat-diffusers-3d",
+    "idol": "idol-diffusers-3d",
 }
 # Families whose license and notice files are copied into the published repo.
 FAMILY_PACKAGES = {
@@ -54,6 +60,14 @@ FAMILY_PACKAGES = {
     "pixal3d": "pixal3d",
     "step1x3d-texture": "step1x3d",
     "hunyuan3d-paint": "hunyuan3d",
+    "hunyuan3d-omni": "hunyuan3d_omni",
+    "triposr": "triposr",
+    "triposplat": "triposplat",
+    "idol": "idol",
+}
+# License files of other families that a release's weights or architecture also derive from: package -> files.
+EXTRA_FAMILY_LICENSES = {
+    "idol": {"triposplat": ["LICENSE-MIT"]},
 }
 # License texts of redistributed third-party weights that the family directories do not carry. Stability AI no longer
 # hosts Stable Diffusion 2.x, so the CreativeML Open RAIL++-M text comes from the SDXL release.
@@ -588,6 +602,185 @@ endorsed by Tencent, Stability AI, Meta, or the Real-ESRGAN authors.""",
     )
 
 
+_FLUX2_DINOV3_NOTE = """**DINOv3 and the FLUX.2 VAE are not included.** Both are gated third-party weights, so
+`from_pretrained` loads `image_encoder` from
+[facebook/dinov3-vith16plus-pretrain-lvd1689m](https://huggingface.co/facebook/dinov3-vith16plus-pretrain-lvd1689m)
+(DINOv3 License) and `vae` from the `vae/` folder of
+[black-forest-labs/FLUX.2-dev](https://huggingface.co/black-forest-labs/FLUX.2-dev) (FLUX non-commercial license),
+each at a pinned revision. Accept both licenses and log in (`hf auth login`) first; without access, loading raises an
+error that says so. Inputs without usable alpha are cut out with BiRefNet using
+[ZhengPeng7/BiRefNet](https://huggingface.co/ZhengPeng7/BiRefNet) weights (MIT), as upstream does
+(`pipeline.disable_background_removal()` skips it for inputs that already carry alpha)."""
+
+
+def card_hunyuan3d_omni(namespace: str, version: str, folder: Path) -> str:
+    return _family_card(
+        namespace=namespace,
+        version=version,
+        folder=folder,
+        repo=REPOSITORIES["hunyuan3d-omni"],
+        title="Hunyuan3D-Omni",
+        source="tencent/Hunyuan3D-Omni",
+        family="hunyuan3d-omni",
+        license="license: other\nlicense_name: tencent-hunyuan-3d-omni-community\nlicense_link: "
+        f"https://huggingface.co/{namespace}/{REPOSITORIES['hunyuan3d-omni']}/blob/main/LICENSE-TENCENT-HUNYUAN-3D-OMNI",
+        converter="diffusers-3d-convert-hunyuan3d-omni",
+        usage="""import numpy as np
+import torch
+from diffusers_3d import AutoPipelineForImageTo3D, ImageCondition
+
+pipeline = AutoPipelineForImageTo3D.from_pretrained("{repo}", dtype=torch.float16).to("cuda")
+bones = torch.from_numpy(np.loadtxt("a_pose_bone.txt")).float()  # (bones, 6)
+mesh = pipeline(ImageCondition(image=rgba), skeleton=bones, generator=torch.Generator("cuda").manual_seed(1234)).objects[0]""",
+        notes=_RGBA_NOTE + " Pass exactly one control, in the output mesh's normalized frame: `point_cloud` "
+        "`(points, 3)`, `voxels` `(points, 3)`, `bbox` `(3,)`, or `skeleton` `(bones, 6)`. The result is an "
+        "untextured `MeshAsset`. Defaults follow upstream's `inference.py` (50 steps, guidance 4.5, "
+        "`octree_resolution=512`). Its pymeshlab clean-up needs the GPL `meshlab` extra; `postprocess=False` skips "
+        "it. The DINOv2 image encoder is not included: it loads from "
+        "[facebook/dinov2-large](https://huggingface.co/facebook/dinov2-large) (Apache-2.0) at a pinned revision, "
+        "as upstream does. Weights are stored in float32 (the DiT is 12.2 GB); load with `dtype=torch.float16` to "
+        "run like upstream.",
+        license_text="""**Tencent Hunyuan 3D Omni is licensed under the Tencent Hunyuan 3D Omni Community License Agreement,
+Copyright © 2025 Tencent. All Rights Reserved. The trademark rights of "Tencent Hunyuan" are owned by Tencent or its
+affiliate.**
+
+This repository redistributes modified Tencent Hunyuan 3D Omni works: diffusers-3d converted the released weights
+into Diffusers component folders (parameters renamed; weight values unchanged). The license, including its
+Acceptable Use Policy and the use restrictions of its Sections 5(a) and 5(b), applies to everyone who uses these
+files; read `LICENSE-TENCENT-HUNYUAN-3D-OMNI` and `NOTICE` before use. The license **does not apply in the European
+Union, the United Kingdom, or South Korea**, products above 1 million monthly active users need a separate license
+from Tencent, and outputs may not be used to improve other AI models. This repository and diffusers-3d are not
+affiliated with, sponsored, or endorsed by Tencent.""",
+        extra_tags=("image-to-3d", "hunyuan3d"),
+    )
+
+
+def card_triposr(namespace: str, version: str, folder: Path) -> str:
+    return _family_card(
+        namespace=namespace,
+        version=version,
+        folder=folder,
+        repo=REPOSITORIES["triposr"],
+        title="TripoSR",
+        source="stabilityai/TripoSR",
+        family="triposr",
+        license="license: mit",
+        converter="diffusers-3d-convert-triposr",
+        usage="""from diffusers_3d import AutoPipelineForImageTo3D
+
+pipeline = AutoPipelineForImageTo3D.from_pretrained("{repo}").to("cuda")
+output = pipeline("chair.png")
+mesh = output.objects[0]
+frames = pipeline.render_views(output.latents.latents)  # (1, 30, 256, 256, 3)""",
+        notes="TripoSR is feed-forward: one pass gives triplanes, and marching cubes extracts a vertex-coloured "
+        "`MeshAsset` in TripoSR's Z-up frame. Defaults match upstream `run.py` (256³ grid, threshold 25, "
+        "foreground ratio 0.85). Inputs without usable alpha are cut out with rembg (u2net, the `background` extra), "
+        "as upstream does; `pipeline.disable_background_removal()` matches `--no-remove-bg`. The `image_encoder` is "
+        "TripoSR's own fine-tuned DINO ViT-B/16, with position embeddings baked at 512 px.",
+        license_text="""TripoSR weights and code: MIT License, Copyright (c) 2024 Tripo AI & Stability AI. See `LICENSE-MIT`
+and `NOTICE`. Not affiliated with or endorsed by Tripo AI or Stability AI.""",
+    )
+
+
+def card_triposplat(namespace: str, version: str, folder: Path) -> str:
+    return _family_card(
+        namespace=namespace,
+        version=version,
+        folder=folder,
+        repo=REPOSITORIES["triposplat"],
+        title="TripoSplat",
+        source="VAST-AI/TripoSplat",
+        family="triposplat",
+        license="license: mit",
+        converter="diffusers-3d-convert-triposplat",
+        usage="""import torch
+from diffusers_3d import AutoPipelineForImageTo3D, ImageCondition
+
+pipeline = AutoPipelineForImageTo3D.from_pretrained("{repo}").to("cuda")
+splat = pipeline(ImageCondition(image=rgba), generator=torch.Generator("cuda").manual_seed(42)).objects[0]""",
+        notes=_FLUX2_DINOV3_NOTE + "\n\nThe result is a `GaussianSplatAsset` (SH degree 0, inside `[-0.5, 0.5]^3`, "
+        "Z-up). Defaults match upstream: 20 steps, guidance 3.0, 262144 Gaussians. Without `dtype`, each component "
+        "loads in upstream's precision (DINOv3 and the VAE in bfloat16, the transformer and decoder in their released "
+        "float16); pass `dtype=torch.float32` on CPU.",
+        license_text="""TripoSplat weights and code: MIT License, Copyright (c) 2026 VAST. Only TripoSplat's own flow
+transformer and Gaussian decoder are included; the DINOv3 and FLUX.2 VAE copies bundled in the release are not
+redistributed and load from their original repositories under their own licenses. See `LICENSE-MIT` and `NOTICE`.
+Not affiliated with or endorsed by VAST, Meta, or Black Forest Labs.""",
+        extra_tags=("image-to-3d", "gaussian-splatting"),
+    )
+
+
+def card_idol(namespace: str, version: str, folder: Path) -> str:
+    return _family_card(
+        namespace=namespace,
+        version=version,
+        folder=folder,
+        repo=REPOSITORIES["idol"],
+        title="IDOL",
+        source="speridlabs/idol",
+        family="idol",
+        license="license: apache-2.0",
+        converter="diffusers-3d-convert-idol",
+        usage="""import torch
+from diffusers_3d import AutoPipelineForImageTo3D, ImageCondition
+
+pipeline = AutoPipelineForImageTo3D.from_pretrained("{repo}").to("cuda")
+splat = pipeline(ImageCondition(image=rgba), mode="real", generator=torch.Generator("cuda").manual_seed(42)).objects[0]
+camera = splat.metadata["camera"]  # predicted yaw, pitch, radius, and FOV of the input view
+splat.save("object.ply")""",
+        notes=_FLUX2_DINOV3_NOTE + "\n\n`mode=\"synthetic\"` (the default, for renders) crops 1.2 times the object; "
+        "`mode=\"real\"` (photos) crops 1.7 times. Defaults match upstream: 50 steps, shift 3.0, 262144 Gaussians, "
+        "`guidance_scale=4.0` (upstream's `cfg_strength=3.0` in the Diffusers convention). Without `dtype`, each "
+        "component loads in upstream's precision; pass `dtype=torch.float32` on CPU.",
+        license_text="""IDOL weights and code: Apache-2.0, Copyright (c) Speridlabs. IDOL keeps the architecture of
+VAST-AI-Research TripoSplat (MIT, `LICENSE-MIT`). The DINOv3 and FLUX.2 VAE encoders are not redistributed; they
+load from their original repositories under their own licenses. See `LICENSE-APACHE-2.0` and `NOTICE`. Not
+affiliated with or endorsed by Speridlabs, VAST, Meta, or Black Forest Labs.""",
+        extra_tags=("image-to-3d", "gaussian-splatting"),
+    )
+
+
+_THIRD_PARTY_NOT_INCLUDED = """The DINOv3 image encoder (facebook/dinov3-vith16plus-pretrain-lvd1689m, DINOv3 License) and the
+FLUX.2 VAE encoder (black-forest-labs/FLUX.2-dev, FLUX non-commercial license) are not included in this repository.
+diffusers-3d loads them from those repositories at pinned revisions; their own terms apply.
+"""
+HUB_NOTICES = {
+    "triposr": """This repository holds the weights of stabilityai/TripoSR (revision
+5b521936b01fbe1890f6f9baed0254ab6351c04a), converted by diffusers-3d into Diffusers and Transformers component
+folders. Parameter prefixes were renamed and the image encoder's position embeddings baked at 512 px; all other
+weight values are unchanged. They are provided under the accompanying MIT License:
+
+  MIT License
+  Copyright (c) 2024 Tripo AI & Stability AI
+
+The image encoder is TripoSR's fine-tuned copy of facebook/dino-vitb16 (Apache-2.0).
+
+No affiliation, sponsorship, or endorsement by Stability AI, Tripo AI, VAST-AI-Research, or Meta is claimed.
+""",
+    "triposplat": f"""This repository holds the flow transformer and Gaussian decoder of VAST-AI/TripoSplat (revision
+56a96e603204ec410c4da60c13ea4fa09a2169a9), converted by diffusers-3d into Diffusers component folders. Parameters
+were renamed; weight values are unchanged. They are provided under the accompanying MIT License:
+
+  MIT License
+  Copyright (c) 2026 VAST
+
+{_THIRD_PARTY_NOT_INCLUDED}
+No affiliation, sponsorship, or endorsement by VAST-AI-Research, Meta, or Black Forest Labs is claimed.
+""",
+    "idol": f"""This repository holds the denoiser and Gaussian decoders of speridlabs/idol (revision
+2731c2291fc65a797c5cb627a5e5526fc1490902), converted by diffusers-3d into Diffusers component folders. Parameters
+were renamed and the two decoders merged; weight values are unchanged. They are provided under the accompanying
+Apache License 2.0 (LICENSE-APACHE-2.0).
+
+IDOL's networks keep the architecture of VAST-AI-Research TripoSplat, provided under the MIT License
+(LICENSE-MIT, Copyright (c) 2026 VAST).
+
+{_THIRD_PARTY_NOT_INCLUDED}
+No affiliation, sponsorship, or endorsement by Speridlabs, VAST-AI-Research, Meta, or Black Forest Labs is claimed.
+""",
+}
+
+
 def _with_folder(card):
     return lambda namespace, version, folder: card(namespace, version)
 
@@ -603,6 +796,10 @@ CARDS = {
     "pixal3d": card_pixal3d,
     "step1x3d-texture": card_step1x3d_texture,
     "hunyuan3d-paint": card_hunyuan3d_paint,
+    "hunyuan3d-omni": card_hunyuan3d_omni,
+    "triposr": card_triposr,
+    "triposplat": card_triposplat,
+    "idol": card_idol,
 }
 
 
@@ -612,6 +809,13 @@ def copy_license_files(name: str, folder: Path) -> None:
     package = Path(importlib.import_module(f"diffusers_3d.families.{FAMILY_PACKAGES[name]}").__file__).parent
     for path in [*package.glob("LICENSE*"), package / "NOTICE"]:
         shutil.copyfile(path, folder / path.name)
+    for family, filenames in EXTRA_FAMILY_LICENSES.get(name, {}).items():
+        other = Path(importlib.import_module(f"diffusers_3d.families.{family}").__file__).parent
+        for filename in filenames:
+            shutil.copyfile(other / filename, folder / filename)
+    # The family NOTICE describes the package source; repos that redistribute weights get their own.
+    if name in HUB_NOTICES:
+        (folder / "NOTICE").write_text(HUB_NOTICES[name])
     for filename, url in EXTRA_LICENSES.get(name, {}).items():
         urllib.request.urlretrieve(url, folder / filename)
 

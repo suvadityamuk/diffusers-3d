@@ -104,6 +104,30 @@ def _convert_pixal3d(work: Path, target: Path) -> None:
     convert_pixal3d_checkpoint(source, target)
 
 
+def _convert_hunyuan3d_omni(work: Path, target: Path) -> None:
+    from diffusers_3d.families.hunyuan3d_omni.conversion import convert_hunyuan3d_omni_checkpoint
+
+    convert_hunyuan3d_omni_checkpoint(RELEASES["hunyuan3d-omni"]["source"], target)
+
+
+def _convert_triposr(work: Path, target: Path) -> None:
+    from diffusers_3d.families.triposr.conversion import convert_triposr_checkpoint
+
+    convert_triposr_checkpoint(RELEASES["triposr"]["source"], target)
+
+
+def _convert_triposplat(work: Path, target: Path) -> None:
+    from diffusers_3d.families.triposplat.conversion import convert_triposplat_checkpoint
+
+    convert_triposplat_checkpoint(RELEASES["triposplat"]["source"], target)
+
+
+def _convert_idol(work: Path, target: Path) -> None:
+    from diffusers_3d.families.idol.conversion import convert_idol_checkpoint
+
+    convert_idol_checkpoint(RELEASES["idol"]["source"], target)
+
+
 RELEASES = {
     "trellis-image": {
         "source": "microsoft/TRELLIS-image-large",
@@ -128,6 +152,10 @@ RELEASES = {
     "hunyuan3d-paint": {"source": "tencent/Hunyuan3D-2.1", "convert": _convert_hunyuan3d_paint},
     "sam3d-objects": {"source": "facebook/sam-3d-objects", "convert": _convert_sam3d},
     "pixal3d": {"source": "TencentARC/Pixal3D", "convert": _convert_pixal3d},
+    "hunyuan3d-omni": {"source": "tencent/Hunyuan3D-Omni", "convert": _convert_hunyuan3d_omni},
+    "triposr": {"source": "stabilityai/TripoSR", "convert": _convert_triposr},
+    "triposplat": {"source": "VAST-AI/TripoSplat", "convert": _convert_triposplat},
+    "idol": {"source": "speridlabs/idol", "convert": _convert_idol},
 }
 
 

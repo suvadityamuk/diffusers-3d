@@ -33,7 +33,7 @@ The repository has two parts:
 
 ## Supported models
 
-Converted checkpoints are on the Hub for most families. Each repository ships the family's license and notice files.
+Converted checkpoints are on the Hub for every family. Each repository ships the family's license and notice files.
 
 | Family | Pipeline | Task | Hub checkpoint |
 |---|---|---|---|
@@ -47,17 +47,19 @@ Converted checkpoints are on the Hub for most families. Each repository ships th
 | | `Hunyuan3DPaintPipeline` | mesh + image → PBR-textured mesh | [`Hunyuan3D-2.1-Paint-diffusers-3d`](https://huggingface.co/suvadityamuk/Hunyuan3D-2.1-Paint-diffusers-3d) |
 | [SAM 3D Objects](packages/diffusers-3d/src/diffusers_3d/families/sam3d_objects/README.md) | `Sam3DObjectsPipeline` | masked image → posed splats, mesh | [`sam-3d-objects-diffusers-3d`](https://huggingface.co/suvadityamuk/sam-3d-objects-diffusers-3d) |
 | [Pixal3D](packages/diffusers-3d/src/diffusers_3d/families/pixal3d/README.md) | `Pixal3DImageTo3DPipeline` | image + field of view → O-Voxel, mesh | [`Pixal3D-diffusers-3d`](https://huggingface.co/suvadityamuk/Pixal3D-diffusers-3d)¹ |
-| [Hunyuan3D-Omni](packages/diffusers-3d/src/diffusers_3d/families/hunyuan3d_omni/README.md) | `Hunyuan3DOmniImageTo3DPipeline` | image + point cloud, voxels, bbox, or skeleton → mesh | convert locally² |
-| [TripoSR](packages/diffusers-3d/src/diffusers_3d/families/triposr/README.md) | `TripoSRImageTo3DPipeline` | image → vertex-coloured mesh | convert locally² |
-| [TripoSplat](packages/diffusers-3d/src/diffusers_3d/families/triposplat/README.md) | `TripoSplatImageTo3DPipeline` | image → Gaussian splats | convert locally² |
-| [IDOL](packages/diffusers-3d/src/diffusers_3d/families/idol/README.md) | `IdolImageTo3DPipeline` | image → Gaussian splats and input camera | convert locally² |
+| [Hunyuan3D-Omni](packages/diffusers-3d/src/diffusers_3d/families/hunyuan3d_omni/README.md) | `Hunyuan3DOmniImageTo3DPipeline` | image + point cloud, voxels, bbox, or skeleton → mesh | [`Hunyuan3D-Omni-diffusers-3d`](https://huggingface.co/suvadityamuk/Hunyuan3D-Omni-diffusers-3d) |
+| [TripoSR](packages/diffusers-3d/src/diffusers_3d/families/triposr/README.md) | `TripoSRImageTo3DPipeline` | image → vertex-coloured mesh | [`TripoSR-diffusers-3d`](https://huggingface.co/suvadityamuk/TripoSR-diffusers-3d) |
+| [TripoSplat](packages/diffusers-3d/src/diffusers_3d/families/triposplat/README.md) | `TripoSplatImageTo3DPipeline` | image → Gaussian splats | [`TripoSplat-diffusers-3d`](https://huggingface.co/suvadityamuk/TripoSplat-diffusers-3d)² |
+| [IDOL](packages/diffusers-3d/src/diffusers_3d/families/idol/README.md) | `IdolImageTo3DPipeline` | image → Gaussian splats and input camera | [`idol-diffusers-3d`](https://huggingface.co/suvadityamuk/idol-diffusers-3d)² |
 
 ¹ The DINOv3 image encoder is gated under Meta's DINOv3 License and is not redistributed. Accept the license on
 [`facebook/dinov3-vitl16-pretrain-lvd1689m`](https://huggingface.co/facebook/dinov3-vitl16-pretrain-lvd1689m) and pass
 the encoder in when loading (see below).
 
-² Not published yet. Convert the upstream release with `diffusers-3d-convert-hunyuan3d-omni`,
-`diffusers-3d-convert-triposr`, `diffusers-3d-convert-triposplat`, or `diffusers-3d-convert-idol`; see each family README.
+² DINOv3 ViT-H/16+ and the FLUX.2-dev VAE are gated third-party weights and are not redistributed. Accept the
+licenses on [`facebook/dinov3-vith16plus-pretrain-lvd1689m`](https://huggingface.co/facebook/dinov3-vith16plus-pretrain-lvd1689m)
+and [`black-forest-labs/FLUX.2-dev`](https://huggingface.co/black-forest-labs/FLUX.2-dev) and log in; `from_pretrained`
+loads them from there.
 
 ## Installation
 
