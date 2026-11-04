@@ -21,7 +21,7 @@ from diffusers_3d.backends import trellis_glb
 pytestmark = pytest.mark.reference_parity
 
 TRELLIS_ROOT = Path(os.environ.get("DIFFUSERS_3D_TRELLIS_REFERENCE_ROOT", "/tmp/TRELLIS"))
-UTILS3D_ROOT = Path(os.environ.get("DIFFUSERS_3D_UTILS3D_REFERENCE_ROOT", "/tmp/utils3d"))
+UTILS3D_ROOT = Path(os.environ.get("DIFFUSERS_3D_UTILS3D_TRELLIS_REFERENCE_ROOT", "/tmp/utils3d-9a4eb15"))
 UTILS3D_REVISION = "9a4eb15e4021b67b12c460c7057d642626897ec8"
 
 

@@ -41,7 +41,9 @@ def test_unconditional_context_zeroes_image_tokens_and_keeps_control_tokens(tiny
     # 5 DINOv2 tokens, then 7 point tokens and 10 type tokens; the control is shared by both images.
     assert context.shape == (4, 22, 24)
     assert context[:2, :5].any() and not context[2:, :5].any()
-    assert torch.equal(context[2:, 5:], context[:2, 5:]) and torch.equal(context[0, 5:], context[1, 5:])
+    assert torch.equal(context[2:, 5:], context[:2, 5:])
+    # The shared control is encoded as a batch; x86 BLAS may round the two rows differently.
+    torch.testing.assert_close(context[0, 5:], context[1, 5:], atol=1e-6, rtol=1e-6)
 
 
 def test_controls_are_validated(tiny_omni_pipeline):

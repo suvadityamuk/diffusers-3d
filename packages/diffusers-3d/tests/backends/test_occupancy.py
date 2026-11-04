@@ -68,20 +68,27 @@ def test_single_level_is_the_dense_grid():
 @pytest.mark.filterwarnings("ignore:Hierarchical occupancy decoding")
 @pytest.mark.parametrize("dtype", [torch.float32, torch.float16])
 def test_refined_levels_evaluate_the_surface_band_at_index_times_spacing(dtype):
+    queried, logits = [], []
+
     def query(points: torch.Tensor) -> torch.Tensor:
         assert points.dtype == dtype and points.shape[0] == 1
-        return _sphere(points[0])[None]
+        queried.append(points[0].clone())
+        logits.append(_sphere(points[0]))
+        return logits[-1][None]
 
     grid = hierarchical_occupancy(query, BOUNDS, [31, 62, 124], dtype=dtype, device="cpu", num_chunks=5000)
     assert grid.shape == (125, 125, 125) and grid.dtype == dtype
     evaluated = torch.isfinite(grid)
     assert 0.01 < evaluated.float().mean() < 0.5
 
-    # Refined points are ``index * spacing + minimum`` in the grid dtype.
+    # Refined points are ``index * spacing + minimum`` in the grid dtype, and the grid holds their query results.
+    # The finest level is the last ``evaluated.sum()`` queried points. (On x86, ``norm`` can round differently
+    # depending on memory layout, so the logits are compared with what the query returned, not recomputed.)
     indices = torch.nonzero(evaluated)
     spacing = torch.tensor((np.array(BOUNDS[3:]) - np.array(BOUNDS[:3])) / 124, dtype=dtype)
     points = indices * spacing + torch.tensor(BOUNDS[:3], dtype=dtype)
-    assert torch.equal(grid[evaluated], _sphere(points))
+    assert torch.equal(torch.cat(queried)[-len(points) :], points)
+    assert torch.equal(grid[evaluated], torch.cat(logits)[-len(points) :])
 
     # Every cell the surface crosses has all eight corners evaluated.
     dense = _sphere(dense_grid_points(BOUNDS, 124).to(dtype)).view(125, 125, 125)

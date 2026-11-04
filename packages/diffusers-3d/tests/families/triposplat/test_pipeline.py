@@ -92,9 +92,13 @@ def test_pipeline_generates_z_up_splats_and_round_trips(
     }
     loaded = AutoPipelineForImageTo3D.from_pretrained(tmp_path, local_files_only=True, dtype=torch.float32)
     loaded.set_progress_bar_config(disable=True)
+    for name in ("transformer", "decoder"):
+        expected, actual = getattr(pipeline, name).state_dict(), getattr(loaded, name).state_dict()
+        assert expected.keys() == actual.keys() and all(torch.equal(actual[key], expected[key]) for key in expected)
     reloaded = loaded(rgba_condition.image, generator=torch.Generator().manual_seed(0), **SMALL).objects[0]
-    assert torch.equal(reloaded.means, single.means)
-    assert torch.equal(reloaded.opacity_logits, single.opacity_logits)
+    # Identical weights, but x86 MKL GEMMs round differently depending on how the loaded buffers are aligned.
+    torch.testing.assert_close(reloaded.means, single.means, atol=1e-6, rtol=1e-6)
+    torch.testing.assert_close(reloaded.opacity_logits, single.opacity_logits, atol=1e-6, rtol=1e-6)
 
 
 def test_given_latents_skip_the_noise_draw(tiny_triposplat_pipeline, rgba_condition):

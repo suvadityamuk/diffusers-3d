@@ -54,6 +54,8 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
           cache: pip
+      - name: Install the OpenGL runtime pymeshlab's plugins link against
+        run: sudo apt-get update && sudo apt-get install -y libopengl0
       - name: Install CPU dependencies
         run: |
           python -m pip install --upgrade pip
@@ -76,6 +78,8 @@ jobs:
         with:
           python-version: "3.11"
           cache: pip
+      - name: Install the OpenGL runtime pymeshlab's plugins link against
+        run: sudo apt-get update && sudo apt-get install -y libopengl0
       - name: Install portable backends
         run: |
           python -m pip install --upgrade pip
@@ -94,6 +98,8 @@ jobs:
         with:
           python-version: "3.12"
           cache: pip
+      - name: Install the OpenGL runtime pymeshlab's plugins link against
+        run: sudo apt-get update && sudo apt-get install -y libopengl0
       - name: Install package and real reference dependencies
         run: |
           python -m pip install --upgrade pip
@@ -166,6 +172,10 @@ jobs:
             3913c65d81e05e47b9f367250cf8c0f7462a0900 \
             "$RUNNER_TEMP/utils3d-3913c65"
           clone_exact \
+            https://github.com/EasternJournalist/utils3d.git \
+            9a4eb15e4021b67b12c460c7057d642626897ec8 \
+            "$RUNNER_TEMP/utils3d-9a4eb15"
+          clone_exact \
             https://github.com/EasternJournalist/utils3d-moge.git \
             62f09d58509485564e24d5d9f6aac9ee9ebc0c37 \
             "$RUNNER_TEMP/utils3d-moge-62f09d5"
@@ -178,6 +188,9 @@ jobs:
           curl -fsSL -o "$RUNNER_TEMP/dinov2_weights/dinov2_vitl14_reg4_pretrain.pth" \
             https://dl.fbaipublicfiles.com/dinov2/dinov2_vitl14/dinov2_vitl14_reg4_pretrain.pth
           echo "36e4deffbaef061a2576705b0c36f93621e2ae20bf6274694821b0b492551b51  $RUNNER_TEMP/dinov2_weights/dinov2_vitl14_reg4_pretrain.pth" | sha256sum -c -
+          # TRELLIS's DINOv2 conditioning tests load the pinned Transformers checkpoint from the local cache only.
+          hf download facebook/dinov2-with-registers-large config.json model.safetensors \
+            --revision e4c89a4e05589de9b3e188688a303d0f3c04d0f3
           clone_exact \
             https://github.com/speridlabs/idol-sdk.git \
             4702a7f00850e34b6e83a2170cc123c3e9570744 \
@@ -210,6 +223,7 @@ jobs:
             echo "DIFFUSERS_3D_MOGE_REFERENCE_ROOT=$RUNNER_TEMP/MoGe-a8c3734"
             echo "DIFFUSERS_3D_MOGE2_REFERENCE_ROOT=$RUNNER_TEMP/MoGe"
             echo "DIFFUSERS_3D_UTILS3D_REFERENCE_ROOT=$RUNNER_TEMP/utils3d-3913c65"
+            echo "DIFFUSERS_3D_UTILS3D_TRELLIS_REFERENCE_ROOT=$RUNNER_TEMP/utils3d-9a4eb15"
             echo "DIFFUSERS_3D_UTILS3D_MOGE_REFERENCE_ROOT=$RUNNER_TEMP/utils3d-moge-62f09d5"
             echo "DIFFUSERS_3D_DINOV2_REFERENCE_ROOT=$RUNNER_TEMP/dinov2"
             echo "DIFFUSERS_3D_DINOV2_REFERENCE_WEIGHTS=$RUNNER_TEMP/dinov2_weights/dinov2_vitl14_reg4_pretrain.pth"
@@ -235,9 +249,8 @@ jobs:
           xfailed = [case for case in cases if any(child.get("type") == "pytest.xfail" for child in case.findall("skipped"))]
           skipped = [case for case in cases if case.find("skipped") is not None and case not in xfailed]
           broken = [case for case in cases if case.find("failure") is not None or case.find("error") is not None]
-          assert len(cases) == 179, f"expected 179 reference-parity cases, collected {len(cases)}"
-          # Strict xfails document known deviations on inputs upstream mishandles (see the background tests).
-          assert len(xfailed) == 8, f"expected 8 documented deviations, got {len(xfailed)}"
+          assert len(cases) == 204, f"expected 204 reference-parity cases, collected {len(cases)}"
+          assert not xfailed, f"unexpected xfails: {[c.get('name') for c in xfailed]}"
           assert not skipped and not broken, (
               f"reference parity was not clean: skipped={[c.get('name') for c in skipped]}, "
               f"failed={[c.get('name') for c in broken]}"

@@ -304,6 +304,17 @@ def _converted_vae(reference_vae) -> Step1X3DShapeDecoder:
 def _reference_dinov2_encoder(reference, tmp_path: Path):
     from transformers.models.bit.image_processing_pil_bit import BitImageProcessorPil
 
+    class PinnedBitImageProcessor(BitImageProcessorPil):
+        # Transformers 4.48 converted PIL images with ``image.convert("RGB")``, dropping alpha. Transformers 5.22
+        # and later composite transparency onto white instead.
+        def preprocess(self, images, **kwargs):
+            def to_rgb(image):
+                return image.convert("RGB") if isinstance(image, Image.Image) else image
+
+            if kwargs.get("do_convert_rgb", self.do_convert_rgb):
+                images = [to_rgb(image) for image in images] if isinstance(images, list) else to_rgb(images)
+            return super().preprocess(images, **kwargs)
+
     folder = tmp_path / "tiny-dinov2-reg"
     folder.mkdir()
     (folder / "config.json").write_text(json.dumps(TINY_DINO))
@@ -311,7 +322,7 @@ def _reference_dinov2_encoder(reference, tmp_path: Path):
     torch.manual_seed(1)
     encoder = reference.Dinov2Encoder({"image_size": 28, "dino_type": str(folder)}).eval()
     # The pinned Transformers 4.48 resolved this repository to the PIL ``BitImageProcessor``.
-    encoder.image_preprocess_dino = BitImageProcessorPil(**DINO_PROCESSOR)
+    encoder.image_preprocess_dino = PinnedBitImageProcessor(**DINO_PROCESSOR)
     encoder.dino_model.get_head_mask = lambda head_mask, layers: [None] * layers
     # The vendored upstream module keeps the Hub's DINOv2 key layout, which Transformers maps onto its own.
     image_encoder, loading_info = Dinov2WithRegistersModel.from_pretrained(

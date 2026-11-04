@@ -56,20 +56,23 @@ Default checkout locations:
 | MoGe v1 (SAM 3D Objects) | `/tmp/MoGe-a8c3734` | `a8c37341bc0325ca99b9d57981cc3bb2bd3e255b` |
 | MoGe v2 (Pixal3D) | `/tmp/MoGe` | `74fbce054ebed49800de42d0ad0e83495065719a` |
 | utils3d (MoGe v1) | `/tmp/utils3d-3913c65` | `3913c65d81e05e47b9f367250cf8c0f7462a0900` |
+| utils3d (TRELLIS GLB export) | `/tmp/utils3d-9a4eb15` | `9a4eb15e4021b67b12c460c7057d642626897ec8` |
 | utils3d-moge (MoGe v2) | `/tmp/utils3d-moge-62f09d5` | `62f09d58509485564e24d5d9f6aac9ee9ebc0c37` |
 | DINOv2 (TRELLIS encoder identity) | `/tmp/dinov2`, weights in `/tmp/dinov2_weights` | `7764ea0f912e53c92e82eb78a2a1631e92725fc8` |
 | TripoSplat | `/tmp/TripoSplat` | `d8db9e018b413dd9c4a9fe22463781bf98e8e68d` |
 | IDOL | `/tmp/idol-sdk` | `4702a7f00850e34b6e83a2170cc123c3e9570744` |
 
 Override a path with `DIFFUSERS_3D_<NAME>_REFERENCE_ROOT`, where `<NAME>` is `TRELLIS`, `TRELLIS2`, `TRIPOSG`,
-`SAM3D`, `STEP1X3D`, `PIXAL3D`, `NAF`, `HUNYUAN3D`, `HUNYUAN3D_OMNI`, `TRIPOSR`, `TORCHMCUBES`, `TRIPOSPLAT`, `IDOL`, `MOGE`, `MOGE2`, `UTILS3D`, `UTILS3D_MOGE`, or `DINOV2`. Before importing
+`SAM3D`, `STEP1X3D`, `PIXAL3D`, `NAF`, `HUNYUAN3D`, `HUNYUAN3D_OMNI`, `TRIPOSR`, `TORCHMCUBES`, `TRIPOSPLAT`, `IDOL`, `MOGE`, `MOGE2`, `UTILS3D`, `UTILS3D_TRELLIS`, `UTILS3D_MOGE`, or `DINOV2`. Before importing
 anything, the tests check the commit and the source files they need. Install the `reference-test` extra plus OpenCV,
 PyYAML, tqdm, and trimesh,
 which the upstream modules import.
+The TRELLIS DINOv2 test loads `facebook/dinov2-with-registers-large` (revision
+`e4c89a4e05589de9b3e188688a303d0f3c04d0f3`) from the local Hugging Face cache only, so download it first. On Linux,
+pymeshlab's plugins need `libopengl0`.
 
 A missing or mismatched checkout is skipped locally. `DIFFUSERS_3D_REQUIRE_REFERENCE=1` turns those skips into
-failures, which is how CI runs them. CI also requires exactly 179 parity cases (real-weight tests, marked `real_weights`, are opt-in), 8 of them strict
-xfails that document deviations on inputs upstream mishandles.
+failures, which is how CI runs them. CI also requires exactly 204 parity cases (real-weight tests, marked `real_weights`, are opt-in), none of them xfails.
 
 ## Distributions
 
