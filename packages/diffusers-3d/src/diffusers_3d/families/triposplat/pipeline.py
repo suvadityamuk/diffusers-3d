@@ -35,21 +35,27 @@ UPSTREAM_DTYPES = {"image_encoder": torch.bfloat16, "vae": torch.bfloat16, "defa
 
 
 def prepare_triposplat_image(
-    condition: ImageCondition, *, image_size: int = 1024, erode_radius: int = 1
+    condition: ImageCondition, *, image_size: int = 1024, erode_radius: int = 1, crop_margin: float = 1.2
 ) -> Image.Image:
     """Cut out, square-crop, and composite the foreground on black, as upstream ``preprocess_image`` does.
 
-    The shorter side is resized to ``image_size``, the alpha is eroded by ``erode_radius`` pixels, and a square 1.2
-    times the foreground's longer side is cropped around its centre and resized to ``image_size``. Alpha comes from
-    an RGBA image and/or ``mask``; upstream cuts out inputs without transparency with BiRefNet, the pipeline's
-    default background removal does the same before this runs.
+    The shorter side is resized to ``image_size``, the alpha is eroded by ``erode_radius`` pixels, and a square
+    ``crop_margin`` times the foreground's longer side is cropped around its centre and resized to ``image_size``.
+    Alpha comes from an RGBA image and/or ``mask``; upstream cuts out inputs without transparency with BiRefNet, the
+    pipeline's default background removal does the same before this runs.
     """
 
+    return _prepare_square_image(condition, image_size, erode_radius, crop_margin, family="TripoSplat")
+
+
+def _prepare_square_image(
+    condition: ImageCondition, image_size: int, erode_radius: int, crop_margin: float, *, family: str
+) -> Image.Image:
     validate_image_condition_pixels(condition)
     pixels = condition.image
     if pixels.shape[0] != 4 and condition.mask is None:
         raise ValueError(
-            "TripoSplat needs the foreground as RGBA alpha or a mask; pass one, or keep background removal on "
+            f"{family} needs the foreground as RGBA alpha or a mask; pass one, or keep background removal on "
             "(the default) for RGB inputs"
         )
     alpha = pixels[3:4] if pixels.shape[0] == 4 else torch.ones_like(pixels[:1])
@@ -69,7 +75,7 @@ def prepare_triposplat_image(
     if rows.size == 0:
         raise ValueError("the alpha/mask has no foreground")
     centre_x, centre_y = (columns.min() + columns.max()) / 2, (rows.min() + rows.max()) / 2
-    half = max(columns.max() - columns.min(), rows.max() - rows.min()) / 2 * 1.2
+    half = max(columns.max() - columns.min(), rows.max() - rows.min()) / 2 * crop_margin
     box = [int(centre_x - half), int(centre_y - half), int(centre_x + half), int(centre_y + half)]
     image = image.crop(box).resize((image_size, image_size), Image.LANCZOS)
     composite = Image.new("RGB", (image_size, image_size), (0, 0, 0))

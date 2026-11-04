@@ -70,6 +70,37 @@ class TripoSGVAEDecoder(Object3DModel):
         self.norm_out = nn.LayerNorm(width_decoder)
         self.proj_out = nn.Linear(width_decoder, 1)
 
+    def decode_latents(self, latents: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+        """Refine ``latents`` ``(batch, tokens, latent_channels)`` once into the key/value every query attends to.
+
+        Pass the result to :meth:`query` to decode many point sets of one shape without refining it again.
+        """
+
+        latent_states = self.post_quant(latents)
+        for block in self.blocks[:-1]:
+            latent_states = block(latent_states)
+        return self.blocks[-1].attn2.project_key_value(latent_states)
+
+    def query(
+        self, context: tuple[torch.Tensor, torch.Tensor], queries: torch.Tensor, *, num_chunks: int | None = None
+    ) -> torch.Tensor:
+        """Negated field ``(batch, points, 1)`` at ``queries`` ``(batch, points, 3)`` given :meth:`decode_latents`.
+
+        A context of batch one is shared by every query batch item.
+        """
+
+        key, value = context
+        if key.shape[0] != queries.shape[0]:
+            key, value = key.expand(queries.shape[0], -1, -1, -1), value.expand(queries.shape[0], -1, -1, -1)
+        logits = []
+        for chunk in queries.split(num_chunks or queries.shape[1], dim=1):
+            chunk = chunk.to(key)
+            embedding = (chunk[..., None] * self.frequencies.to(chunk.dtype)).flatten(-2)
+            query_states = self.proj_query(torch.cat([chunk, embedding.sin(), embedding.cos()], dim=-1))
+            query_states = self.blocks[-1](query_states, key_value=(key, value))
+            logits.append(self.proj_out(self.norm_out(query_states)))
+        return -torch.cat(logits, dim=1)
+
     def forward(
         self,
         latents: torch.Tensor,
@@ -83,17 +114,7 @@ class TripoSGVAEDecoder(Object3DModel):
         ``num_chunks`` bounds how many query points cross-attend at once; the latent set is refined once.
         """
 
-        latent_states = self.post_quant(latents)
-        for block in self.blocks[:-1]:
-            latent_states = block(latent_states)
-        logits = []
-        for chunk in queries.split(num_chunks or queries.shape[1], dim=1):
-            chunk = chunk.to(latents)
-            embedding = (chunk[..., None] * self.frequencies.to(chunk.dtype)).flatten(-2)
-            query_states = self.proj_query(torch.cat([chunk, embedding.sin(), embedding.cos()], dim=-1))
-            query_states = self.blocks[-1](query_states, latent_states)
-            logits.append(self.proj_out(self.norm_out(query_states)))
-        sample = -torch.cat(logits, dim=1)
+        sample = self.query(self.decode_latents(latents), queries, num_chunks=num_chunks)
         if not return_dict:
             return (sample,)
         return TripoSGVAEDecoderOutput(sample=sample)

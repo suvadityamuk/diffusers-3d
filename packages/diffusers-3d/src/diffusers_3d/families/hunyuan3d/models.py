@@ -38,11 +38,14 @@ class Hunyuan3DAttnProcessor:
         attn: Hunyuan3DAttention,
         hidden_states: torch.Tensor,
         encoder_hidden_states: torch.Tensor | None = None,
+        key_value: tuple[torch.Tensor, torch.Tensor] | None = None,
     ) -> torch.Tensor:
-        context = hidden_states if encoder_hidden_states is None else encoder_hidden_states
         query = attn.norm_q(attn.to_q(hidden_states).unflatten(-1, (attn.heads, -1)))
-        key = attn.norm_k(attn.to_k(context).unflatten(-1, (attn.heads, -1)))
-        value = attn.to_v(context).unflatten(-1, (attn.heads, -1))
+        if key_value is None:
+            key_value = attn.project_key_value(
+                hidden_states if encoder_hidden_states is None else encoder_hidden_states
+            )
+        key, value = key_value
         hidden_states = dispatch_attention_fn(
             query, key, value, backend=self._attention_backend, parallel_config=self._parallel_config
         )
@@ -80,8 +83,20 @@ class Hunyuan3DAttention(nn.Module, AttentionModuleMixin):
         self.to_out = nn.Linear(dim, dim)
         self.set_processor(Hunyuan3DAttnProcessor())
 
-    def forward(self, hidden_states: torch.Tensor, encoder_hidden_states: torch.Tensor | None = None) -> torch.Tensor:
-        return self.processor(self, hidden_states, encoder_hidden_states)
+    def project_key_value(self, context: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+        """Per-head ``(key, value)`` of ``context``; pass them as ``key_value`` to reuse them across queries."""
+
+        key = self.norm_k(self.to_k(context).unflatten(-1, (self.heads, -1)))
+        return key, self.to_v(context).unflatten(-1, (self.heads, -1))
+
+    def forward(
+        self,
+        hidden_states: torch.Tensor,
+        encoder_hidden_states: torch.Tensor | None = None,
+        *,
+        key_value: tuple[torch.Tensor, torch.Tensor] | None = None,
+    ) -> torch.Tensor:
+        return self.processor(self, hidden_states, encoder_hidden_states, key_value)
 
 
 class Hunyuan3DMoEFeedForward(nn.Module):

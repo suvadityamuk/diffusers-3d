@@ -3,7 +3,8 @@
 # Revision: 75fbf0183001ed9876c8dbb35de6b68552ee08bd
 #
 # MIT License. Copyright (c) Microsoft Corporation.
-# Sparse convolution is reimplemented in plain PyTorch; the O-Voxel extension source is not vendored.
+# Sparse convolution runs on FlexGEMM when installed, as upstream, or in plain PyTorch; the O-Voxel extension source
+# is not vendored.
 
 from __future__ import annotations
 
@@ -25,7 +26,7 @@ from ...objects import CoordinateSystem, OVoxelAsset, SparseVoxelAsset
 from ..trellis.decoders import TrellisSparseStructureDecoder
 from ..trellis.models import TrellisLayerNorm32
 from ..trellis.sparse import TrellisSparseTensor, trellis_grid_transform
-from ..trellis.sparse_ops import SparseConv3d, channel_to_spatial, sparse_subdivide, submanifold_neighbors
+from ..trellis.sparse_ops import SparseConv3d, SubmanifoldNeighbors, channel_to_spatial, sparse_subdivide
 
 
 class Trellis2SparseStructureDecoder(TrellisSparseStructureDecoder):
@@ -108,7 +109,7 @@ class Trellis2SparseConvNeXtBlock3d(nn.Module):
     def __init__(self, channels: int, mlp_ratio: float = 4.0) -> None:
         super().__init__()
         self.norm = TrellisLayerNorm32(channels, elementwise_affine=True, eps=1e-6)
-        self.conv = SparseConv3d(channels, channels, 3)
+        self.conv = SparseConv3d(channels, channels, 3, upstream_backend="flex_gemm")
         self.mlp = nn.Sequential(
             nn.Linear(channels, int(channels * mlp_ratio)), nn.SiLU(), nn.Linear(int(channels * mlp_ratio), channels)
         )
@@ -116,7 +117,7 @@ class Trellis2SparseConvNeXtBlock3d(nn.Module):
         nn.init.zeros_(self.mlp[2].bias)
 
     def forward(
-        self, coordinates: torch.Tensor, features: torch.Tensor, neighbors: torch.Tensor | None = None
+        self, coordinates: torch.Tensor, features: torch.Tensor, neighbors: SubmanifoldNeighbors | None = None
     ) -> torch.Tensor:
         hidden_states = self.conv(coordinates, features, neighbors=neighbors)
         return features + self.mlp(self.norm(hidden_states))
@@ -141,8 +142,8 @@ class Trellis2SparseResBlockC2S3d(nn.Module):
         self.pred_subdiv = pred_subdiv
         self.norm1 = TrellisLayerNorm32(channels, elementwise_affine=True, eps=1e-6)
         self.norm2 = TrellisLayerNorm32(out_channels, elementwise_affine=False, eps=1e-6)
-        self.conv1 = SparseConv3d(channels, out_channels * 8, 3)
-        self.conv2 = SparseConv3d(out_channels, out_channels, 3)
+        self.conv1 = SparseConv3d(channels, out_channels * 8, 3, upstream_backend="flex_gemm")
+        self.conv2 = SparseConv3d(out_channels, out_channels, 3, upstream_backend="flex_gemm")
         nn.init.zeros_(self.conv2.weight)
         nn.init.zeros_(self.conv2.bias)
         if pred_subdiv:
@@ -154,7 +155,7 @@ class Trellis2SparseResBlockC2S3d(nn.Module):
         features: torch.Tensor,
         *,
         subdivision: torch.Tensor | None = None,
-        neighbors: torch.Tensor | None = None,
+        neighbors: SubmanifoldNeighbors | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         """Return ``(child_coordinates, child_features, subdivision_mask, child_neighbors)``."""
 
@@ -171,7 +172,7 @@ class Trellis2SparseResBlockC2S3d(nn.Module):
         hidden_states = channel_to_spatial(hidden_states, parent_index, child_index)
         residual = channel_to_spatial(features, parent_index, child_index)
         residual = residual.repeat_interleave(self.out_channels // (self.channels // 8), dim=1)
-        child_neighbors = submanifold_neighbors(child_coordinates)
+        child_neighbors = SubmanifoldNeighbors(child_coordinates)
         hidden_states = self.conv2(child_coordinates, F.silu(self.norm2(hidden_states)), neighbors=child_neighbors)
         return child_coordinates, hidden_states + residual, subdivision, child_neighbors
 
@@ -277,7 +278,7 @@ class _Trellis2SparseUnetDecoder(Object3DModel):
         inner_dtype = get_parameter_dtype(self.blocks)
         coordinates = hidden_states.coordinates
         features = self.from_latent(hidden_states.features).to(dtype=inner_dtype)
-        neighbors = submanifold_neighbors(coordinates)
+        neighbors = SubmanifoldNeighbors(coordinates)
         subdivisions: list[torch.Tensor] = []
         stages = self.blocks if num_stages is None else self.blocks[:num_stages]
         for stage, stage_blocks in enumerate(stages):

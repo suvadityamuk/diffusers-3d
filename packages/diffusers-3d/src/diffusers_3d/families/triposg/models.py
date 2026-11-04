@@ -38,20 +38,19 @@ class TripoSGAttnProcessor:
         attn: TripoSGAttention,
         hidden_states: torch.Tensor,
         encoder_hidden_states: torch.Tensor | None = None,
+        key_value: tuple[torch.Tensor, torch.Tensor] | None = None,
     ) -> torch.Tensor:
         query = attn.to_q(hidden_states)
-        if encoder_hidden_states is None:
+        if encoder_hidden_states is None and key_value is None:
             projections = torch.cat([query, attn.to_k(hidden_states), attn.to_v(hidden_states)], dim=-1)
             query, key, value = projections.unflatten(-1, (attn.heads, -1)).chunk(3, dim=-1)
+            if attn.norm_q is not None:
+                key = attn.norm_k(key)
         else:
-            if attn.norm_cross is not None:
-                encoder_hidden_states = attn.norm_cross(encoder_hidden_states)
-            projections = torch.cat([attn.to_k(encoder_hidden_states), attn.to_v(encoder_hidden_states)], dim=-1)
-            key, value = projections.unflatten(-1, (attn.heads, -1)).chunk(2, dim=-1)
+            key, value = attn.project_key_value(encoder_hidden_states) if key_value is None else key_value
             query = query.unflatten(-1, (attn.heads, -1))
         if attn.norm_q is not None:
             query = attn.norm_q(query)
-            key = attn.norm_k(key)
         hidden_states = dispatch_attention_fn(
             query,
             key,
@@ -90,8 +89,23 @@ class TripoSGAttention(nn.Module, AttentionModuleMixin):
         self.to_out = nn.ModuleList([nn.Linear(dim, dim), nn.Dropout(0.0)])
         self.set_processor(TripoSGAttnProcessor())
 
-    def forward(self, hidden_states: torch.Tensor, encoder_hidden_states: torch.Tensor | None = None) -> torch.Tensor:
-        return self.processor(self, hidden_states, encoder_hidden_states)
+    def project_key_value(self, context: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+        """Per-head cross-attention ``(key, value)`` of ``context``; pass them as ``key_value`` to reuse them."""
+
+        if self.norm_cross is not None:
+            context = self.norm_cross(context)
+        projections = torch.cat([self.to_k(context), self.to_v(context)], dim=-1)
+        key, value = projections.unflatten(-1, (self.heads, -1)).chunk(2, dim=-1)
+        return (key if self.norm_k is None else self.norm_k(key)), value
+
+    def forward(
+        self,
+        hidden_states: torch.Tensor,
+        encoder_hidden_states: torch.Tensor | None = None,
+        *,
+        key_value: tuple[torch.Tensor, torch.Tensor] | None = None,
+    ) -> torch.Tensor:
+        return self.processor(self, hidden_states, encoder_hidden_states, key_value)
 
 
 class TripoSGTransformerBlock(nn.Module):
@@ -133,13 +147,17 @@ class TripoSGTransformerBlock(nn.Module):
         hidden_states: torch.Tensor,
         encoder_hidden_states: torch.Tensor | None = None,
         skip: torch.Tensor | None = None,
+        *,
+        key_value: tuple[torch.Tensor, torch.Tensor] | None = None,
     ) -> torch.Tensor:
         if self.skip_linear is not None:
             hidden_states = self.skip_norm(self.skip_linear(torch.cat([skip, hidden_states], dim=-1)))
         if self.attn1 is not None:
             hidden_states = hidden_states + self.attn1(self.norm1(hidden_states))
         if self.attn2 is not None:
-            hidden_states = hidden_states + self.attn2(self.norm2(hidden_states), encoder_hidden_states)
+            hidden_states = hidden_states + self.attn2(
+                self.norm2(hidden_states), encoder_hidden_states, key_value=key_value
+            )
         return hidden_states + self.ff(self.norm3(hidden_states))
 
 

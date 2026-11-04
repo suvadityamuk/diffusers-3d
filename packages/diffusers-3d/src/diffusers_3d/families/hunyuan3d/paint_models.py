@@ -19,6 +19,7 @@ import torch.nn.functional as F
 from diffusers import ModelMixin, UNet2DConditionModel  # noqa: F401 - ModelMixin is required by external loading
 from diffusers.configuration_utils import register_to_config
 from diffusers.models.attention import BasicTransformerBlock
+from diffusers.models.attention_dispatch import dispatch_attention_fn
 from diffusers.models.attention_processor import Attention
 from diffusers.models.embeddings import ImageProjection, apply_rotary_emb, get_1d_rotary_pos_embed
 from diffusers.models.unets.unet_2d_condition import UNet2DConditionOutput
@@ -27,9 +28,11 @@ from torch import nn
 from ...execution.models import Object3DModel
 
 
-def _attention(query: torch.Tensor, key: torch.Tensor, value: torch.Tensor, heads: int) -> torch.Tensor:
-    query, key, value = (tensor.unflatten(-1, (heads, -1)).transpose(1, 2) for tensor in (query, key, value))
-    return F.scaled_dot_product_attention(query, key, value).transpose(1, 2).flatten(2)
+def _attention(
+    query: torch.Tensor, key: torch.Tensor, value: torch.Tensor, heads: int, backend: Any = None
+) -> torch.Tensor:
+    query, key, value = (tensor.unflatten(-1, (heads, -1)) for tensor in (query, key, value))
+    return dispatch_attention_fn(query, key, value, backend=backend).flatten(2)
 
 
 class Hunyuan3DPaintMaterialAttnProcessor(nn.Module):
@@ -37,6 +40,8 @@ class Hunyuan3DPaintMaterialAttnProcessor(nn.Module):
 
     Batch rows are ordered ``(batch, material, view)``.
     """
+
+    _attention_backend = None
 
     def __init__(self, dim: int, inner_dim: int) -> None:
         super().__init__()
@@ -56,12 +61,15 @@ class Hunyuan3DPaintMaterialAttnProcessor(nn.Module):
         albedo, metallic_roughness = (
             part.flatten(0, 1) for part in hidden_states.unflatten(0, (-1, 2, num_views)).unbind(1)
         )
-        albedo = _attention(attn.to_q(albedo), attn.to_k(albedo), attn.to_v(albedo), attn.heads)
+        albedo = _attention(
+            attn.to_q(albedo), attn.to_k(albedo), attn.to_v(albedo), attn.heads, self._attention_backend
+        )
         metallic_roughness = _attention(
             self.to_q_mr(metallic_roughness),
             self.to_k_mr(metallic_roughness),
             self.to_v_mr(metallic_roughness),
             attn.heads,
+            self._attention_backend,
         )
         outputs = (attn.to_out[1](attn.to_out[0](albedo)), self.to_out_mr(metallic_roughness))
         return torch.stack([output.unflatten(0, (-1, num_views)) for output in outputs], dim=1).flatten(0, 2)
@@ -74,6 +82,8 @@ class Hunyuan3DPaintReferenceAttnProcessor(nn.Module):
     reads a ``2 * head_dim`` slice of the joint values; its first half feeds albedo and its second half
     metallic-roughness. Returns ``(batch, 2, tokens, dim)``.
     """
+
+    _attention_backend = None
 
     def __init__(self, dim: int, inner_dim: int) -> None:
         super().__init__()
@@ -89,7 +99,7 @@ class Hunyuan3DPaintReferenceAttnProcessor(nn.Module):
     ) -> torch.Tensor:
         context = encoder_hidden_states.expand(hidden_states.shape[0], -1, -1)
         value = torch.cat([attn.to_v(context), self.to_v_mr(context)], dim=-1)
-        output = _attention(attn.to_q(hidden_states), attn.to_k(context), value, attn.heads)
+        output = _attention(attn.to_q(hidden_states), attn.to_k(context), value, attn.heads, self._attention_backend)
         albedo, metallic_roughness = output.unflatten(-1, (attn.heads, 2, -1)).unbind(-2)
         albedo = attn.to_out[1](attn.to_out[0](albedo.flatten(2)))
         return torch.stack([albedo, self.to_out_mr(metallic_roughness.flatten(2))], dim=1)
@@ -97,6 +107,8 @@ class Hunyuan3DPaintReferenceAttnProcessor(nn.Module):
 
 class Hunyuan3DPaintMultiviewAttnProcessor:
     """Self-attention across the tokens of all views, with 3D rotary embeddings of the surface position."""
+
+    _attention_backend = None
 
     def __call__(
         self,
@@ -111,7 +123,8 @@ class Hunyuan3DPaintMultiviewAttnProcessor:
             for projection in (attn.to_q, attn.to_k, attn.to_v)
         )
         query, key = apply_rotary_emb(query, rotary_emb), apply_rotary_emb(key, rotary_emb)
-        hidden_states = F.scaled_dot_product_attention(query, key, value).transpose(1, 2).flatten(2)
+        query, key, value = (tensor.transpose(1, 2) for tensor in (query, key, value))
+        hidden_states = dispatch_attention_fn(query, key, value, backend=self._attention_backend).flatten(2)
         return attn.to_out[1](attn.to_out[0](hidden_states))
 
 
@@ -159,6 +172,25 @@ def rotary_embedding(voxels: torch.Tensor, resolution: int, head_dim: int) -> tu
     )
 
 
+class Hunyuan3DPaintPositions:
+    """Multiview positional inputs of one object, built once and reused at every denoising step.
+
+    Holds :func:`position_voxel_indices` and fills a :func:`rotary_embedding` cache per token count and head size as
+    the transformer blocks ask for them; pass it to :meth:`Hunyuan3DPaintUNet.forward` in place of the maps.
+    """
+
+    def __init__(self, position_maps: torch.Tensor, latent_size: int) -> None:
+        self.voxel_indices = position_voxel_indices(position_maps, latent_size)
+        self._rotary: dict[tuple[int, int], tuple[torch.Tensor, torch.Tensor]] = {}
+
+    def rotary_embedding(self, tokens: int, head_dim: int) -> tuple[torch.Tensor, torch.Tensor]:
+        key = (tokens, head_dim)
+        if key not in self._rotary:
+            voxels, resolution = self.voxel_indices[tokens]
+            self._rotary[key] = rotary_embedding(voxels, resolution, head_dim)
+        return self._rotary[key]
+
+
 class Hunyuan3DPaintTransformerBlock(BasicTransformerBlock):
     """``BasicTransformerBlock`` with Paint's material, reference, multiview, and DINO attention.
 
@@ -200,8 +232,7 @@ class Hunyuan3DPaintTransformerBlock(BasicTransformerBlock):
         reference = reference.unflatten(2, (num_views, -1)).flatten(0, 2)
         hidden_states = cross_attention_kwargs["reference_scale"] * reference + hidden_states
         if num_views > 1:
-            voxels, resolution = cross_attention_kwargs["voxel_indices"][tokens.shape[2]]
-            rotary_emb = rotary_embedding(voxels, resolution, self.attention_head_dim)
+            rotary_emb = cross_attention_kwargs["positions"].rotary_embedding(tokens.shape[2], self.attention_head_dim)
             multiview = self.attn_multiview(tokens.flatten(0, 1), rotary_emb=rotary_emb)
             hidden_states = multiview.unflatten(1, (num_views, -1)).flatten(0, 1) + hidden_states
 
@@ -304,7 +335,7 @@ class Hunyuan3DPaintUNet(Object3DModel):
         sample: torch.Tensor,
         timestep: torch.Tensor | float,
         condition_latents: torch.Tensor,
-        position_maps: torch.Tensor,
+        position_maps: torch.Tensor | Hunyuan3DPaintPositions,
         image_embeds: torch.Tensor,
         reference_features: dict[str, torch.Tensor],
         reference_scale: torch.Tensor,
@@ -315,7 +346,8 @@ class Hunyuan3DPaintUNet(Object3DModel):
         Every batch row denoises the same object: ``condition_latents`` ``(views, 2 C, h, w)`` (normal then position
         latents) and ``position_maps`` ``(views, 3, H, W)`` are shared. ``image_embeds`` ``(batch, tokens,
         image_embed_dim)`` are DINOv2 tokens, ``reference_features`` come from :meth:`encode_reference`, and
-        ``reference_scale`` ``(batch,)`` weights the reference attention of each row.
+        ``reference_scale`` ``(batch,)`` weights the reference attention of each row. Pass
+        ``Hunyuan3DPaintPositions(position_maps, latent_size)`` as ``position_maps`` to reuse it across steps.
         """
 
         batch, materials, views = sample.shape[:3]
@@ -332,7 +364,11 @@ class Hunyuan3DPaintUNet(Object3DModel):
                 "num_views": views,
                 "reference_features": reference_features,
                 "reference_scale": reference_scale.repeat_interleave(rows)[:, None, None],
-                "voxel_indices": position_voxel_indices(position_maps, sample.shape[-1]),
+                "positions": (
+                    position_maps
+                    if isinstance(position_maps, Hunyuan3DPaintPositions)
+                    else Hunyuan3DPaintPositions(position_maps, sample.shape[-1])
+                ),
                 "image_embeds": image.repeat_interleave(rows, dim=0),
             },
         ).sample.unflatten(0, (batch, materials, views))
@@ -398,6 +434,7 @@ class Hunyuan3DPaintRRDBNet(Object3DModel):
 __all__ = [
     "Hunyuan3DPaintMaterialAttnProcessor",
     "Hunyuan3DPaintMultiviewAttnProcessor",
+    "Hunyuan3DPaintPositions",
     "Hunyuan3DPaintRRDBNet",
     "Hunyuan3DPaintReferenceAttnProcessor",
     "Hunyuan3DPaintTransformerBlock",

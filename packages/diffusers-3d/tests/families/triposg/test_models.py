@@ -71,3 +71,16 @@ def test_vae_loaded_in_half_precision_embeds_queries_in_that_precision(tmp_path)
     vae = TripoSGVAEDecoder.from_pretrained(tmp_path, torch_dtype=torch.bfloat16)
     latents = torch.randn(1, 6, vae.config.latent_channels, dtype=torch.bfloat16)
     assert vae(latents, torch.rand(1, 5, 3)).sample.dtype == torch.bfloat16
+
+
+def test_vae_refines_latents_once_and_shares_them_across_query_batches():
+    model = TripoSGVAEDecoder(**tiny_config(TripoSGVAEDecoder)).eval()
+    generator = torch.Generator().manual_seed(2)
+    latents = torch.randn(1, 6, 4, generator=generator)
+    points = torch.rand(2, 9, 3, generator=generator) * 2 - 1
+    with torch.no_grad():
+        context = model.decode_latents(latents)
+        assert torch.equal(model.query(context, points[:1]), model(latents, points[:1]).sample)
+        shared = model.query(context, points)
+        expanded = model(latents.expand(2, -1, -1), points).sample
+    torch.testing.assert_close(shared, expanded)

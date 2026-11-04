@@ -98,3 +98,17 @@ def test_slat_flow_rope_is_unbounded_by_the_configured_resolution():
     hidden_states = TrellisSparseTensor(coordinates, torch.randn(2, 4, generator=torch.Generator().manual_seed(0)))
     output = model(hidden_states, torch.tensor([500.0]), torch.randn(1, 3, 12)).sample
     assert output.features.shape == (2, 4)
+
+
+def test_slat_flow_cached_positions_and_rope_phases_match_a_fresh_tensor():
+    model = Trellis2SLatFlowModel(**tiny_config(Trellis2SLatFlowModel)).eval()
+    generator = torch.Generator().manual_seed(1)
+    coordinates = torch.tensor([[0, 0, 0, 0], [1, 3, 1, 2], [0, 5, 6, 7], [1, 2, 2, 2]], dtype=torch.int64)
+    timestep, context = torch.tensor([300.0, 600.0]), torch.randn(2, 3, 12, generator=generator)
+    first, second = (torch.randn(4, 4, generator=generator) for _ in range(2))
+    with torch.no_grad():
+        latents = TrellisSparseTensor(coordinates, first)
+        model(latents, timestep, context)
+        cached = model(latents.replace(second), timestep, context).sample.features
+        fresh = model(TrellisSparseTensor(coordinates.clone(), second), timestep, context).sample.features
+    assert torch.equal(cached, fresh)

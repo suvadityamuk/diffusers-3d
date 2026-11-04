@@ -14,6 +14,7 @@ import torch
 import torch.nn.functional as F
 
 from ..objects import CameraRig, CoordinateSystem, MeshAsset
+from ._hammersley import radical_inverse
 
 
 @dataclass(frozen=True)
@@ -47,7 +48,7 @@ def sphere_hammersley_cameras(
     up = torch.tensor([0.0, 0.0, 1.0] if z_up else [0.0, 1.0, 0.0])
     world_to_camera = []
     for index in range(count):
-        u, v = index / count, _radical_inverse_base2(index)
+        u, v = index / count, radical_inverse(2, index)
         pitch = math.acos(1.0 - 2.0 * u) - math.pi / 2  # elevation in [-pi/2, pi/2]
         yaw = 2.0 * math.pi * v
         horizontal = radius * math.cos(pitch)
@@ -73,15 +74,6 @@ def sphere_hammersley_cameras(
         image_sizes=torch.full((count, 2), image_size, dtype=torch.int64),
         coordinate_system=coordinate_system,
     ).to(device)
-
-
-def _radical_inverse_base2(index: int) -> float:
-    result, scale = 0.0, 0.5
-    while index:
-        result += scale * (index & 1)
-        index >>= 1
-        scale *= 0.5
-    return result
 
 
 def pixel_barycentrics(

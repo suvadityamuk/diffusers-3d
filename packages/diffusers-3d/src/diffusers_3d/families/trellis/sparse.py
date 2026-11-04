@@ -7,13 +7,15 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from collections.abc import Callable
+from dataclasses import dataclass, field
 from typing import Any
 
 import torch
 
 from ...objects import CoordinateSystem, SparseVoxelAsset
 from ...objects.base import TensorDataMixin
+from .sparse_ops import sparse_batch_positions
 
 
 def trellis_grid_transform(
@@ -29,6 +31,15 @@ def trellis_grid_transform(
     return transform
 
 
+class _CoordinateCache:
+    """Structures derived from one coordinate tensor; not a mapping, so tensor traversal and ``.to`` skip it."""
+
+    __slots__ = ("entries",)
+
+    def __init__(self) -> None:
+        self.entries: dict[Any, Any] = {}
+
+
 @dataclass(frozen=True, slots=True)
 class TrellisSparseTensor(TensorDataMixin):
     """Immutable coordinate/feature bridge using TRELLIS ``[batch, x, y, z]`` coordinates."""
@@ -36,29 +47,27 @@ class TrellisSparseTensor(TensorDataMixin):
     coordinates: torch.Tensor
     features: torch.Tensor
     source_assets: tuple[SparseVoxelAsset, ...] | None = None
+    # Shared by every tensor :meth:`replace` derives from this one; see :meth:`cached`.
+    _coordinate_cache: _CoordinateCache = field(
+        default_factory=_CoordinateCache, init=False, repr=False, compare=False
+    )
+    _batch_size: int = field(default=0, init=False, repr=False, compare=False)
 
     def __post_init__(self) -> None:
         if not isinstance(self.coordinates, torch.Tensor) or self.coordinates.ndim != 2:
             raise ValueError("coordinates must be a rank-two tensor")
         if self.coordinates.shape[1] != 4 or self.coordinates.is_floating_point():
             raise ValueError("coordinates must have integer shape (active_voxels, 4)")
-        if not isinstance(self.features, torch.Tensor) or self.features.ndim != 2:
-            raise ValueError("features must be a rank-two tensor")
-        if not self.features.is_floating_point() or self.features.shape[1] == 0:
-            raise ValueError("features must have at least one floating-point channel")
-        if self.coordinates.shape[0] == 0 or self.features.shape[0] != self.coordinates.shape[0]:
-            raise ValueError("coordinates and features must contain the same non-zero active-voxel count")
-        if self.coordinates.device != self.features.device:
-            raise ValueError("coordinates and features must be on the same device")
+        self._check_features(self.coordinates, self.features)
         if bool((self.coordinates < 0).any()):
             raise ValueError("TRELLIS sparse coordinates must be non-negative")
         batch_indices = self.coordinates[:, 0]
         unique_batches = torch.unique(batch_indices, sorted=True)
-        expected_batches = torch.arange(
-            int(batch_indices.max().item()) + 1, device=batch_indices.device, dtype=batch_indices.dtype
-        )
+        batch_size = int(batch_indices.max().item()) + 1
+        expected_batches = torch.arange(batch_size, device=batch_indices.device, dtype=batch_indices.dtype)
         if not torch.equal(unique_batches, expected_batches):
             raise ValueError("batch indices must be contiguous and start at zero")
+        object.__setattr__(self, "_batch_size", batch_size)
         if torch.unique(self.coordinates, dim=0).shape[0] != self.coordinates.shape[0]:
             raise ValueError("coordinates must not contain duplicate active voxels")
         if self.source_assets is not None:
@@ -69,6 +78,68 @@ class TrellisSparseTensor(TensorDataMixin):
             if any(asset.coordinates.shape[0] != int(expected_counts[index]) for index, asset in enumerate(assets)):
                 raise ValueError("source asset active-voxel counts must match coordinates")
             object.__setattr__(self, "source_assets", assets)
+
+    @staticmethod
+    def _check_features(coordinates: torch.Tensor, features: torch.Tensor) -> None:
+        if not isinstance(features, torch.Tensor) or features.ndim != 2:
+            raise ValueError("features must be a rank-two tensor")
+        if not features.is_floating_point() or features.shape[1] == 0:
+            raise ValueError("features must have at least one floating-point channel")
+        if coordinates.shape[0] == 0 or features.shape[0] != coordinates.shape[0]:
+            raise ValueError("coordinates and features must contain the same non-zero active-voxel count")
+        if coordinates.device != features.device:
+            raise ValueError("coordinates and features must be on the same device")
+
+    def _derive(
+        self,
+        coordinates: torch.Tensor,
+        features: torch.Tensor,
+        source_assets: tuple[SparseVoxelAsset, ...] | None,
+        coordinate_cache: _CoordinateCache,
+    ) -> TrellisSparseTensor:
+        """A tensor over this one's already validated coordinates; only ``features`` is checked, without syncing."""
+
+        self._check_features(coordinates, features)
+        derived = object.__new__(TrellisSparseTensor)
+        for name, value in (
+            ("coordinates", coordinates),
+            ("features", features),
+            ("source_assets", source_assets),
+            ("_coordinate_cache", coordinate_cache),
+            ("_batch_size", self._batch_size),
+        ):
+            object.__setattr__(derived, name, value)
+        return derived
+
+    def cached(self, key: Any, build: Callable[[], Any]) -> Any:
+        """``build()``, computed once per coordinate set and shared with every tensor :meth:`replace` derives.
+
+        Use it for structures that depend only on ``coordinates`` (neighbour tables, pooling indices, batch
+        positions), so a sampling loop that keeps the coordinates builds them once rather than every step.
+        """
+
+        entries = self._coordinate_cache.entries
+        if key not in entries:
+            entries[key] = build()
+        return entries[key]
+
+    def has_coordinates_of(self, other: TrellisSparseTensor) -> bool:
+        """Whether ``other`` has exactly these coordinates; a tensor comparison only the first time per pair."""
+
+        if self.coordinates is other.coordinates:
+            return True
+        key = ("has_coordinates_of", id(other.coordinates))
+        entry = self._coordinate_cache.entries.get(key)
+        # The entry keeps ``other.coordinates`` alive, so its id cannot be reused while the entry exists.
+        if entry is None or entry[0] is not other.coordinates:
+            entry = (other.coordinates, torch.equal(self.coordinates, other.coordinates))
+            self._coordinate_cache.entries[key] = entry
+        return entry[1]
+
+    def batch_positions(self) -> tuple[torch.Tensor, ...]:
+        """Row positions of each batch item, computed once per coordinate set."""
+
+        return self.cached("batch_positions", lambda: sparse_batch_positions(self.coordinates[:, 0], self.batch_size))
 
     @property
     def coords(self) -> torch.Tensor:
@@ -88,22 +159,24 @@ class TrellisSparseTensor(TensorDataMixin):
 
     @property
     def batch_size(self) -> int:
-        return int(self.coordinates[:, 0].max().item()) + 1
+        return self._batch_size
 
     @property
     def channels(self) -> int:
         return self.features.shape[1]
 
     def replace(self, features: torch.Tensor) -> TrellisSparseTensor:
-        return TrellisSparseTensor(self.coordinates, features, self.source_assets)
+        return self._derive(self.coordinates, features, self.source_assets, self._coordinate_cache)
 
     def to(self, *args: Any, **kwargs: Any) -> TrellisSparseTensor:
         features = self.features.to(*args, **kwargs)
+        if features.device == self.coordinates.device:
+            return self.replace(features)
         coordinates = self.coordinates.to(device=features.device)
         source_assets = None
         if self.source_assets is not None:
             source_assets = tuple(asset.to(device=features.device) for asset in self.source_assets)
-        return TrellisSparseTensor(coordinates, features, source_assets)
+        return self._derive(coordinates, features, source_assets, _CoordinateCache())
 
     def _aligned_value(self, value: torch.Tensor | float | TrellisSparseTensor) -> torch.Tensor | float:
         """Operand for elementwise arithmetic; ``(batch, 1 | channels)`` tensors broadcast per batch item."""

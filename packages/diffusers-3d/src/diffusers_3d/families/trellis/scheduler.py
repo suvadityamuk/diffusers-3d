@@ -39,7 +39,7 @@ def _validate_pair(
         raise TypeError(f"{names} must both be dense tensors or both be TrellisSparseTensor values")
     if _features(left).shape != _features(right).shape:
         raise ValueError(f"{names} must have identical feature shapes")
-    if isinstance(left, TrellisSparseTensor) and not torch.equal(left.coordinates, right.coordinates):
+    if isinstance(left, TrellisSparseTensor) and not left.has_coordinates_of(right):
         raise ValueError(f"{names} must have identical sparse coordinates")
 
 

@@ -37,7 +37,7 @@ from ...data.image_processing import _quantized_rgba
 from ...execution.pipelines import Object3DPipeline
 from ...objects import Latent3DOutput, MeshAsset, Object3DPipelineOutput, PBRMaterial
 from .paint_components import HUNYUAN3D_PAINT_EXTERNAL_COMPONENTS
-from .paint_models import Hunyuan3DPaintRRDBNet, Hunyuan3DPaintUNet
+from .paint_models import Hunyuan3DPaintPositions, Hunyuan3DPaintRRDBNet, Hunyuan3DPaintUNet
 
 # (elevation, azimuth, bake weight) in degrees: six fixed views, then 12 azimuths at +-20 degrees elevation.
 CANDIDATE_VIEWS = (
@@ -376,7 +376,7 @@ class Hunyuan3DPaintPipeline(Object3DPipeline):
             image_embeds = torch.cat([torch.zeros_like(image_embeds), torch.zeros_like(image_embeds), image_embeds])
             reference_scale = torch.tensor([0.0, 1.0, 1.0], device=device, dtype=dtype)
         reference_features = self.unet.encode_reference(reference_latents.to(dtype))
-        position_maps = position_maps.to(device, dtype)
+        positions = Hunyuan3DPaintPositions(position_maps.to(device, dtype), latents.shape[-1])
 
         self.scheduler.set_timesteps(num_inference_steps, device=device)
         for timestep in self.progress_bar(self.scheduler.timesteps):
@@ -385,7 +385,7 @@ class Hunyuan3DPaintPipeline(Object3DPipeline):
                 sample.expand(reference_scale.shape[0], -1, -1, -1, -1, -1),
                 timestep,
                 condition_latents.to(dtype),
-                position_maps,
+                positions,
                 image_embeds.to(dtype),
                 reference_features,
                 reference_scale,

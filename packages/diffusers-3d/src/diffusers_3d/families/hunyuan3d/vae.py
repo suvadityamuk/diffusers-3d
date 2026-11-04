@@ -48,8 +48,19 @@ class Hunyuan3DVAEDecoderBlock(nn.Module):
         self.norm3 = nn.LayerNorm(width, eps=1e-6)
         self.ff = FeedForward(width, activation_fn="gelu")
 
-    def forward(self, hidden_states: torch.Tensor, encoder_hidden_states: torch.Tensor) -> torch.Tensor:
-        hidden_states = hidden_states + self.attn(self.norm1(hidden_states), self.norm2(encoder_hidden_states))
+    def project_context(self, encoder_hidden_states: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+        return self.attn.project_key_value(self.norm2(encoder_hidden_states))
+
+    def forward(
+        self,
+        hidden_states: torch.Tensor,
+        encoder_hidden_states: torch.Tensor | None = None,
+        *,
+        key_value: tuple[torch.Tensor, torch.Tensor] | None = None,
+    ) -> torch.Tensor:
+        if key_value is None:
+            key_value = self.project_context(encoder_hidden_states)
+        hidden_states = hidden_states + self.attn(self.norm1(hidden_states), key_value=key_value)
         return hidden_states + self.ff(self.norm3(hidden_states))
 
 
@@ -95,12 +106,31 @@ class Hunyuan3DShapeVAE(Object3DModel):
             return (hidden_states,)
         return Hunyuan3DShapeVAEOutput(sample=hidden_states)
 
-    def query_occupancy(self, decoded_latents: torch.Tensor, points: torch.Tensor) -> torch.Tensor:
-        """Occupancy logits (positive inside) of ``(batch, points, 3)`` positions, shape ``(batch, points)``."""
+    def occupancy_context(self, decoded_latents: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+        """Key/value projections of ``decoded_latents`` that every :meth:`query_occupancy` call attends to.
 
+        Compute them once per shape and pass them as ``context`` when querying many point chunks.
+        """
+
+        return self.decoder_block.project_context(decoded_latents)
+
+    def query_occupancy(
+        self,
+        decoded_latents: torch.Tensor | None,
+        points: torch.Tensor,
+        *,
+        context: tuple[torch.Tensor, torch.Tensor] | None = None,
+    ) -> torch.Tensor:
+        """Occupancy logits (positive inside) of ``(batch, points, 3)`` positions, shape ``(batch, points)``.
+
+        ``context`` is :meth:`occupancy_context` of ``decoded_latents``; when given, ``decoded_latents`` is unused.
+        """
+
+        if context is None:
+            context = self.occupancy_context(decoded_latents)
         frequencies = (points[..., None] * self.frequencies.to(points.dtype)).flatten(-2)
         embedding = torch.cat([points, frequencies.sin(), frequencies.cos()], dim=-1)
-        hidden_states = self.decoder_block(self.query_proj(embedding.to(decoded_latents.dtype)), decoded_latents)
+        hidden_states = self.decoder_block(self.query_proj(embedding.to(context[0].dtype)), key_value=context)
         return self.proj_out(self.norm_out(hidden_states)).squeeze(-1)
 
 

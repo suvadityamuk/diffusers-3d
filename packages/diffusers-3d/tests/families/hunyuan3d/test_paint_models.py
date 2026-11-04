@@ -2,9 +2,14 @@ from __future__ import annotations
 
 import torch
 from _configs import tiny_config
+from diffusers.models.attention_dispatch import _AttentionBackendRegistry
 
 from diffusers_3d import Hunyuan3DPaintRRDBNet, Hunyuan3DPaintUNet
-from diffusers_3d.families.hunyuan3d.paint_models import Hunyuan3DPaintTransformerBlock, position_voxel_indices
+from diffusers_3d.families.hunyuan3d.paint_models import (
+    Hunyuan3DPaintPositions,
+    Hunyuan3DPaintTransformerBlock,
+    position_voxel_indices,
+)
 
 
 def _unet() -> Hunyuan3DPaintUNet:
@@ -80,3 +85,34 @@ def test_rrdbnet_upscales_four_times_with_the_released_layer_names():
         assert model(torch.rand(2, 3, 5, 7)).shape == (2, 3, 20, 28)
     names = set(model.state_dict())
     assert {"conv_first.weight", "body.0.rdb3.conv5.bias", "conv_up2.weight", "conv_last.bias"} <= names
+
+
+def test_prepared_positions_reproduce_raw_position_maps_and_cache_rotary_tables():
+    model = _unet()
+    inputs = _inputs()
+    features = model.encode_reference(torch.randn(2, 4, 8, 8))
+    positions = Hunyuan3DPaintPositions(inputs["position_maps"], inputs["sample"].shape[-1])
+    with torch.no_grad():
+        expected = model(**inputs, reference_features=features).sample
+        actual = model(**{**inputs, "position_maps": positions}, reference_features=features).sample
+        cached = dict(positions._rotary)
+        again = model(**{**inputs, "position_maps": positions}, reference_features=features).sample
+    assert torch.equal(actual, expected) and torch.equal(again, expected)
+    assert cached and all(positions._rotary[key] is value for key, value in cached.items())
+
+
+def test_paint_attention_processors_follow_the_attention_backend():
+    model = _unet()
+    # ``set_attention_backend`` also switches the process-wide default; restore it for later tests.
+    previous, _ = _AttentionBackendRegistry.get_active_backend()
+    try:
+        model.set_attention_backend("_native_math")
+        paint = [
+            module.processor
+            for module in model.modules()
+            if type(getattr(module, "processor", None)).__name__.startswith("Hunyuan3DPaint")
+        ]
+        assert paint and all(processor._attention_backend.value == "_native_math" for processor in paint)
+    finally:
+        model.reset_attention_backend()
+        _AttentionBackendRegistry.set_active_backend(previous)

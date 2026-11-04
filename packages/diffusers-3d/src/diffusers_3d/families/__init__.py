@@ -22,6 +22,8 @@ _TRELLIS_EXPORTS = {
     "TrellisSparseTensor",
     "TrellisTextTo3DPipeline",
     "convert_trellis_checkpoint",
+    "get_sparse_conv_backend",
+    "set_sparse_conv_backend",
     "trellis_grid_transform",
 }
 

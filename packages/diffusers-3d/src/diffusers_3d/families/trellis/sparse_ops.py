@@ -15,10 +15,16 @@ dense attention, trading speed for running on any device.
 
 from __future__ import annotations
 
+import functools
+import importlib
+import os
 from dataclasses import dataclass
+from typing import Any
 
 import torch
 from torch import nn
+
+from ...backends._optional import require
 
 
 def _check_coordinates(coordinates: torch.Tensor) -> None:
@@ -71,6 +77,118 @@ def submanifold_neighbors(coordinates: torch.Tensor, kernel_size: int = 3, dilat
     return torch.where(found, sorted_index[position], torch.full_like(position, -1))
 
 
+_SPARSE_CONV_BACKENDS = ("auto", "torch", "flex_gemm")
+_sparse_conv_backend = os.environ.get("DIFFUSERS_3D_SPARSE_CONV_BACKEND", "auto")
+
+
+def set_sparse_conv_backend(backend: str) -> None:
+    """Choose how submanifold convolutions run: ``"auto"`` (default), ``"torch"``, or ``"flex_gemm"``.
+
+    ``"flex_gemm"`` runs FlexGEMM's Triton implicit-GEMM kernels everywhere (CUDA only;
+    ``pip install -r requirements/backends/flex_gemm.txt``). ``"torch"`` runs the portable gather-GEMM-scatter
+    everywhere. ``"auto"`` follows each family's release: FlexGEMM for CUDA tensors, when installed, in families whose
+    upstream runs it (TRELLIS.2 and Pixal3D), and PyTorch elsewhere (TRELLIS and SAM 3D Objects ship spconv). The
+    ``DIFFUSERS_3D_SPARSE_CONV_BACKEND`` environment variable sets the initial choice.
+    """
+
+    global _sparse_conv_backend
+    if backend not in _SPARSE_CONV_BACKENDS:
+        raise ValueError(f"backend must be one of {_SPARSE_CONV_BACKENDS}")
+    _sparse_conv_backend = backend
+
+
+def get_sparse_conv_backend() -> str:
+    return _sparse_conv_backend
+
+
+@functools.lru_cache(maxsize=None)
+def _flex_gemm_spconv() -> Any:
+    try:
+        return importlib.import_module("flex_gemm.ops.spconv")
+    except ImportError:
+        return None
+
+
+def _uses_flex_gemm(features: torch.Tensor, upstream_backend: str) -> bool:
+    if _sparse_conv_backend == "torch":
+        return False
+    if _sparse_conv_backend == "flex_gemm":
+        if not features.is_cuda:
+            raise ValueError("the flex_gemm sparse convolution backend needs CUDA tensors")
+        require("flex_gemm.ops.spconv", "flex_gemm")
+        return True
+    return upstream_backend == "flex_gemm" and features.is_cuda and _flex_gemm_spconv() is not None
+
+
+class SubmanifoldNeighbors:
+    """Neighbour structure of one coordinate set, shared by every submanifold convolution over it.
+
+    Built lazily for whichever backend runs: the PyTorch path extracts each tap's active ``(rows, sources)`` pairs
+    from a :func:`submanifold_neighbors` table (one host sync per tap, paid once), and FlexGEMM keeps its own
+    hash-map neighbour cache. Pass one instance as ``neighbors`` to every layer over the same coordinates.
+    """
+
+    def __init__(
+        self,
+        coordinates: torch.Tensor,
+        kernel_size: int = 3,
+        dilation: int = 1,
+        *,
+        table: torch.Tensor | None = None,
+    ) -> None:
+        _check_coordinates(coordinates)
+        self.coordinates = coordinates
+        self.kernel_size = kernel_size
+        self.dilation = dilation
+        self._table = table
+        self._taps: tuple[tuple[int, torch.Tensor | None, torch.Tensor | None], ...] | None = None
+        self._flex_gemm: tuple[torch.Tensor, torch.Size, Any] | None = None
+
+    @property
+    def num_voxels(self) -> int:
+        return self.coordinates.shape[0]
+
+    @property
+    def table(self) -> torch.Tensor:
+        """The ``(N, kernel_size**3)`` :func:`submanifold_neighbors` table."""
+
+        if self._table is None:
+            self._table = submanifold_neighbors(self.coordinates, self.kernel_size, self.dilation)
+        return self._table
+
+    @property
+    def taps(self) -> tuple[tuple[int, torch.Tensor | None, torch.Tensor | None], ...]:
+        """``(tap, rows, sources)`` in kernel order; ``rows is None`` for the centre tap, and empty taps are dropped."""
+
+        if self._taps is None:
+            table, center, taps = self.table, self.kernel_size**3 // 2, []
+            for tap in range(table.shape[1]):
+                if tap == center:
+                    taps.append((tap, None, None))
+                    continue
+                index = table[:, tap]
+                rows = torch.nonzero(index >= 0, as_tuple=False).reshape(-1)
+                if rows.numel():
+                    taps.append((tap, rows, index[rows]))
+            self._taps = tuple(taps)
+            self._table = None  # the taps hold everything the PyTorch path needs
+        return self._taps
+
+    def _flex_gemm_conv(self, features: torch.Tensor, weight: torch.Tensor, bias: torch.Tensor | None) -> torch.Tensor:
+        spconv = _flex_gemm_spconv()
+        if self._flex_gemm is None:
+            coordinates = self.coordinates.to(torch.int32).contiguous()
+            extents = (coordinates.amax(dim=0) + 1).tolist()
+            shape = torch.Size([extents[0], features.shape[1], *extents[1:]])
+            self._flex_gemm = (coordinates, shape, None)
+        coordinates, shape, cache = self._flex_gemm
+        output, cache = spconv.sparse_submanifold_conv3d(
+            features.contiguous(), coordinates, shape, weight, bias, cache, (self.dilation,) * 3
+        )
+        self._flex_gemm = (coordinates, shape, cache)
+        return output
+
+
 def sparse_submanifold_conv3d(
     coordinates: torch.Tensor,
     features: torch.Tensor,
@@ -78,13 +196,16 @@ def sparse_submanifold_conv3d(
     bias: torch.Tensor | None = None,
     *,
     dilation: int = 1,
-    neighbors: torch.Tensor | None = None,
+    neighbors: torch.Tensor | SubmanifoldNeighbors | None = None,
+    upstream_backend: str = "torch",
 ) -> torch.Tensor:
     """Submanifold 3D convolution: the output is defined on the input's active voxels only.
 
     ``weight`` has the spconv/FlexGEMM layout ``(out_channels, k, k, k, in_channels)``. The result equals a
     dense ``Conv3d`` (cross-correlation, ``padding=k // 2``, zeros elsewhere) evaluated at the active voxels.
-    Pass a precomputed ``neighbors`` table from :func:`submanifold_neighbors` to reuse it across layers.
+    Pass a :class:`SubmanifoldNeighbors` (or a :func:`submanifold_neighbors` table) to reuse the neighbour
+    structure across layers. Runs on the backend chosen by :func:`set_sparse_conv_backend`; ``upstream_backend``
+    (``"torch"`` or ``"flex_gemm"``) is what the calling family's release uses, which ``"auto"`` follows.
     """
 
     if weight.ndim != 5 or weight.shape[1] != weight.shape[2] or weight.shape[1] != weight.shape[3]:
@@ -92,10 +213,16 @@ def sparse_submanifold_conv3d(
     out_channels, kernel_size = weight.shape[0], weight.shape[1]
     if features.ndim != 2 or features.shape[1] != weight.shape[4]:
         raise ValueError(f"features must have shape (N, {weight.shape[4]})")
-    if neighbors is None:
-        neighbors = submanifold_neighbors(coordinates, kernel_size, dilation)
-    elif neighbors.shape != (features.shape[0], kernel_size**3):
-        raise ValueError("neighbors table does not match the features and kernel size")
+    if isinstance(neighbors, SubmanifoldNeighbors):
+        if neighbors.num_voxels != features.shape[0] or neighbors.kernel_size != kernel_size:
+            raise ValueError("neighbors do not match the features and kernel size")
+    else:
+        if neighbors is not None and neighbors.shape != (features.shape[0], kernel_size**3):
+            raise ValueError("neighbors table does not match the features and kernel size")
+        neighbors = SubmanifoldNeighbors(coordinates, kernel_size, dilation, table=neighbors)
+
+    if _uses_flex_gemm(features, upstream_backend):
+        return neighbors._flex_gemm_conv(features, weight, bias)
 
     taps = weight.reshape(out_channels, kernel_size**3, weight.shape[4])
     # Sum the taps in float32 so half-precision runs do not lose bits on every one of the 27 additions.
@@ -103,16 +230,11 @@ def sparse_submanifold_conv3d(
     output = features.new_zeros(features.shape[0], out_channels, dtype=accumulate_dtype)
     if bias is not None:
         output += bias.to(dtype=output.dtype)
-    center = kernel_size**3 // 2
-    for tap in range(kernel_size**3):
-        if tap == center:
+    for tap, rows, sources in neighbors.taps:
+        if rows is None:
             output += features @ taps[:, tap].T
-            continue
-        index = neighbors[:, tap]
-        rows = torch.nonzero(index >= 0, as_tuple=False).reshape(-1)
-        if rows.numel() == 0:
-            continue
-        output.index_add_(0, rows, (features[index[rows]] @ taps[:, tap].T).to(dtype=accumulate_dtype))
+        else:
+            output.index_add_(0, rows, (features[sources] @ taps[:, tap].T).to(dtype=accumulate_dtype))
     return output.to(dtype=features.dtype)
 
 
@@ -121,10 +243,23 @@ class SparseConv3d(nn.Module):
 
     State-dict keys are ``weight`` and ``bias``, matching FlexGEMM-trained TRELLIS.2 checkpoints. TRELLIS
     checkpoints wrap the same tensors one level deeper (``conv.weight``); see the TRELLIS models module.
+    ``upstream_backend`` is the backend the family's release runs, which ``"auto"`` follows (see
+    :func:`set_sparse_conv_backend`).
     """
 
-    def __init__(self, in_channels: int, out_channels: int, kernel_size: int = 3, *, bias: bool = True) -> None:
+    def __init__(
+        self,
+        in_channels: int,
+        out_channels: int,
+        kernel_size: int = 3,
+        *,
+        bias: bool = True,
+        upstream_backend: str = "torch",
+    ) -> None:
         super().__init__()
+        if upstream_backend not in ("torch", "flex_gemm"):
+            raise ValueError("upstream_backend must be 'torch' or 'flex_gemm'")
+        self.upstream_backend = upstream_backend
         if min(in_channels, out_channels, kernel_size) <= 0 or kernel_size % 2 == 0:
             raise ValueError("channels must be positive and kernel_size a positive odd integer")
         self.in_channels = in_channels
@@ -135,9 +270,23 @@ class SparseConv3d(nn.Module):
         nn.init.kaiming_uniform_(self.weight, a=5**0.5)
 
     def forward(
-        self, coordinates: torch.Tensor, features: torch.Tensor, *, neighbors: torch.Tensor | None = None
+        self,
+        coordinates: torch.Tensor,
+        features: torch.Tensor,
+        *,
+        neighbors: torch.Tensor | SubmanifoldNeighbors | None = None,
     ) -> torch.Tensor:
-        return sparse_submanifold_conv3d(coordinates, features, self.weight, self.bias, neighbors=neighbors)
+        return sparse_submanifold_conv3d(
+            coordinates, features, self.weight, self.bias, neighbors=neighbors, upstream_backend=self.upstream_backend
+        )
+
+
+def sparse_batch_positions(batch_indices: torch.Tensor, batch_size: int) -> tuple[torch.Tensor, ...]:
+    """Row positions of each batch item of a flat sparse tensor, from its per-row batch indices."""
+
+    return tuple(
+        torch.nonzero(batch_indices == batch_index, as_tuple=False).reshape(-1) for batch_index in range(batch_size)
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -145,8 +294,27 @@ class SparseConv3d(nn.Module):
 # ---------------------------------------------------------------------------
 
 
+def sparse_downsample_indices(
+    coordinates: torch.Tensor, factor: int = 2
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    """``(coarse_coordinates, inverse, counts)`` of :func:`sparse_downsample`, which depend only on coordinates."""
+
+    _check_coordinates(coordinates)
+    if factor <= 0:
+        raise ValueError("factor must be positive")
+    coarse = coordinates.clone()
+    coarse[:, 1:] = torch.div(coarse[:, 1:], factor, rounding_mode="floor")
+    coarse, inverse = torch.unique(coarse, dim=0, return_inverse=True)
+    return coarse, inverse, torch.bincount(inverse, minlength=coarse.shape[0])
+
+
 def sparse_downsample(
-    coordinates: torch.Tensor, features: torch.Tensor, factor: int = 2, *, count_zero_buffer: bool = False
+    coordinates: torch.Tensor,
+    features: torch.Tensor,
+    factor: int = 2,
+    *,
+    count_zero_buffer: bool = False,
+    indices: tuple[torch.Tensor, torch.Tensor, torch.Tensor] | None = None,
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     """Average-pool active voxels into ``factor``-sized cells (TRELLIS ``SparseDownsample``).
 
@@ -155,16 +323,12 @@ def sparse_downsample(
 
     TRELLIS (v1) pools with ``scatter_reduce(reduce="mean")`` into a zero buffer and leaves the default
     ``include_self=True``, so every cell divides by ``n + 1`` rather than ``n``. The released SLAT flow
-    weights were trained that way; pass ``count_zero_buffer=True`` to reproduce it.
+    weights were trained that way; pass ``count_zero_buffer=True`` to reproduce it. Pass ``indices`` from
+    :func:`sparse_downsample_indices` to reuse them.
     """
 
-    _check_coordinates(coordinates)
-    if factor <= 0:
-        raise ValueError("factor must be positive")
-    coarse = coordinates.clone()
-    coarse[:, 1:] = torch.div(coarse[:, 1:], factor, rounding_mode="floor")
-    coarse, inverse = torch.unique(coarse, dim=0, return_inverse=True)
-    counts = torch.bincount(inverse, minlength=coarse.shape[0]).to(dtype=features.dtype)
+    coarse, inverse, counts = sparse_downsample_indices(coordinates, factor) if indices is None else indices
+    counts = counts.to(dtype=features.dtype)
     if count_zero_buffer:
         counts = counts + 1
     pooled = features.new_zeros(coarse.shape[0], features.shape[1]).index_add_(0, inverse, features)
@@ -263,9 +427,14 @@ def sparse_window_partition(coordinates: torch.Tensor, window_size: int, shift: 
 
 __all__ = [
     "SparseConv3d",
+    "SubmanifoldNeighbors",
     "SparseWindowPartition",
     "channel_to_spatial",
+    "get_sparse_conv_backend",
+    "set_sparse_conv_backend",
+    "sparse_batch_positions",
     "sparse_downsample",
+    "sparse_downsample_indices",
     "sparse_subdivide",
     "sparse_submanifold_conv3d",
     "sparse_upsample",

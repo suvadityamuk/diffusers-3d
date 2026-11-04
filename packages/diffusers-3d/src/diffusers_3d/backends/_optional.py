@@ -8,6 +8,7 @@ _INSTALL_HINTS = {
     "meshlab": 'pip install "diffusers-3d[meshlab]" (pymeshlab, GPL)',
     "gaussian": 'pip install "diffusers-3d[gaussian]"',
     "cumesh": "pip install -r requirements/backends/cumesh.txt (see docs/backends.md)",
+    "flex_gemm": "pip install --no-build-isolation -r requirements/backends/flex_gemm.txt (CUDA; see docs/backends.md)",
 }
 
 

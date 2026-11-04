@@ -19,6 +19,7 @@ from diffusers.models.modeling_utils import get_parameter_dtype
 from diffusers.utils import BaseOutput
 from torch import nn
 
+from ...backends._hammersley import hammersley_3d
 from ...execution.models import Object3DModel
 from ...objects import (
     CoordinateSystem,
@@ -37,7 +38,7 @@ from .models import (
     _unpatchify_3d,
 )
 from .sparse import TrellisSparseTensor, trellis_grid_transform
-from .sparse_ops import SparseWindowPartition, sparse_subdivide, sparse_window_partition, submanifold_neighbors
+from .sparse_ops import SparseWindowPartition, SubmanifoldNeighbors, sparse_subdivide, sparse_window_partition
 
 
 @dataclass
@@ -289,21 +290,6 @@ class TrellisSparseTransformerBlock(nn.Module):
         return output
 
 
-def _radical_inverse(base: int, value: int) -> float:
-    result = 0.0
-    inverse_base = 1.0 / base
-    inverse_power = inverse_base
-    while value > 0:
-        result += (value % base) * inverse_power
-        value //= base
-        inverse_power *= inverse_base
-    return result
-
-
-def _hammersley_3d(index: int, count: int) -> tuple[float, float, float]:
-    return index / count, _radical_inverse(2, index), _radical_inverse(3, index)
-
-
 class _TrellisSLatDecoderBase(Object3DModel):
     """Transformer torso shared by the SLAT decoders (upstream ``SparseTransformerBase``)."""
 
@@ -475,9 +461,7 @@ class TrellisSLatGaussianDecoder(_TrellisSLatDecoderBase):
         self.rep_config = representation_config
         self.out_channels = num_gaussians * 14
         self.out_layer = nn.Linear(model_channels, self.out_channels)
-        perturbation = torch.tensor(
-            [_hammersley_3d(index, num_gaussians) for index in range(num_gaussians)], dtype=torch.float32
-        )
+        perturbation = hammersley_3d(num_gaussians)
         perturbation = (perturbation * 2 - 1) / float(representation_config["voxel_size"])
         self.register_buffer("offset_perturbation", torch.atanh(perturbation))
         self._initialize_weights()
@@ -653,7 +637,7 @@ class TrellisSparseSubdivideBlock3d(nn.Module):
         child_coordinates, parent_index, _ = sparse_subdivide(coordinates, all_children)
         hidden_states = hidden_states[parent_index]
         features = features[parent_index]
-        neighbors = submanifold_neighbors(child_coordinates, 3)
+        neighbors = SubmanifoldNeighbors(child_coordinates)
         hidden_states = self.out_layers[0](child_coordinates, hidden_states, neighbors=neighbors)
         hidden_states = _sparse_group_norm(self.out_layers[1], hidden_states, child_coordinates[:, 0], batch_size)
         hidden_states = self.out_layers[3](child_coordinates, F.silu(hidden_states), neighbors=neighbors)

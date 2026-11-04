@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Build CuMesh (used by the textured-GLB exports of TRELLIS and TRELLIS.2) and install gsplat.
+# Build CuMesh (used by the textured-GLB exports of TRELLIS and TRELLIS.2) and FlexGEMM (sparse convolutions and the
+# TRELLIS.2 PBR bake), and install gsplat.
 #
 # Needs a CUDA toolchain (nvcc) matching the installed torch.
 #   TORCH_CUDA_ARCH_LIST   defaults to 8.0 (A100).
@@ -12,4 +13,5 @@ here="$(cd "$(dirname "$0")/.." && pwd)"
 
 python -m pip install -q ninja gsplat
 python -m pip install -q --no-build-isolation -r "$here/requirements/backends/cumesh.txt"
-python -c "import cumesh, gsplat; print('cumesh and gsplat import')"
+python -m pip install -q --no-build-isolation -r "$here/requirements/backends/flex_gemm.txt"
+python -c "import cumesh, flex_gemm, gsplat; print('cumesh, flex_gemm, and gsplat import')"

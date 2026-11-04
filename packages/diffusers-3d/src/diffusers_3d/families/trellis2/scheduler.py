@@ -80,11 +80,10 @@ class Trellis2FlowEulerScheduler(TrellisFlowEulerScheduler):
         guided_x0_features = _features(guided_x0)
         if isinstance(sample, TrellisSparseTensor):
             rescaled = torch.empty_like(guided_x0_features)
-            for batch_index in range(sample.batch_size):
-                mask = sample.coordinates[:, 0] == batch_index
-                positive_std = positive_features[mask].std()
-                guided_std = guided_x0_features[mask].std()
-                rescaled[mask] = guided_x0_features[mask] * (positive_std / guided_std)
+            for positions in sample.batch_positions():
+                positive_std = positive_features[positions].std()
+                guided_std = guided_x0_features[positions].std()
+                rescaled[positions] = guided_x0_features[positions] * (positive_std / guided_std)
         else:
             dimensions = tuple(range(1, guided_x0_features.ndim))
             positive_std = positive_features.std(dim=dimensions, keepdim=True)

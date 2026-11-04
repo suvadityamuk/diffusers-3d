@@ -198,7 +198,7 @@ def test_hierarchical_extraction_matches_pinned_reference_on_an_analytic_field(q
 
     # Extraction only calls ``self.vae``; stand the analytic field in for the decoder.
     host = TripoSGImageTo3DPipeline.__new__(TripoSGImageTo3DPipeline)
-    vars(host)["vae"] = lambda latents, points, num_chunks: types.SimpleNamespace(sample=field(points.to(latents)))
+    vars(host)["vae"] = _FieldDecoder(lambda points, latents: field(points.to(latents)))
     (expected_vertices, expected_faces), *_ = reference.hierarchical_extract_geometry(
         lambda points: field(points.float()),
         torch.device("cpu"),
@@ -231,6 +231,19 @@ class _RecordingDiffDMC(torch.nn.Module):
         measure = import_reference_dependency("skimage.measure")
         vertices, faces, _, _ = measure.marching_cubes(torch.nan_to_num(sdf, nan=1.0).numpy(), 0.0)
         return torch.from_numpy(vertices.copy()), torch.from_numpy(faces.copy())
+
+
+class _FieldDecoder:
+    """Stands an analytic ``field(points, latents)`` in for the decoder's ``decode_latents``/``query`` pair."""
+
+    def __init__(self, field):
+        self.field = field
+
+    def decode_latents(self, latents):
+        return latents
+
+    def query(self, latents, points, num_chunks=None):
+        return self.field(points, latents)
 
 
 def _flash_extract(reference, monkeypatch, upstream_vae, host, latents, octree_depth):
@@ -276,9 +289,7 @@ def test_flash_extraction_matches_pinned_reference_on_an_analytic_field(octree_d
         decode=lambda latents, points: types.SimpleNamespace(sample=field(points, latents, "upstream")),
     )
     host = TripoSGImageTo3DPipeline.__new__(TripoSGImageTo3DPipeline)
-    vars(host)["vae"] = lambda latents, points, num_chunks: types.SimpleNamespace(
-        sample=field(points, latents, "port")
-    )
+    vars(host)["vae"] = _FieldDecoder(lambda points, latents: field(points, latents, "port"))
     sdf = _flash_extract(reference, monkeypatch, upstream_vae, host, torch.zeros(1, 1, 1), octree_depth)
     assert queries["port"] == queries["upstream"]
     assert queries["port"][0] == (2, 16**3, 3) and len(queries["port"]) > 32 + octree_depth - 6

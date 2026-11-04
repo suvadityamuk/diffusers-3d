@@ -22,6 +22,8 @@ _EXPORT_MODULES = {
     "TrellisSparseTensor": ".sparse",
     "TrellisTextTo3DPipeline": ".pipeline",
     "convert_trellis_checkpoint": ".conversion",
+    "get_sparse_conv_backend": ".sparse_ops",
+    "set_sparse_conv_backend": ".sparse_ops",
     "trellis_grid_transform": ".sparse",
 }
 

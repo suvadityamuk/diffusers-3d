@@ -87,3 +87,16 @@ def test_scheduler_integrates_from_noise_at_zero_to_data_at_one():
     torch.testing.assert_close(sample, torch.tensor([3.0]))
     scheduler.set_timesteps(50)
     assert torch.equal(scheduler.sigmas[:-1], torch.from_numpy(np.linspace(0, 1, 50)).float())
+
+
+def test_vae_occupancy_context_is_reused_exactly_across_point_chunks():
+    vae = Hunyuan3DShapeVAE(**tiny_config(Hunyuan3DShapeVAE)).eval()
+    generator = torch.Generator().manual_seed(4)
+    latents = torch.randn(2, 6, 8, generator=generator)
+    points = torch.rand(2, 11, 3, generator=generator)
+    with torch.no_grad():
+        tokens = vae(latents).sample
+        context = vae.occupancy_context(tokens)
+        chunked = torch.cat([vae.query_occupancy(None, chunk, context=context) for chunk in points.split(4, 1)], 1)
+        assert torch.equal(vae.query_occupancy(None, points, context=context), vae.query_occupancy(tokens, points))
+    torch.testing.assert_close(chunked, vae.query_occupancy(tokens, points))

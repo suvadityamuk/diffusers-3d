@@ -135,3 +135,23 @@ def test_slat_flow_io_stages_forward_and_released_key_layout(tmp_path):
 def test_slat_flow_rejects_mismatched_io_stages():
     with pytest.raises(ValueError, match="io_block_channels"):
         TrellisSLatFlowModel(**{**small_trellis_slat_flow_config(), "patch_size": 4})
+
+
+def test_slat_flow_reuses_coordinate_structures_across_steps_exactly():
+    """A sampling loop's replaced tensors share cached neighbours and pooling; results equal a fresh tensor's."""
+
+    model = TrellisSLatFlowModel(**small_trellis_slat_flow_config()).eval()
+    with torch.no_grad():
+        for block in (*model.input_blocks, *model.out_blocks):
+            block.conv2.conv.weight.normal_(std=0.02)
+    generator = torch.Generator().manual_seed(13)
+    coordinates = torch.nonzero(torch.rand(2, 8, 8, 8, generator=generator) < 0.3)
+    timesteps = torch.tensor([200.0, 800.0])
+    context = torch.randn(2, 7, model.config.cond_channels, generator=generator)
+    first, second = (torch.randn(coordinates.shape[0], 4, generator=generator) for _ in range(2))
+    with torch.no_grad():
+        latents = TrellisSparseTensor(coordinates, first)
+        model(latents, timesteps, context)
+        cached = model(latents.replace(second), timesteps, context).sample.features
+        fresh = model(TrellisSparseTensor(coordinates.clone(), second), timesteps, context).sample.features
+    assert torch.equal(cached, fresh)

@@ -16,14 +16,13 @@ import torch
 import torch.nn.functional as F
 from diffusers import FlowMatchEulerDiscreteScheduler
 from diffusers.utils.torch_utils import randn_tensor
-from PIL import Image, ImageFilter
+from PIL import Image
 from transformers import DINOv3ViTModel
 from transformers.image_utils import IMAGENET_DEFAULT_MEAN, IMAGENET_DEFAULT_STD
 
 from ...data import ImageCondition, ImageInput
 from ...data.background import BackgroundRemoval, lacks_alpha, resize_shortest_side
 from ...data.birefnet import BiRefNetBackgroundRemover
-from ...data.image_processing import validate_image_condition_pixels
 from ...execution.pipelines import ExternalComponent, Object3DPipeline
 from ...objects import GaussianSplatAsset, Latent3DOutput, Object3DPipelineOutput
 from ..trellis2.models import DINOV3_REVISIONS, DINOV3_VITH16PLUS_REPO, load_dinov3
@@ -35,6 +34,7 @@ from ..triposplat.models import (
     TripoSplatTransformerModel,
     load_flux2_vae_encoder,
 )
+from ..triposplat.pipeline import _prepare_square_image
 
 # Square crop side as a multiple of the foreground's longer side: tight for renders, looser for photos.
 CROP_MARGINS = {"synthetic": 1.2, "real": 1.7}
@@ -66,35 +66,7 @@ def prepare_idol_image(condition: ImageCondition, *, image_size: int = 1024, cro
     background removal does the same before this runs.
     """
 
-    validate_image_condition_pixels(condition)
-    pixels = condition.image
-    if pixels.shape[0] != 4 and condition.mask is None:
-        raise ValueError(
-            "IDOL needs the foreground as RGBA alpha or a mask; pass one, or keep background removal on "
-            "(the default) for RGB inputs"
-        )
-    alpha = pixels[3:4] if pixels.shape[0] == 4 else torch.ones_like(pixels[:1])
-    if condition.mask is not None:
-        alpha = alpha * condition.mask
-    rgba = torch.cat([pixels[:3].expand(3, -1, -1), alpha]).mul(255).round().to(torch.uint8)
-    image = Image.fromarray(rgba.permute(1, 2, 0).cpu().numpy(), "RGBA")
-
-    width, height = image.size
-    scale = image_size / min(width, height)
-    image = image.resize((max(1, round(width * scale)), max(1, round(height * scale))), Image.LANCZOS)
-    if np.array(image.getchannel(3)).min() == 255:
-        raise ValueError("the alpha/mask must mark a background (some pixels must be transparent)")
-    image.putalpha(image.getchannel(3).filter(ImageFilter.MinFilter(3)))
-    rows, columns = np.nonzero(np.array(image.getchannel(3)))
-    if rows.size == 0:
-        raise ValueError("the alpha/mask has no foreground")
-    centre_x, centre_y = (columns.min() + columns.max()) / 2, (rows.min() + rows.max()) / 2
-    half = max(columns.max() - columns.min(), rows.max() - rows.min()) / 2 * crop_margin
-    box = [int(centre_x - half), int(centre_y - half), int(centre_x + half), int(centre_y + half)]
-    image = image.crop(box).resize((image_size, image_size), Image.LANCZOS)
-    composite = Image.new("RGB", (image_size, image_size), (0, 0, 0))
-    composite.paste(image, mask=image.split()[3])
-    return composite
+    return _prepare_square_image(condition, image_size, 1, crop_margin, family="IDOL")
 
 
 def decode_idol_camera(camera: torch.Tensor) -> dict[str, float]:

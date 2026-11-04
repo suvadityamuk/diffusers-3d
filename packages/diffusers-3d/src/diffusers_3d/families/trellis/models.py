@@ -25,7 +25,14 @@ from torch import nn
 
 from ...execution.models import Object3DModel
 from .sparse import TrellisSparseTensor
-from .sparse_ops import SparseConv3d, sparse_downsample, sparse_upsample, submanifold_neighbors
+from .sparse_ops import (
+    SparseConv3d,
+    SubmanifoldNeighbors,
+    sparse_batch_positions,
+    sparse_downsample,
+    sparse_downsample_indices,
+    sparse_upsample,
+)
 
 
 @dataclass
@@ -285,13 +292,24 @@ class TrellisModulatedTransformerCrossBlock(nn.Module):
         hidden_states: torch.Tensor,
         modulation: torch.Tensor,
         context: torch.Tensor,
-        batch_indices: torch.Tensor | None = None,
+        batch_indices: torch.Tensor | tuple[torch.Tensor, ...] | None = None,
         coordinates: torch.Tensor | None = None,
     ) -> torch.Tensor:
+        """``batch_indices`` runs each batch item of flat sparse tokens on its own: per-token batch indices, or
+        the per-item token positions (see :func:`sparse_batch_positions`), which avoids rebuilding them."""
+
         if batch_indices is not None:
+            if isinstance(batch_indices, torch.Tensor):
+                batch_indices = sparse_batch_positions(batch_indices, context.shape[0])
+            if len(batch_indices) == 1:
+                return self(
+                    hidden_states.unsqueeze(0),
+                    modulation,
+                    context,
+                    coordinates=None if coordinates is None else coordinates.unsqueeze(0),
+                ).squeeze(0)
             output = torch.zeros_like(hidden_states)
-            for batch_index in range(context.shape[0]):
-                positions = torch.nonzero(batch_indices == batch_index, as_tuple=False).reshape(-1)
+            for batch_index, positions in enumerate(batch_indices):
                 batch_output = self(
                     hidden_states[positions].unsqueeze(0),
                     modulation[batch_index : batch_index + 1],
@@ -325,7 +343,11 @@ class TrellisSparseConv3d(nn.Module):
         self.conv = SparseConv3d(in_channels, out_channels, kernel_size)
 
     def forward(
-        self, coordinates: torch.Tensor, features: torch.Tensor, *, neighbors: torch.Tensor | None = None
+        self,
+        coordinates: torch.Tensor,
+        features: torch.Tensor,
+        *,
+        neighbors: torch.Tensor | SubmanifoldNeighbors | None = None,
     ) -> torch.Tensor:
         return self.conv(coordinates, features, neighbors=neighbors)
 
@@ -369,7 +391,7 @@ class TrellisSparseResBlock3d(nn.Module):
         features: torch.Tensor,
         modulation: torch.Tensor,
         *,
-        neighbors: torch.Tensor | None = None,
+        neighbors: torch.Tensor | SubmanifoldNeighbors | None = None,
     ) -> torch.Tensor:
         batch_indices = coordinates[:, 0].to(torch.int64)
         scale, shift = self.emb_layers(modulation).to(dtype=features.dtype).chunk(2, dim=1)
@@ -428,6 +450,13 @@ def _initialize_flow_weights(model: nn.Module) -> None:
         nn.init.constant_(modulation[-1].bias, 0)
     nn.init.constant_(model.out_layer.weight, 0)
     nn.init.constant_(model.out_layer.bias, 0)
+
+
+def _downsample_structure(
+    coordinates: torch.Tensor,
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, SubmanifoldNeighbors]:
+    coarse, inverse, counts = sparse_downsample_indices(coordinates)
+    return coarse, inverse, counts, SubmanifoldNeighbors(coarse)
 
 
 class TrellisSparseStructureFlowModel(Object3DModel, PeftAdapterMixin):
@@ -714,7 +743,10 @@ class TrellisSLatFlowModel(Object3DModel, PeftAdapterMixin):
             raise TypeError("hidden_states must be a TrellisSparseTensor")
         if hidden_states.channels != self.in_channels:
             raise ValueError(f"hidden_states must have {self.in_channels} feature channels")
-        if bool((hidden_states.coordinates[:, 1:] >= self.resolution).any()):
+        if hidden_states.cached(
+            ("trellis_out_of_range", self.resolution),
+            lambda: bool((hidden_states.coordinates[:, 1:] >= self.resolution).any()),
+        ):
             raise ValueError("hidden_states coordinates fall outside the configured resolution")
         batch_size = hidden_states.batch_size
         if encoder_hidden_states.ndim != 3 or encoder_hidden_states.shape[0] != batch_size:
@@ -738,23 +770,36 @@ class TrellisSLatFlowModel(Object3DModel, PeftAdapterMixin):
 
         # IO stages: residual blocks at full resolution, average-pooling by two at the end of each stage.
         # The pooled coordinates and the inverse index are kept so the output stages can unpool exactly.
+        # Every structure below depends only on the coordinates, which stay fixed over a sampling run, so they
+        # are built on the first step and reused (see ``TrellisSparseTensor.cached``).
         coordinates = hidden_states.coordinates
-        neighbors = submanifold_neighbors(coordinates) if self.input_blocks else None
+        neighbors = (
+            hidden_states.cached("submanifold_neighbors", lambda: SubmanifoldNeighbors(coordinates))
+            if self.input_blocks
+            else None
+        )
         skips: list[torch.Tensor] = []
-        pyramid: list[tuple[torch.Tensor, torch.Tensor | None, torch.Tensor]] = []
+        pyramid: list[tuple[torch.Tensor, SubmanifoldNeighbors | None, torch.Tensor]] = []
         for block in self.input_blocks:
             if block.downsample:
                 fine_coordinates, fine_neighbors = coordinates, neighbors
+                coarse_coordinates, inverse, counts, neighbors = hidden_states.cached(
+                    ("downsample", len(pyramid)), lambda c=coordinates: _downsample_structure(c)
+                )
                 # Released weights expect upstream's ``n + 1`` mean (see ``sparse_downsample``).
-                coordinates, features, inverse = sparse_downsample(coordinates, features, count_zero_buffer=True)
+                coordinates, features, inverse = sparse_downsample(
+                    coordinates, features, count_zero_buffer=True, indices=(coarse_coordinates, inverse, counts)
+                )
                 pyramid.append((fine_coordinates, fine_neighbors, inverse))
-                neighbors = submanifold_neighbors(coordinates)
             features = block(coordinates, features, modulation, neighbors=neighbors)
             skips.append(features)
 
         if self.pe_mode == "ape":
             features = features + self.pos_embedder(coordinates[:, 1:]).to(dtype=inner_dtype)
-        batch_indices = coordinates[:, 0]
+        batch_indices = hidden_states.cached(
+            ("batch_positions", len(pyramid)),
+            lambda c=coordinates: sparse_batch_positions(c[:, 0], hidden_states.batch_size),
+        )
         spatial_coordinates = coordinates[:, 1:]
         for block in self.blocks:
             if torch.is_grad_enabled() and self.gradient_checkpointing:

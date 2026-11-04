@@ -263,9 +263,15 @@ class TripoSGImageTo3DPipeline(Object3DPipeline, Object3DLoraLoaderMixin):
         coarse = round(resolutions[0] / _FLASH_MINI_GRIDS) * _FLASH_MINI_GRIDS - 1
         resolutions = [coarse * 2**index for index in range(len(resolutions))]
 
+        contexts = {}
+
         def decode(points: torch.Tensor) -> torch.Tensor:
-            batch = latents.expand(points.shape[0], -1, -1)
-            return self.vae(batch, points, num_chunks=num_chunks).sample
+            # Upstream refines the latents on every call at the query batch size; refining once per batch size
+            # keeps the same GEMM shapes, so results match on CUDA too.
+            batch = points.shape[0]
+            if batch not in contexts:
+                contexts[batch] = self.vae.decode_latents(latents.expand(batch, -1, -1))
+            return self.vae.query(contexts[batch], points, num_chunks=num_chunks)
 
         # The coarse grid is decoded as 4^3 blocks of cubes, as many blocks per call as fit in 10000 points.
         blocks, side = _FLASH_MINI_GRIDS, (coarse + 1) // _FLASH_MINI_GRIDS
@@ -299,9 +305,7 @@ class TripoSGImageTo3DPipeline(Object3DPipeline, Object3DLoraLoaderMixin):
                     chunks.append(total)
                     total = count
             chunks.append(total)
-            logits = torch.cat(
-                [self.vae(latents, chunk, num_chunks=num_chunks).sample for chunk in points.split(chunks, 1)], 1
-            )
+            logits = torch.cat([decode(chunk) for chunk in points.split(chunks, 1)], 1)
             values = torch.zeros(points.shape[1], dtype=dtype, device=device)
             values[bins.indices] = logits[0, :, 0]
             grid = torch.full((resolution + 1,) * 3, _UNEVALUATED, dtype=dtype, device=device)
@@ -357,8 +361,10 @@ class TripoSGImageTo3DPipeline(Object3DPipeline, Object3DLoraLoaderMixin):
             raise ValueError("octree depths must satisfy 0 < dense_octree_depth <= hierarchical_octree_depth")
         device = latents.device
 
+        context = self.vae.decode_latents(latents)
+
         def decode(points: torch.Tensor) -> torch.Tensor:
-            return self.vae(latents, points[None], num_chunks=num_chunks).sample[0, :, 0].to(torch.float16)
+            return self.vae.query(context, points[None], num_chunks=num_chunks)[0, :, 0].to(torch.float16)
 
         size = 2**dense_octree_depth
         axis = torch.linspace(

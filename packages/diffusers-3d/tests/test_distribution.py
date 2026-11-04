@@ -8,12 +8,18 @@ import pytest
 
 PACKAGE_ROOT = Path(__file__).parents[1]
 CUMESH_REQUIREMENT = "cumesh @ git+https://github.com/JeffreyXiang/CuMesh.git@12289e1062f0603f2f0d0771b02e1395d247f26f"
+FLEX_GEMM_REQUIREMENT = (
+    "flex_gemm @ git+https://github.com/JeffreyXiang/FlexGEMM.git@6dd94a859c26ee8246888502eada3dd8ad85532e"
+)
 
 
 @pytest.mark.release
-def test_cumesh_requirement_is_pinned_to_a_commit():
-    text = (PACKAGE_ROOT / "requirements" / "backends" / "cumesh.txt").read_text(encoding="utf-8")
-    assert [line for line in text.splitlines() if line and not line.startswith("#")] == [CUMESH_REQUIREMENT]
+@pytest.mark.parametrize(
+    ("name", "requirement"), [("cumesh", CUMESH_REQUIREMENT), ("flex_gemm", FLEX_GEMM_REQUIREMENT)]
+)
+def test_compiled_backend_requirements_are_pinned_to_a_commit(name, requirement):
+    text = (PACKAGE_ROOT / "requirements" / "backends" / f"{name}.txt").read_text(encoding="utf-8")
+    assert [line for line in text.splitlines() if line and not line.startswith("#")] == [requirement]
 
 
 @pytest.mark.release

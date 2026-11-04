@@ -26,6 +26,7 @@ from ...execution.pipelines import ExternalComponent, Object3DPipeline
 from ...objects import CoordinateSystem, Latent3DOutput, MeshAsset, Object3DPipelineOutput
 from ..hunyuan3d.models import DINOV2_LARGE_REPOSITORY, DINOV2_LARGE_REVISION, Hunyuan3DDiTModel, load_dinov2
 from ..hunyuan3d.pipeline import Hunyuan3DImageTo3DPipeline
+from ..hunyuan3d.pipeline import recenter_image as _recenter_image
 from ..hunyuan3d.scheduler import Hunyuan3DFlowMatchEulerDiscreteScheduler
 from ..hunyuan3d.vae import Hunyuan3DShapeVAE
 from .models import Hunyuan3DOmniControlEncoder
@@ -37,26 +38,7 @@ def recenter_image(rgba: np.ndarray, border_ratio: float) -> np.ndarray:
     ``rgba`` is ``(height, width, 4)`` uint8; returns a square uint8 RGB image composited on white.
     """
 
-    import cv2
-
-    height, width = rgba.shape[:2]
-    rows, columns = np.nonzero(rgba[..., 3])
-    if rows.size == 0:
-        raise ValueError("the image alpha and mask contain no foreground")
-    # Upstream excludes the last foreground row and column from the crop.
-    top, bottom, left, right = rows.min(), rows.max(), columns.min(), columns.max()
-    if bottom == top or right == left:
-        raise ValueError("the image foreground must span at least two rows and two columns")
-    size = max(height, width)
-    scale = int(size * (1 - border_ratio)) / max(bottom - top, right - left)
-    resized_height, resized_width = int((bottom - top) * scale), int((right - left) * scale)
-    canvas = np.zeros((size, size, 4), dtype=np.uint8)
-    offset_y, offset_x = (size - resized_height) // 2, (size - resized_width) // 2
-    canvas[offset_y : offset_y + resized_height, offset_x : offset_x + resized_width] = cv2.resize(
-        rgba[top:bottom, left:right], (resized_width, resized_height), interpolation=cv2.INTER_CUBIC
-    )
-    alpha = canvas[..., 3:].astype(np.float32) / 255
-    return (canvas[..., :3] * alpha + 255 * (1 - alpha)).clip(0, 255).astype(np.uint8)
+    return _recenter_image(rgba, border_ratio, cubic=True)
 
 
 def remove_floaters_and_degenerate_faces(mesh):

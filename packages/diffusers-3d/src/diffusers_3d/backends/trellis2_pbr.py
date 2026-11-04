@@ -11,10 +11,6 @@ from .cumesh import CuMeshBackend
 from .o_voxel import ovoxel_to_mesh
 
 NVDIFFRAST_INSTALL = "pip install --no-build-isolation git+https://github.com/NVlabs/nvdiffrast.git@v0.3.3"
-FLEX_GEMM_INSTALL = (
-    "pip install --no-build-isolation "
-    "git+https://github.com/JeffreyXiang/FlexGEMM.git@6dd94a859c26ee8246888502eada3dd8ad85532e"
-)
 # Upstream writes GLB vertices and normals as ``(x, z, -y)``.
 _GLB_ROTATION = [[1.0, 0.0, 0.0], [0.0, 0.0, 1.0], [0.0, -1.0, 0.0]]
 
@@ -44,7 +40,7 @@ def textured_mesh_from_ovoxel(
 
     cumesh = CuMeshBackend(device=device)._module
     dr = require("nvdiffrast.torch", NVDIFFRAST_INSTALL)
-    grid_sample_3d = require("flex_gemm.ops.grid_sample", FLEX_GEMM_INSTALL).grid_sample_3d
+    grid_sample_3d = require("flex_gemm.ops.grid_sample", "flex_gemm").grid_sample_3d
     asset = asset.to(device)
     mesh = ovoxel_to_mesh(asset)
     grid_size = torch.tensor(mesh.metadata["resolution"], dtype=torch.int32, device=mesh.device)

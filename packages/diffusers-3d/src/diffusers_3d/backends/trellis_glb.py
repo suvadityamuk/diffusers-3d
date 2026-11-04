@@ -14,6 +14,7 @@ import torch
 import torch.nn.functional as F
 
 from ..objects import GaussianSplatAsset, MeshAsset, PBRMaterial
+from ._hammersley import radical_inverse
 from ._optional import require
 from .trellis2_pbr import NVDIFFRAST_INSTALL
 
@@ -113,11 +114,7 @@ def textured_mesh_from_splats(
 def _sphere_hammersley(index: int, count: int) -> tuple[float, float]:
     """Yaw and pitch of view ``index`` of ``count`` on TRELLIS' Hammersley sphere."""
 
-    u, v, base = index / count, 0.0, 0.5
-    while index > 0:
-        v += index % 2 * base
-        index //= 2
-        base *= 0.5
+    u, v = index / count, radical_inverse(2, index)
     return v * 2 * np.pi, np.arccos(1 - 2 * u) - np.pi / 2
 
 

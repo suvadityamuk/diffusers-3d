@@ -14,6 +14,7 @@
 
 from __future__ import annotations
 
+import functools
 from dataclasses import dataclass
 
 import torch
@@ -35,6 +36,18 @@ class FlexiCubesResult:
     vertices: torch.Tensor
     faces: torch.Tensor
     vertex_colors: torch.Tensor | None
+
+
+@functools.lru_cache(maxsize=None)
+def _tables(device: torch.device) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+    """The lookup tables as int64 tensors on ``device``, built once per device."""
+
+    return (
+        torch.tensor(DMC_TABLE, dtype=torch.int64, device=device).reshape(256, 4, 7),
+        torch.tensor(NUM_VD_TABLE, dtype=torch.int64, device=device),
+        torch.tensor(CHECK_TABLE, dtype=torch.int64, device=device).reshape(256, 5),
+        torch.tensor(CUBE_EDGES, dtype=torch.int64, device=device),
+    )
 
 
 def _codes(coordinates: torch.Tensor, extent: int) -> torch.Tensor:
@@ -103,10 +116,7 @@ def flexicubes_extract(
     if beta.shape != (num_cubes, 12) or alpha.shape != (num_cubes, 8) or gamma_f.shape != (num_cubes,):
         raise ValueError("beta, alpha and gamma_f must have shapes (N, 12), (N, 8) and (N,)")
 
-    dmc_table = torch.tensor(DMC_TABLE, dtype=torch.int64, device=device).reshape(256, 4, 7)
-    num_vd_table = torch.tensor(NUM_VD_TABLE, dtype=torch.int64, device=device)
-    check_table = torch.tensor(CHECK_TABLE, dtype=torch.int64, device=device).reshape(256, 5)
-    cube_edges = torch.tensor(CUBE_EDGES, dtype=torch.int64, device=device)
+    dmc_table, num_vd_table, check_table, cube_edges = _tables(device)
 
     occupied = scalar_field < 0
     occupancy = occupied[cube_index.reshape(-1)].reshape(-1, 8)

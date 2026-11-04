@@ -31,10 +31,11 @@ from .scheduler import Hunyuan3DFlowMatchEulerDiscreteScheduler
 from .vae import Hunyuan3DShapeVAE
 
 
-def recenter_image(rgba: np.ndarray, border_ratio: float) -> np.ndarray:
+def recenter_image(rgba: np.ndarray, border_ratio: float, *, cubic: bool = False) -> np.ndarray:
     """Released ``ImageProcessorV2.recenter``: crop to the alpha box, rescale into a padded square, put on white.
 
-    ``rgba`` is ``(height, width, 4)`` uint8; returns a square uint8 RGB image.
+    ``rgba`` is ``(height, width, 4)`` uint8; returns a square uint8 RGB image. The crop is resized with
+    ``INTER_AREA``, or ``INTER_CUBIC`` when ``cubic`` (Hunyuan3D-Omni's variant).
     """
 
     import cv2
@@ -54,7 +55,9 @@ def recenter_image(rgba: np.ndarray, border_ratio: float) -> np.ndarray:
     canvas = np.zeros((size, size, 4), dtype=np.uint8)
     offset_y, offset_x = (size - resized_height) // 2, (size - resized_width) // 2
     canvas[offset_y : offset_y + resized_height, offset_x : offset_x + resized_width] = cv2.resize(
-        rgba[top:bottom, left:right], (resized_width, resized_height), interpolation=cv2.INTER_AREA
+        rgba[top:bottom, left:right],
+        (resized_width, resized_height),
+        interpolation=cv2.INTER_CUBIC if cubic else cv2.INTER_AREA,
     )
     alpha = canvas[..., 3:].astype(np.float32) / 255
     return (canvas[..., :3] * alpha + 255 * (1 - alpha)).clip(0, 255).astype(np.uint8)
@@ -191,9 +194,10 @@ class Hunyuan3DImageTo3DPipeline(Object3DPipeline, Object3DLoraLoaderMixin):
         ]
         points = torch.from_numpy(np.stack(np.meshgrid(*axes, indexing="ij"), axis=-1)).reshape(-1, 3)
         points = points.to(device=decoded.device, dtype=query_dtype or decoded.dtype).to(decoded.dtype)
+        context = self.vae.occupancy_context(decoded)
         logits = torch.cat(
             [
-                self.vae.query_occupancy(decoded, chunk.expand(decoded.shape[0], -1, -1))
+                self.vae.query_occupancy(None, chunk.expand(decoded.shape[0], -1, -1), context=context)
                 for chunk in points.split(num_chunks)
             ],
             dim=1,

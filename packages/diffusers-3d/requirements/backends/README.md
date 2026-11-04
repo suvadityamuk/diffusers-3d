@@ -9,3 +9,13 @@ python -m pip install --no-build-isolation -r packages/diffusers-3d/requirements
 ```
 
 CuMesh bundles cubvh under NVIDIA's non-commercial Source Code License. Read it before you install.
+
+# FlexGEMM
+
+FlexGEMM (MIT) has no PyPI wheel either, so `flex_gemm.txt` pins the commit the TRELLIS.2 release uses. It provides
+Triton sparse-convolution kernels, which TRELLIS.2 and Pixal3D use on CUDA once it is installed (other sparse families
+opt in with `set_sparse_conv_backend("flex_gemm")`), and the 3D grid sampling of the TRELLIS.2 PBR bake. It compiles a small CUDA extension, so it needs `nvcc`:
+
+```bash
+python -m pip install --no-build-isolation -r packages/diffusers-3d/requirements/backends/flex_gemm.txt
+```

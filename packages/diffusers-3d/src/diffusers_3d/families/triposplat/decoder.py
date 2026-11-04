@@ -19,6 +19,7 @@ from diffusers.models.normalization import FP32LayerNorm
 from diffusers.utils import BaseOutput
 from torch import nn
 
+from ...backends._hammersley import hammersley_3d
 from ...execution.models import Object3DModel
 from ...objects import CoordinateSystem, GaussianSplatAsset
 from .models import TripoSplatAttention
@@ -35,19 +36,6 @@ def _fourier_embedding(points: torch.Tensor, dim: int) -> torch.Tensor:
     angles = angles * torch.pi
     embedding = torch.cat([angles.sin(), angles.cos()], dim=-1).flatten(-2)
     return F.pad(embedding, (0, dim - embedding.shape[-1]))
-
-
-def _hammersley(count: int) -> torch.Tensor:
-    def radical_inverse(base: int, index: int) -> float:
-        value, inverse = 0.0, 1.0 / base
-        scale = inverse
-        while index:
-            value += index % base * scale
-            index //= base
-            scale *= inverse
-        return value
-
-    return torch.tensor([[i / count, radical_inverse(2, i), radical_inverse(3, i)] for i in range(count)])
 
 
 def _systematic_counts(probs: torch.Tensor, counts: torch.Tensor, generator: torch.Generator | None) -> torch.Tensor:
@@ -169,7 +157,7 @@ class TripoSplatGaussianDecoder(Object3DModel):
         )
         # Per Gaussian: offset 3, SH DC 3, scale 3, rotation 4, opacity 1, offset scale 1.
         self.gaussian_proj_out = nn.Linear(width, 15 * gaussians_per_token)
-        perturbation = torch.atanh((_hammersley(gaussians_per_token).float() * 2 - 1) / offset_extent)
+        perturbation = torch.atanh((hammersley_3d(gaussians_per_token) * 2 - 1) / offset_extent)
         self.register_buffer("offset_perturbation", perturbation)
         self.register_buffer("base_offset_scale", torch.log(torch.exp(torch.tensor(offset_scale)) - 1.0))
 

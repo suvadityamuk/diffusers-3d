@@ -155,9 +155,7 @@ class Pixal3DSLatFlowModel(Trellis2SLatFlowModel):
     def _validate_context(self, context: Any, hidden_states: TrellisSparseTensor) -> None:
         encoder_hidden_states, projected = context
         super()._validate_context(encoder_hidden_states, hidden_states)
-        if not isinstance(projected, TrellisSparseTensor) or not torch.equal(
-            projected.coordinates, hidden_states.coordinates
-        ):
+        if not isinstance(projected, TrellisSparseTensor) or not hidden_states.has_coordinates_of(projected):
             raise ValueError("projected_hidden_states must be coordinate-aligned with hidden_states")
         if projected.channels != self.config.proj_in_channels:
             raise ValueError(f"projected_hidden_states must have {self.config.proj_in_channels} channels")

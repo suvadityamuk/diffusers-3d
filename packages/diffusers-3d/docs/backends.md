@@ -50,10 +50,18 @@ Both need the `background` extra (rembg and torchvision).
 |---|---|---|
 | `GsplatBackend` | rasterizing Gaussian splats, and baking TRELLIS textured GLBs | `gaussian` extra |
 | `CuMeshBackend` | mesh repair, simplification, and UV unwrap for textured GLBs from TRELLIS and TRELLIS.2 | `requirements/backends/cumesh.txt` |
+| FlexGEMM | sparse convolutions (TRELLIS, TRELLIS.2, SAM 3D Objects, Pixal3D) and the TRELLIS.2 PBR bake | `requirements/backends/flex_gemm.txt` |
 
 ```bash
 pip install --no-build-isolation -r packages/diffusers-3d/requirements/backends/cumesh.txt
+pip install --no-build-isolation -r packages/diffusers-3d/requirements/backends/flex_gemm.txt
 ```
+
+By default (`"auto"`) sparse convolutions follow each release: TRELLIS.2 and Pixal3D run FlexGEMM's Triton kernels on
+CUDA tensors when it is installed, as upstream does, and TRELLIS and SAM 3D Objects (spconv upstream) run the
+plain-PyTorch gather-GEMM-scatter. `diffusers_3d.set_sparse_conv_backend("flex_gemm")` uses FlexGEMM for every family,
+which is faster but changes results within fp16 rounding; `"torch"` uses PyTorch everywhere. The
+`DIFFUSERS_3D_SPARSE_CONV_BACKEND` environment variable sets the initial choice.
 
 CuMesh bundles cubvh, which is under an NVIDIA non-commercial license. Loading it warns.
 

@@ -6,9 +6,12 @@ import pytest
 import torch
 import torch.nn.functional as F
 
+from diffusers_3d.families.trellis import sparse_ops
 from diffusers_3d.families.trellis.sparse_ops import (
     SparseConv3d,
+    SubmanifoldNeighbors,
     channel_to_spatial,
+    set_sparse_conv_backend,
     sparse_downsample,
     sparse_subdivide,
     sparse_submanifold_conv3d,
@@ -121,3 +124,97 @@ def test_window_partition_groups_per_batch_and_pads_losslessly():
     shifted = sparse_window_partition(coordinates, window_size=2, shift=1)
     # Shifting by one cell moves (1,1,1) out of the origin window.
     assert shifted.num_windows == 6
+
+
+@pytest.fixture
+def sparse_conv_backend():
+    """Restore the process-wide sparse convolution backend after the test."""
+
+    previous = sparse_ops.get_sparse_conv_backend()
+    yield set_sparse_conv_backend
+    set_sparse_conv_backend(previous)
+
+
+def test_shared_neighbors_reproduce_a_fresh_convolution_exactly():
+    generator = torch.Generator().manual_seed(1)
+    coordinates = _random_coordinates(2, 6, 80, generator)
+    neighbors = SubmanifoldNeighbors(coordinates)
+    for _ in range(2):  # the second pass reuses the extracted taps
+        features = torch.randn(coordinates.shape[0], 5, generator=generator)
+        weight = torch.randn(4, 3, 3, 3, 5, generator=generator)
+        torch.testing.assert_close(
+            sparse_submanifold_conv3d(coordinates, features, weight, neighbors=neighbors),
+            sparse_submanifold_conv3d(coordinates, features, weight),
+            rtol=0,
+            atol=0,
+        )
+
+
+def test_sparse_conv_backend_is_validated(sparse_conv_backend):
+    with pytest.raises(ValueError, match="backend must be one of"):
+        sparse_conv_backend("spconv")
+    sparse_conv_backend("flex_gemm")
+    coordinates = torch.tensor([[0, 0, 0, 0]])
+    with pytest.raises(ValueError, match="needs CUDA tensors"):
+        sparse_submanifold_conv3d(coordinates, torch.ones(1, 2), torch.ones(3, 3, 3, 3, 2))
+
+
+@pytest.mark.parametrize(
+    ("backend", "upstream", "expected"),
+    [
+        ("auto", "flex_gemm", True),
+        ("auto", "torch", False),
+        ("flex_gemm", "torch", True),
+        ("torch", "flex_gemm", False),
+    ],
+)
+def test_auto_backend_follows_the_release(sparse_conv_backend, monkeypatch, backend, upstream, expected):
+    """``auto`` uses FlexGEMM only where the release does; an explicit choice applies to every family."""
+
+    monkeypatch.setattr(sparse_ops, "_flex_gemm_spconv", lambda: object())
+    monkeypatch.setattr(sparse_ops, "require", lambda *args: None)
+    sparse_conv_backend(backend)
+    cuda_features = type("CudaFeatures", (), {"is_cuda": True})()
+    assert sparse_ops._uses_flex_gemm(cuda_features, upstream) is expected
+
+
+@pytest.mark.accelerated
+@pytest.mark.parametrize(
+    ("dtype", "tolerance"), [(torch.float32, 2e-3), (torch.float16, 1e-2), (torch.bfloat16, 5e-2)]
+)
+def test_flex_gemm_backend_matches_the_dense_reference(sparse_conv_backend, dtype, tolerance):
+    if not torch.cuda.is_available():
+        pytest.skip("needs CUDA")
+    pytest.importorskip("flex_gemm.ops.spconv")
+    generator = torch.Generator().manual_seed(2)
+    batch_size, resolution, channels = 2, 24, 64
+    coordinates = _random_coordinates(batch_size, resolution, 6000, generator)
+    features = torch.randn(coordinates.shape[0], channels, generator=generator, dtype=torch.float64)
+    weight = torch.randn(96, 3, 3, 3, channels, generator=generator, dtype=torch.float64) / (27 * channels) ** 0.5
+    bias = torch.randn(96, generator=generator, dtype=torch.float64)
+    dense = F.conv3d(
+        _densify(coordinates, features, batch_size, resolution), weight.permute(0, 4, 1, 2, 3), bias, padding=1
+    )
+    expected = dense[coordinates[:, 0], :, coordinates[:, 1], coordinates[:, 2], coordinates[:, 3]]
+
+    sparse_conv_backend("flex_gemm")
+    coordinates = coordinates.cuda()
+    neighbors = SubmanifoldNeighbors(coordinates)
+    cast = {"device": "cuda", "dtype": dtype}
+    for _ in range(2):  # the second call reuses FlexGEMM's neighbour cache
+        actual = sparse_submanifold_conv3d(
+            coordinates, features.to(**cast), weight.to(**cast), bias.to(**cast), neighbors=neighbors
+        )
+        torch.testing.assert_close(actual.double().cpu(), expected, rtol=tolerance, atol=tolerance)
+
+
+def test_downsample_indices_are_reusable_exactly():
+    generator = torch.Generator().manual_seed(3)
+    coordinates = _random_coordinates(2, 6, 70, generator)
+    features = torch.randn(coordinates.shape[0], 4, generator=generator)
+    indices = sparse_ops.sparse_downsample_indices(coordinates)
+    for expected, actual in zip(
+        sparse_downsample(coordinates, features, count_zero_buffer=True),
+        sparse_downsample(coordinates, features, count_zero_buffer=True, indices=indices),
+    ):
+        assert torch.equal(expected, actual)
