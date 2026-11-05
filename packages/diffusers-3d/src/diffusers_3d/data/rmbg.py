@@ -145,7 +145,7 @@ class RMBG14BackgroundRemover:
 
         image = image.convert("RGB")
         device = next(self.model.parameters()).device
-        rgb = torch.from_numpy(np.asarray(image)).to(device).float().permute(2, 0, 1) / 255.0
+        rgb = torch.from_numpy(np.array(image)).to(device).float().permute(2, 0, 1) / 255.0
         resized = TF.resize(rgb, [1024, 1024], antialias=True)
         if resized.flatten().max() < 1e-3:
             raise ValueError("background removal needs an image that is not pure black")

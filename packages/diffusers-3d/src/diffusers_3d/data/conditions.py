@@ -114,8 +114,8 @@ ImageInput: TypeAlias = ImageCondition | torch.Tensor | Image.Image | np.ndarray
 def _image_tensor(image: Image.Image | np.ndarray) -> torch.Tensor:
     if isinstance(image, Image.Image):
         keep_alpha = "A" in image.getbands() or "transparency" in image.info
-        image = np.asarray(image.convert("RGBA" if keep_alpha else "RGB"))
-    pixels = torch.from_numpy(np.ascontiguousarray(image))
+        image = image.convert("RGBA" if keep_alpha else "RGB")
+    pixels = torch.from_numpy(np.array(image, order="C"))
     if pixels.ndim == 2:
         pixels = pixels[..., None]
     pixels = pixels.permute(2, 0, 1)
